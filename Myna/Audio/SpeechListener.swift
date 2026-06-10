@@ -1,0 +1,169 @@
+import AVFoundation
+import Foundation
+import Speech
+
+/// Continuous, fully on-device speech capture.
+///
+/// Runs an `AVAudioEngine` tap into `SFSpeechRecognizer` with
+/// `requiresOnDeviceRecognition = true`, so no audio or transcript ever
+/// touches the network. The recognition task is rotated periodically to keep
+/// long all-day sessions stable; each finalized utterance is handed to
+/// `onFinalText`.
+@MainActor
+final class SpeechListener: NSObject, ObservableObject {
+    @Published private(set) var isListening = false
+    @Published private(set) var liveTranscript = ""
+    /// Smoothed microphone level in 0...1 for the orb animation.
+    @Published private(set) var audioLevel: Double = 0
+    @Published private(set) var lastError: String?
+
+    /// Called with each finalized chunk of speech and the time it was heard.
+    var onFinalText: ((String, Date) -> Void)?
+
+    private let audioEngine = AVAudioEngine()
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: Locale.preferredLanguages.first ?? "en-US"))
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private var rotationTimer: Timer?
+
+    /// Rotate the recognition task once a minute so a single task never grows unbounded.
+    private let taskRotationInterval: TimeInterval = 60
+
+    // MARK: - Permissions
+
+    static func requestPermissions() async -> Bool {
+        let speechStatus = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
+            }
+        }
+        guard speechStatus == .authorized else { return false }
+        return await AVAudioApplication.requestRecordPermission()
+    }
+
+    // MARK: - Lifecycle
+
+    func start() {
+        guard !isListening else { return }
+        lastError = nil
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement, options: [.duckOthers, .allowBluetooth])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let inputNode = audioEngine.inputNode
+            let format = inputNode.outputFormat(forBus: 0)
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+                self?.request?.append(buffer)
+                let level = Self.rms(of: buffer)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // Attack fast, decay slow — feels alive without flickering.
+                    self.audioLevel = max(level, self.audioLevel * 0.86)
+                }
+            }
+
+            audioEngine.prepare()
+            try audioEngine.start()
+            isListening = true
+            startRecognitionTask()
+
+            rotationTimer = Timer.scheduledTimer(withTimeInterval: taskRotationInterval, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.rotateRecognitionTask() }
+            }
+        } catch {
+            lastError = "Could not start listening: \(error.localizedDescription)"
+            stop()
+        }
+    }
+
+    func stop() {
+        rotationTimer?.invalidate()
+        rotationTimer = nil
+        flushPartialIfMeaningful()
+        task?.cancel()
+        task = nil
+        request?.endAudio()
+        request = nil
+        audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine.stop()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        isListening = false
+        liveTranscript = ""
+        audioLevel = 0
+    }
+
+    // MARK: - Recognition
+
+    private func startRecognitionTask() {
+        guard let recognizer, recognizer.isAvailable else {
+            lastError = "Speech recognition is not available on this device."
+            return
+        }
+
+        let newRequest = SFSpeechAudioBufferRecognitionRequest()
+        newRequest.shouldReportPartialResults = true
+        newRequest.taskHint = .dictation
+        newRequest.addsPunctuation = true
+        if recognizer.supportsOnDeviceRecognition {
+            // The privacy contract: recognition never leaves the device.
+            newRequest.requiresOnDeviceRecognition = true
+        }
+        request = newRequest
+
+        task = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let result {
+                    let text = result.bestTranscription.formattedString
+                    self.liveTranscript = text
+                    if result.isFinal {
+                        self.deliver(text)
+                        self.liveTranscript = ""
+                        if self.isListening {
+                            self.startRecognitionTask()
+                        }
+                    }
+                } else if error != nil, self.isListening {
+                    // On-device tasks occasionally end after silence; just spin up a fresh one.
+                    self.flushPartialIfMeaningful()
+                    self.startRecognitionTask()
+                }
+            }
+        }
+    }
+
+    /// Ends the current task gracefully; its final result is delivered via the handler above.
+    private func rotateRecognitionTask() {
+        guard isListening else { return }
+        request?.endAudio()
+    }
+
+    private func flushPartialIfMeaningful() {
+        let text = liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            deliver(text)
+            liveTranscript = ""
+        }
+    }
+
+    private func deliver(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onFinalText?(trimmed, .now)
+    }
+
+    private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Double {
+        guard let data = buffer.floatChannelData?[0] else { return 0 }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return 0 }
+        var sum: Float = 0
+        for i in 0..<frames {
+            sum += data[i] * data[i]
+        }
+        let rms = sqrt(sum / Float(frames))
+        // Map raw RMS (~0...0.3 for speech) onto a friendly 0...1 curve.
+        return min(1.0, Double(rms) * 6.0)
+    }
+}
