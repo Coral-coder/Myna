@@ -102,6 +102,47 @@ Myna/
   clear consent). Also mind your local laws on recording conversations —
   consent requirements vary by jurisdiction.
 
+## CI/CD (GitHub Actions → TestFlight)
+
+`.github/workflows/ci.yml` runs two jobs on macOS 15 runners:
+
+- **build** — every PR and push: compiles the whole app for a real iOS device
+  (unsigned, `CODE_SIGNING_ALLOWED=NO`). This is the merge gate. There is no
+  simulator job on purpose: MLX targets physical Apple-Silicon GPUs.
+- **testflight** — pushes to `main` and manual runs (*Actions → CI → Run
+  workflow*): builds a signed Release archive, exports an App Store IPA and
+  uploads it to TestFlight. The build number is the workflow run number, so
+  every upload is unique. The IPA is also kept as a workflow artifact for
+  14 days.
+
+### One-time setup
+
+1. In [App Store Connect](https://appstoreconnect.apple.com), create the app
+   record with bundle id `com.myna.studio` (or change `BUNDLE_ID` in the
+   workflow and the project to match yours).
+2. In the developer portal, create an **Apple Distribution** certificate and
+   an **App Store** provisioning profile for that bundle id.
+3. In App Store Connect → *Users and Access* → *Integrations*, create an
+   **API key** with the App Manager role.
+4. Add these repository secrets (Settings → Secrets and variables → Actions);
+   the upload job also uses a `testflight` environment, so you can require
+   manual approval there if you like:
+
+| Secret | Value |
+|---|---|
+| `APPLE_TEAM_ID` | Your 10-character team id |
+| `BUILD_CERTIFICATE_BASE64` | `base64 -i Certificates.p12` (the distribution cert + private key) |
+| `P12_PASSWORD` | Password of that `.p12` |
+| `PROVISIONING_PROFILE_BASE64` | `base64 -i Myna_AppStore.mobileprovision` |
+| `PROVISIONING_PROFILE_NAME` | The profile's name exactly as in the portal |
+| `KEYCHAIN_PASSWORD` | Any random string |
+| `APP_STORE_CONNECT_KEY_ID` | API key id (e.g. `2X9R4HXF34`) |
+| `APP_STORE_CONNECT_ISSUER_ID` | Issuer id (UUID) |
+| `APP_STORE_CONNECT_API_KEY_BASE64` | `base64 -i AuthKey_XXXX.p8` |
+
+Builds land in App Store Connect → TestFlight a few minutes after upload
+(processing time included); add testers there.
+
 ## Privacy charter
 
 - Audio is processed in memory and never written to disk or uploaded.
