@@ -94,7 +94,7 @@ struct DashboardView: View {
     private var statusTitle: String {
         switch pilot.phase {
         case .idle: return "Standing by"
-        case .listening: return "Listening…"
+        case .listening: return capture.isReacquiring ? "Reconnecting…" : "Listening…"
         case .composing: return "Imagining your notes…"
         }
     }
@@ -104,6 +104,9 @@ struct DashboardView: View {
         case .idle:
             return "Tap the orb to begin. Everything is heard,\nunderstood and stored only on this iPhone."
         case .listening:
+            if capture.isReacquiring {
+                return "The mic is busy elsewhere (a call, or another app).\nMyna stays on and grabs it back the moment it's free."
+            }
             return "Myna takes notes when a conversation ends.\nTap the orb again to stop."
         case .composing:
             return "The on-device model is composing detailed\nnotes from what it just heard."

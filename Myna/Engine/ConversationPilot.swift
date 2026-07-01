@@ -83,14 +83,16 @@ final class ConversationPilot: ObservableObject {
 
     func startListening() {
         guard phase == .idle || phase == .composing else { return }
-        capture.start()
-        if capture.isRunning {
-            phase = .listening
-            lastSpeechAt = .now
-            startWatchdog()
-        } else if let error = capture.lastError {
-            banner = error
+        guard AudioCaptureEngine.micAuthorized else {
+            banner = "Microphone access is off. Turn it on in Settings ▸ Myna to let Myna listen."
+            return
         }
+        // The engine wants to run from here until we stop it, surviving calls,
+        // route changes and other interruptions by re-acquiring the mic.
+        capture.start()
+        phase = .listening
+        lastSpeechAt = .now
+        startWatchdog()
     }
 
     func stopListening(composeRemainder: Bool = true) {
@@ -149,7 +151,7 @@ final class ConversationPilot: ObservableObject {
         let transcript = lines.map(\.text).joined(separator: "\n")
         guard transcript.count > 40 else { return }
 
-        let wasListening = capture.isRunning
+        let wasListening = capture.isActive
         phase = .composing
 
         Task {
@@ -186,7 +188,7 @@ final class ConversationPilot: ObservableObject {
                 try? modelContext?.save()
                 banner = "Saved the transcript — \(error.localizedDescription)"
             }
-            phase = wasListening && capture.isRunning ? .listening : .idle
+            phase = wasListening && capture.isActive ? .listening : .idle
         }
     }
 

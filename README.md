@@ -110,11 +110,19 @@ Myna/
 
 ### Implementation notes
 
-- **Non-exclusive mic:** the audio session uses `.playAndRecord` with
-  `.mixWithOthers`, so Myna coexists with other audio apps rather than
-  interrupting them. iOS may still limit mic access during a phone/FaceTime
-  call or when another app holds exclusive capture — Myna yields in those cases
-  rather than fighting for the input.
+- **Non-exclusive, self-healing mic:** the audio session uses `.playAndRecord`
+  with `.mixWithOthers`, so Myna coexists with other audio apps rather than
+  interrupting them, and it runs in the background (audio background mode). It
+  never fights another app for *exclusive* audio, but it never surrenders its
+  place either: once started it "wants to run" until you stop it. When iOS
+  sidelines it — a phone/FaceTime call, Siri, another app taking exclusive
+  capture, a headphone/Bluetooth route change, or a media-services reset — it
+  observes the interruption, route-change, engine-configuration-change and
+  media-reset notifications and, backed by a ~2 s retry loop, re-acquires the
+  microphone the instant it becomes available again. `AudioCaptureEngine`
+  exposes `isReacquiring` so the UI shows a "Reconnecting…" state while it waits.
+  (`setPrefersNoInterruptionsFromSystemAlerts` further reduces avoidable
+  interruptions.)
 - **Utterance chunking:** an energy-based VAD slices the 16 kHz stream into
   utterances (speech followed by a ~0.7 s pause, capped at 28 s), each
   transcribed by Whisper as it completes. This is what makes all-day listening
