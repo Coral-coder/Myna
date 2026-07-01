@@ -43,25 +43,36 @@ final class ConversationPilot: ObservableObject {
         UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? true
     }
 
-    let listener: SpeechListener
+    let capture: AudioCaptureEngine
+    let transcriber: WhisperTranscriber
     let scheduler = EventScheduler()
     private let notesEngine: NotesEngine
     private var modelContext: ModelContext?
     private var lastSpeechAt: Date = .distantPast
     private var watchdog: Timer?
 
-    init(listener: SpeechListener, modelManager: ModelManager) {
-        self.listener = listener
+    init(capture: AudioCaptureEngine, transcriber: WhisperTranscriber, modelManager: ModelManager) {
+        self.capture = capture
+        self.transcriber = transcriber
         self.notesEngine = NotesEngine(modelManager: modelManager)
 
-        listener.onFinalText = { [weak self] text, heardAt in
+        // Each completed utterance is transcribed by Whisper, then appended to
+        // the running conversation transcript.
+        capture.onUtterance = { [weak self] samples, heardAt in
             guard let self else { return }
-            if self.segmentStartedAt == nil {
-                self.segmentStartedAt = heardAt
-            }
-            self.segmentLines.append(TranscriptLine(text: text, heardAt: heardAt))
-            self.lastSpeechAt = heardAt
+            Task { await self.handleUtterance(samples, heardAt: heardAt) }
         }
+    }
+
+    private func handleUtterance(_ samples: [Float], heardAt: Date) async {
+        let text = await transcriber.transcribe(samples)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if segmentStartedAt == nil {
+            segmentStartedAt = heardAt
+        }
+        segmentLines.append(TranscriptLine(text: trimmed, heardAt: heardAt))
+        lastSpeechAt = heardAt
     }
 
     func attach(modelContext: ModelContext) {
@@ -72,20 +83,22 @@ final class ConversationPilot: ObservableObject {
 
     func startListening() {
         guard phase == .idle || phase == .composing else { return }
-        listener.start()
-        if listener.isListening {
-            phase = .listening
-            lastSpeechAt = .now
-            startWatchdog()
-        } else if let error = listener.lastError {
-            banner = error
+        guard AudioCaptureEngine.micAuthorized else {
+            banner = "Microphone access is off. Turn it on in Settings ▸ Myna to let Myna listen."
+            return
         }
+        // The engine wants to run from here until we stop it, surviving calls,
+        // route changes and other interruptions by re-acquiring the mic.
+        capture.start()
+        phase = .listening
+        lastSpeechAt = .now
+        startWatchdog()
     }
 
     func stopListening(composeRemainder: Bool = true) {
         watchdog?.invalidate()
         watchdog = nil
-        listener.stop()
+        capture.stop()
         if composeRemainder, hasMeaningfulContent {
             finalizeSegment()
         } else {
@@ -138,7 +151,7 @@ final class ConversationPilot: ObservableObject {
         let transcript = lines.map(\.text).joined(separator: "\n")
         guard transcript.count > 40 else { return }
 
-        let wasListening = listener.isListening
+        let wasListening = capture.isActive
         phase = .composing
 
         Task {
@@ -175,7 +188,7 @@ final class ConversationPilot: ObservableObject {
                 try? modelContext?.save()
                 banner = "Saved the transcript — \(error.localizedDescription)"
             }
-            phase = wasListening && listener.isListening ? .listening : .idle
+            phase = wasListening && capture.isActive ? .listening : .idle
         }
     }
 
