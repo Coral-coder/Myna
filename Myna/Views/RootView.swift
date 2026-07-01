@@ -100,9 +100,11 @@ struct RootView: View {
 
 #Preview {
     let manager = ModelManager()
-    let listener = SpeechListener()
+    let whisper = WhisperTranscriber()
+    let audio = AudioCaptureEngine()
     RootView()
         .environmentObject(manager)
-        .environmentObject(listener)
-        .environmentObject(ConversationPilot(listener: listener, modelManager: manager))
+        .environmentObject(whisper)
+        .environmentObject(audio)
+        .environmentObject(ConversationPilot(capture: audio, transcriber: whisper, modelManager: manager))
 }

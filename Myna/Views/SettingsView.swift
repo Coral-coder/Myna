@@ -5,6 +5,21 @@ struct SettingsView: View {
     @AppStorage("myna.silenceThreshold") private var silenceThreshold: Double = 90
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
+    @AppStorage("myna.whisperLanguage") private var whisperLanguage = "en"
+
+    private let languages: [(code: String, name: String)] = [
+        ("en", "English"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("ko", "Korean"),
+        ("hi", "Hindi"),
+        ("", "Auto-detect"),
+    ]
 
     var body: some View {
         ScrollView {
@@ -15,6 +30,7 @@ struct SettingsView: View {
                     .padding(.top, 16)
 
                 listeningCard
+                transcriptionCard
                 automationCard
                 privacyCard
                 aboutCard
@@ -23,6 +39,29 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var transcriptionCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading(icon: "waveform", title: "Transcription", tint: MynaTheme.mint)
+            HStack {
+                Text("Spoken language")
+                    .settingsLabel()
+                Spacer()
+                Picker("", selection: $whisperLanguage) {
+                    ForEach(languages, id: \.code) { lang in
+                        Text(lang.name).tag(lang.code)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(MynaTheme.mint)
+            }
+            Text("Whisper transcribes on the Neural Engine. Pick a language for best accuracy, or Auto-detect for mixed or unknown speech. English-only models always transcribe English regardless of this setting.")
+                .settingsCaption()
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(glow: MynaTheme.mint)
     }
 
     private var listeningCard: some View {
@@ -104,9 +143,9 @@ struct SettingsView: View {
     private var privacyPoints: [String] {
         [
             "Audio is never recorded to disk and never leaves this iPhone.",
-            "Speech recognition runs with Apple's on-device engine.",
-            "The AI model runs locally on the GPU — no cloud, no account.",
-            "The only network use is the one-time model download.",
+            "Speech is transcribed by OpenAI Whisper running on the Neural Engine.",
+            "The note-writing model runs locally on the GPU — no cloud, no account.",
+            "The only network use is the one-time model downloads.",
             "Notes are stored in the app's private database; sharing is always your explicit choice.",
         ]
     }

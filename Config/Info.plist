@@ -3,9 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Myna listens to your meetings and conversations so its on-device AI can compose notes for you. Audio is processed entirely on this iPhone and never leaves the device.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Myna transcribes speech using Apple&apos;s on-device speech recognition. Transcripts stay on this iPhone and are never uploaded.</string>
+	<string>Myna listens to your meetings and conversations so its on-device Whisper AI can transcribe them and compose notes. Audio is processed entirely on this iPhone and never leaves the device.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation.</string>
 	<key>UIBackgroundModes</key>

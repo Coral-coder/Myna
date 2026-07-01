@@ -1,15 +1,25 @@
 import SwiftUI
 
-/// The Neural Core: pick a mind, download it over the air, and Myna runs it
-/// forever after with no network required.
+/// The Neural Core: download Myna's two brains — the **ears** (Whisper speech
+/// recognition) and the **mind** (the note-writing language model). Both run
+/// on-device forever after, with no network required.
 struct ModelHubView: View {
     @EnvironmentObject private var modelManager: ModelManager
+    @EnvironmentObject private var transcriber: WhisperTranscriber
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 header
 
+                sectionTitle(icon: "ear.fill", title: "Ears · Speech Recognition", tint: MynaTheme.cyan,
+                             subtitle: "OpenAI Whisper, running on the Neural Engine. Hears the room and turns it into text.")
+                ForEach(WhisperCatalog.all) { model in
+                    WhisperModelCard(model: model)
+                }
+
+                sectionTitle(icon: "brain.fill", title: "Mind · Note Writing", tint: MynaTheme.magenta,
+                             subtitle: "A local language model that turns transcripts into detailed, structured notes on the GPU.")
                 ForEach(ModelCatalog.all) { model in
                     ModelCard(model: model)
                 }
@@ -20,7 +30,10 @@ struct ModelHubView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
-        .onAppear { modelManager.refreshInstalledStates() }
+        .onAppear {
+            modelManager.refreshInstalledStates()
+            transcriber.refreshInstalledStates()
+        }
     }
 
     private var header: some View {
@@ -33,24 +46,172 @@ struct ModelHubView: View {
             Text("Neural Core")
                 .font(MynaTheme.display(24, weight: .bold))
                 .auroraText()
-            Text("Choose the mind that takes your notes. Weights download once from Hugging Face, then run on this iPhone's GPU — offline, private, yours.")
+            Text("Download Myna's two brains. Everything runs on this iPhone — offline, private, yours.")
                 .font(.system(size: 13, design: .rounded))
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
     }
 
+    private func sectionTitle(icon: String, title: String, tint: Color, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionHeading(icon: icon, title: title, tint: tint)
+            Text(subtitle)
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 6)
+    }
+
     private var storageFooter: some View {
         HStack {
             Image(systemName: "internaldrive")
                 .foregroundStyle(MynaTheme.gold)
-            Text("On-device model storage: \(ByteCountFormatter.string(fromByteCount: modelManager.totalBytesOnDisk, countStyle: .file))")
+            Text("On-device model storage: \(ByteCountFormatter.string(fromByteCount: modelManager.totalBytesOnDisk + transcriber.totalBytesOnDisk, countStyle: .file))")
                 .font(.system(size: 12, design: .rounded))
                 .foregroundStyle(.white.opacity(0.6))
             Spacer()
         }
         .padding(16)
         .glassCard(cornerRadius: 18, glow: MynaTheme.gold)
+    }
+}
+
+private struct WhisperModelCard: View {
+    let model: WhisperModel
+    @EnvironmentObject private var transcriber: WhisperTranscriber
+
+    private var state: WhisperTranscriber.State { transcriber.state(of: model) }
+    private var isActive: Bool { transcriber.loadedModelID == model.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.displayName)
+                        .font(MynaTheme.display(17, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(model.multilingual ? "Multilingual · 99 languages" : "English only")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                Spacer()
+                if let badge = model.badge {
+                    GlowChip(text: badge.rawValue, icon: badgeIcon(badge), tint: badgeTint(badge))
+                }
+            }
+
+            Text(model.blurb)
+                .font(.system(size: 13, design: .rounded))
+                .foregroundStyle(.white.opacity(0.65))
+                .lineSpacing(2)
+
+            HStack(spacing: 8) {
+                GlowChip(text: "\(model.approxMB) MB", icon: "arrow.down", tint: MynaTheme.mint)
+                GlowChip(text: "Neural Engine", icon: "bolt.fill", tint: MynaTheme.cyan)
+            }
+
+            actionRow
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(cornerRadius: 22, glow: isActive ? MynaTheme.mint : MynaTheme.cyan)
+        .overlay(alignment: .topTrailing) {
+            if isActive {
+                Image(systemName: "sparkle")
+                    .foregroundStyle(MynaTheme.mint)
+                    .padding(10)
+                    .symbolEffect(.pulse)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionRow: some View {
+        switch state {
+        case .notInstalled:
+            actionButton("Download to iPhone", icon: "arrow.down.circle.fill", gradient: true) {
+                transcriber.downloadAndLoad(model)
+            }
+        case .downloading(let fraction):
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: fraction).tint(MynaTheme.cyan)
+                Text("Summoning Whisper… \(Int(fraction * 100))%")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(MynaTheme.cyan)
+            }
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView().tint(MynaTheme.gold)
+                Text("Waking the model…")
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(MynaTheme.gold)
+            }
+        case .ready:
+            HStack(spacing: 10) {
+                if isActive {
+                    GlowChip(text: "Active Ears", icon: "checkmark.circle.fill", tint: MynaTheme.mint)
+                } else {
+                    actionButton("Activate", icon: "bolt.fill", gradient: false) {
+                        transcriber.downloadAndLoad(model)
+                    }
+                }
+                Spacer()
+                Button(role: .destructive) {
+                    transcriber.delete(model)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.red.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+            }
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(.red.opacity(0.9))
+                    .lineLimit(3)
+                actionButton("Retry", icon: "arrow.clockwise", gradient: false) {
+                    transcriber.downloadAndLoad(model)
+                }
+            }
+        }
+    }
+
+    private func actionButton(_ title: String, icon: String, gradient: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(MynaTheme.display(13, weight: .semibold))
+                .foregroundStyle(gradient ? MynaTheme.void : MynaTheme.cyan)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .background {
+                    if gradient {
+                        Capsule().fill(MynaTheme.auroraGradient)
+                    } else {
+                        Capsule().strokeBorder(MynaTheme.cyan.opacity(0.6), lineWidth: 1)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func badgeIcon(_ badge: WhisperModel.Badge) -> String {
+        switch badge {
+        case .recommended: return "crown.fill"
+        case .fastest: return "hare.fill"
+        case .maxQuality: return "sparkles"
+        }
+    }
+
+    private func badgeTint(_ badge: WhisperModel.Badge) -> Color {
+        switch badge {
+        case .recommended: return MynaTheme.gold
+        case .fastest: return MynaTheme.mint
+        case .maxQuality: return MynaTheme.magenta
+        }
     }
 }
 

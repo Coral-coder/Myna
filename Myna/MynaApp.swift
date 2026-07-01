@@ -5,7 +5,8 @@ import SwiftUI
 struct MynaApp: App {
     private let sharedModelContainer: ModelContainer
     @StateObject private var modelManager: ModelManager
-    @StateObject private var listener: SpeechListener
+    @StateObject private var transcriber: WhisperTranscriber
+    @StateObject private var capture: AudioCaptureEngine
     @StateObject private var pilot: ConversationPilot
 
     init() {
@@ -16,10 +17,12 @@ struct MynaApp: App {
         }
 
         let manager = ModelManager()
-        let speechListener = SpeechListener()
-        let conversationPilot = ConversationPilot(listener: speechListener, modelManager: manager)
+        let whisper = WhisperTranscriber()
+        let audio = AudioCaptureEngine()
+        let conversationPilot = ConversationPilot(capture: audio, transcriber: whisper, modelManager: manager)
         _modelManager = StateObject(wrappedValue: manager)
-        _listener = StateObject(wrappedValue: speechListener)
+        _transcriber = StateObject(wrappedValue: whisper)
+        _capture = StateObject(wrappedValue: audio)
         _pilot = StateObject(wrappedValue: conversationPilot)
     }
 
@@ -27,7 +30,8 @@ struct MynaApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(modelManager)
-                .environmentObject(listener)
+                .environmentObject(transcriber)
+                .environmentObject(capture)
                 .environmentObject(pilot)
                 .preferredColorScheme(.dark)
                 .onAppear {

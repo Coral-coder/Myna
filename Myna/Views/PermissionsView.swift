@@ -5,7 +5,7 @@ import SwiftUI
 struct PermissionsView: View {
     @Binding var onboarded: Bool
     @EnvironmentObject private var pilot: ConversationPilot
-    @State private var micAndSpeechGranted = false
+    @State private var micGranted = false
     @State private var calendarGranted = false
     @State private var requesting = false
 
@@ -34,9 +34,9 @@ struct PermissionsView: View {
                     permissionRow(
                         icon: "mic.fill",
                         tint: MynaTheme.cyan,
-                        title: "Microphone & Speech",
-                        detail: "Hear the room and transcribe it on-device.",
-                        granted: micAndSpeechGranted
+                        title: "Microphone",
+                        detail: "Hear the room and transcribe it with on-device Whisper.",
+                        granted: micGranted
                     )
                     permissionRow(
                         icon: "calendar",
@@ -60,7 +60,7 @@ struct PermissionsView: View {
                 Button(action: begin) {
                     HStack {
                         if requesting { ProgressView().tint(MynaTheme.void) }
-                        Text(micAndSpeechGranted ? "Enter Myna" : "Begin the Experience")
+                        Text(micGranted ? "Enter Myna" : "Begin the Experience")
                             .font(MynaTheme.display(16, weight: .bold))
                     }
                     .foregroundStyle(MynaTheme.void)
@@ -103,11 +103,11 @@ struct PermissionsView: View {
     private func begin() {
         requesting = true
         Task { @MainActor in
-            micAndSpeechGranted = await SpeechListener.requestPermissions()
+            micGranted = await AudioCaptureEngine.requestMicrophonePermission()
             calendarGranted = await pilot.scheduler.requestAccess()
             requesting = false
             // Calendar is optional; the microphone is the heart of the app.
-            if micAndSpeechGranted {
+            if micGranted {
                 onboarded = true
             }
         }

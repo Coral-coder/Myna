@@ -10,6 +10,7 @@
 		4D594E410000000000000016 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000013 /* MLXLLM */; };
 		4D594E410000000000000017 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000014 /* MLXLMCommon */; };
 		4D594E410000000000000018 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000015 /* MLX */; };
+		4D594E41000000000000001B /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001A /* WhisperKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 				4D594E410000000000000016 /* MLXLLM in Frameworks */,
 				4D594E410000000000000017 /* MLXLMCommon in Frameworks */,
 				4D594E410000000000000018 /* MLX in Frameworks */,
+				4D594E41000000000000001B /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -83,6 +85,7 @@
 				4D594E410000000000000013 /* MLXLLM */,
 				4D594E410000000000000014 /* MLXLMCommon */,
 				4D594E410000000000000015 /* MLX */,
+				4D594E41000000000000001A /* WhisperKit */,
 			);
 			productName = Myna;
 			productReference = 4D594E410000000000000001 /* Myna.app */;
@@ -115,6 +118,7 @@
 			packageReferences = (
 				4D594E410000000000000011 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				4D594E410000000000000012 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				4D594E410000000000000019 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D594E410000000000000005 /* Products */;
@@ -367,6 +371,14 @@
 				minimumVersion = 0.31.3;
 			};
 		};
+		4D594E410000000000000019 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -384,6 +396,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D594E410000000000000012 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLX;
+		};
+		4D594E41000000000000001A /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D594E410000000000000019 /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = WhisperKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
