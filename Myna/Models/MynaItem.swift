@@ -6,7 +6,6 @@ enum ItemSource: String, Codable {
     case voice          // "Myna, add milk…"
     case typed          // typed into the app
     case conversation   // picked up from a conversation note
-    case bee            // synced from a Bee wearable
     case siri           // App Shortcuts / Siri
 
     var icon: String {
@@ -14,14 +13,13 @@ enum ItemSource: String, Codable {
         case .voice: return "waveform"
         case .typed: return "keyboard"
         case .conversation: return "bubble.left.and.bubble.right"
-        case .bee: return "circle.hexagongrid.fill"
         case .siri: return "mic.circle"
         }
     }
 }
 
 /// A to-do, shopping item, reminder or memo. Lives in Myna's private store and
-/// is optionally mirrored to Apple Reminders and/or your Bee.
+/// is optionally mirrored to Apple Reminders.
 @Model
 final class MynaItem {
     var id: UUID = UUID()
@@ -37,8 +35,6 @@ final class MynaItem {
     var noteID: UUID?
     /// `EKReminder.calendarItemIdentifier` when mirrored to Apple Reminders.
     var reminderID: String?
-    /// The Bee todo id when synced with a Bee.
-    var beeTodoID: Int?
 
     init(kind: ItemKind, text: String, detail: String = "", dueDate: Date? = nil, source: ItemSource, noteID: UUID? = nil) {
         self.id = UUID()

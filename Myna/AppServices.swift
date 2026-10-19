@@ -13,7 +13,6 @@ final class AppServices {
     let listener: SpeechListener
     let pilot: ConversationPilot
     let brain: MynaBrain
-    let bee: BeeBridge
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
@@ -32,17 +31,12 @@ final class AppServices {
         listener = SpeechListener()
         pilot = ConversationPilot(listener: listener, modelManager: modelManager)
         brain = MynaBrain(listener: listener, modelManager: modelManager, pilot: pilot)
-        bee = BeeBridge()
 
         pilot.brain = brain
-        brain.bee = bee
-        bee.brain = brain
-        bee.pilot = pilot
 
         let context = container.mainContext
         pilot.attach(modelContext: context)
         brain.attach(modelContext: context)
-        bee.attach(modelContext: context)
 
         UNUserNotificationCenter.current().delegate = notificationPresenter
     }
@@ -55,10 +49,6 @@ final class AppServices {
             pilot.startListening()
         }
         pilot.drainQueue()
-        if bee.isConnected {
-            bee.startLive()
-            Task { await bee.refresh() }
-        }
     }
 }
 

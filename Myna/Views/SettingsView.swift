@@ -23,7 +23,6 @@ struct SettingsView: View {
                 assistantCard
                 listeningCard
                 automationCard
-                BeeCard()
                 privacyCard
                 aboutCard
             }
@@ -173,7 +172,7 @@ struct SettingsView: View {
             "Audio is never recorded to disk and never leaves this iPhone.",
             "Speech recognition runs with Apple's on-device engine.",
             "The AI runs locally — MLX on the GPU or Apple Intelligence — no cloud, no account.",
-            "The only network use is model downloads, plus Bee's API if you connect a Bee.",
+            "The only network use is the one-time model download.",
             "Notes and lists are stored in the app's private database; sharing is always your explicit choice.",
         ]
     }

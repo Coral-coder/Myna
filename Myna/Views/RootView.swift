@@ -111,6 +111,5 @@ struct RootView: View {
         .environmentObject(services.listener)
         .environmentObject(services.pilot)
         .environmentObject(services.brain)
-        .environmentObject(services.bee)
         .modelContainer(services.container)
 }

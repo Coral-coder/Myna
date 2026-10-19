@@ -149,12 +149,6 @@ final class ConversationPilot: ObservableObject {
         compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: "")
     }
 
-    /// Files a conversation heard somewhere else — e.g. by a Bee wearable.
-    func composeExternal(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
-        guard transcript.count > 40, !alreadyFiled(sourceRef) else { return }
-        compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
-    }
-
     private func compose(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
         let wasListening = listener.isListening
         phase = .composing
@@ -266,13 +260,6 @@ final class ConversationPilot: ObservableObject {
 
     private func refreshQueueCount() {
         queuedCount = (try? modelContext?.fetchCount(FetchDescriptor<PendingConversation>())) ?? 0
-    }
-
-    private func alreadyFiled(_ sourceRef: String) -> Bool {
-        guard !sourceRef.isEmpty, let modelContext else { return false }
-        let notes = FetchDescriptor<ConversationNote>(predicate: #Predicate { $0.sourceRef == sourceRef })
-        let queued = FetchDescriptor<PendingConversation>(predicate: #Predicate { $0.sourceRef == sourceRef })
-        return ((try? modelContext.fetchCount(notes)) ?? 0) > 0 || ((try? modelContext.fetchCount(queued)) ?? 0) > 0
     }
 
     private func scheduleEvents(in note: ConversationNote) {

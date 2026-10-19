@@ -12,13 +12,12 @@ import UIKit
 final class MynaBrain: ObservableObject {
 
     enum Origin {
-        case voice, typed, bee, siri
+        case voice, typed, siri
 
         var itemSource: ItemSource {
             switch self {
             case .voice: return .voice
             case .typed: return .typed
-            case .bee: return .bee
             case .siri: return .siri
             }
         }
@@ -36,7 +35,6 @@ final class MynaBrain: ObservableObject {
 
     let voice = VoiceReply()
     let reminders = ReminderCenter()
-    weak var bee: BeeBridge?
 
     var isWakeWordEnabled: Bool {
         UserDefaults.standard.object(forKey: "myna.wakeWord") as? Bool ?? true
@@ -53,9 +51,7 @@ final class MynaBrain: ObservableObject {
     private var modelContext: ModelContext?
     private var spotter = CommandSpotter()
     private var spotterTimer: Timer?
-    /// A Bee utterance that was only "Myna" — the command follows in the next one.
-    private var beeWakeCarry: Date?
-    /// Recently performed spoken commands; the phone and a Bee often hear the same words.
+    /// Recently performed spoken commands, so a repeated recognition never acts twice.
     private var recentCommands: [(key: String, at: Date)] = []
 
     init(listener: SpeechListener, modelManager: ModelManager, pilot: ConversationPilot) {
@@ -95,22 +91,6 @@ final class MynaBrain: ObservableObject {
 
     // MARK: - Entry points
 
-    /// A complete utterance heard by a Bee wearable.
-    func heardOnBee(_ text: String) {
-        guard isWakeWordEnabled else { return }
-        var commands = CommandParser.commandsFollowingWakeWord(in: text)
-        if commands.isEmpty, let carry = beeWakeCarry, Date.now.timeIntervalSince(carry) < 12 {
-            commands = [text]
-        }
-        beeWakeCarry = nil
-        if commands.last == "" {
-            beeWakeCarry = .now
-        }
-        for command in commands where !command.isEmpty {
-            run(command, origin: .bee)
-        }
-    }
-
     /// Typed into the "Ask Myna" field. Returns the reply.
     @discardableResult
     func handleTyped(_ text: String) async -> String {
@@ -130,7 +110,7 @@ final class MynaBrain: ObservableObject {
         Task { await perform(command, heard: text, origin: origin) }
     }
 
-    /// Carries out a command and answers. Used by voice, typing, Bee and Siri.
+    /// Carries out a command and answers. Used by voice, typing and Siri.
     @discardableResult
     func perform(_ command: MynaCommand, heard: String, origin: Origin) async -> String {
         let reply: String
@@ -185,8 +165,6 @@ final class MynaBrain: ObservableObject {
         switch origin {
         case .voice:
             voice.say(reply)
-        case .bee:
-            if listener.isListening { voice.say(reply) }
         case .typed, .siri:
             break
         }
@@ -214,7 +192,6 @@ final class MynaBrain: ObservableObject {
             modelContext.insert(item)
             reminders.scheduleAlert(for: item)
             reminders.mirror(item)
-            bee?.push(item)
             added.append(item)
         }
         try? modelContext.save()
@@ -230,14 +207,12 @@ final class MynaBrain: ObservableObject {
             reminders.scheduleAlert(for: item)
         }
         reminders.mirror(item)
-        bee?.push(item)
         try? modelContext?.save()
     }
 
     func delete(_ item: MynaItem) {
         reminders.cancelAlert(for: item)
         reminders.removeMirror(of: item)
-        bee?.remove(item)
         modelContext?.delete(item)
         try? modelContext?.save()
     }
@@ -514,10 +489,6 @@ final class MynaBrain: ObservableObject {
             "\(event.title ?? "Event") — \(event.startDate.formatted(date: .abbreviated, time: .shortened))"
         }
         if !events.isEmpty { lines.append("CALENDAR (next 7 days): " + events.joined(separator: "; ")) }
-
-        if let bee, !bee.facts.isEmpty {
-            lines.append("THINGS YOU KNOW ABOUT THE USER (from their Bee): " + bee.facts.prefix(25).joined(separator: "; "))
-        }
 
         if let modelContext {
             var descriptor = FetchDescriptor<ConversationNote>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])

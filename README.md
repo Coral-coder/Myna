@@ -6,8 +6,7 @@ Myna listens all day — to your meetings, your conversations and to you. It
 composes detailed notes with a local language model, keeps your to-do and
 shopping lists, sets reminders, puts plans on your calendar, and answers when
 you say "Myna, …". It's the half of your brain that was paying attention.
-Speech recognition and the AI run on the iPhone; nothing you say is uploaded
-(unless you connect a Bee, whose data already lives in Bee's cloud).
+Speech recognition and the AI run on the iPhone; nothing you say is uploaded.
 
 Named for the myna bird: a brilliant listener.
 
@@ -24,10 +23,9 @@ Named for the myna bird: a brilliant listener.
 | Auto-scheduling | The model extracts events being planned ("let's meet next Tuesday at 2"), resolves them to concrete dates, and EventKit puts them on your calendar with a 15-minute alert |
 | Apple Notes hand-off | Every note exports as rich text via the share sheet — choose **Notes** to file it in Apple Notes (Apple provides no direct write API; the share sheet is the sanctioned path) |
 | "Myna, …" voice commands | Say "Myna, add oat milk to the shopping list", "remind me to call Mom at 6", "schedule lunch with Alex Friday at noon", "what's on my calendar tomorrow?", "check off eggs" — understood instantly by an on-CPU parser (works with the phone locked) and answered out loud |
-| Ask anything | Anything the parser doesn't recognize goes to the language model with your lists, calendar, recent conversations (and Bee facts) as context; it answers and acts — adds items, sets reminders, schedules |
-| Lists | **Lists** tab: To-Do, Shopping, Reminders and Memos. Filled by voice, typing, Siri, your Bee, or automatically from conversations ("I'll send the deck tonight" → a to-do) |
+| Ask anything | Anything the parser doesn't recognize goes to the language model with your lists, calendar and recent conversations as context; it answers and acts — adds items, sets reminders, schedules |
+| Lists | **Lists** tab: To-Do, Shopping, Reminders and Memos. Filled by voice, typing, Siri, or automatically from conversations ("I'll send the deck tonight" → a to-do) |
 | Reminders that remind | Time-sensitive notifications at the due time (they break through Focus), mirrored to Apple Reminders so they reach your Watch and Mac |
-| Bee wearable | Connect a Bee in Backstage: Myna hears your Bee's live transcript (so "Myna, …" works when you talk to your Bee), turns finished Bee conversations into Myna notes, and syncs to-dos both ways |
 | Siri & Shortcuts | "Add to my Myna shopping list", "Remind me with Myna", "Ask Myna", "Start Myna" — also usable from the Action button |
 | Never drops a conversation | iOS forbids GPU work in the background on iPhone, so with an MLX model a conversation that ends while the phone is locked is queued and composed the moment Myna is opened; Apple Intelligence keeps composing while locked |
 | In-app model downloads | The **Neural Core** tab downloads pre-quantized weights straight from Hugging Face with live progress, stores them in Application Support (excluded from iCloud backup), and lets you delete or swap models any time |
@@ -78,9 +76,6 @@ Apple developer team for code signing.
    suggested).
 5. Say "Myna, add coffee to the shopping list." Have a conversation. Watch
    the note — and the to-dos you promised — appear.
-6. Optional: in the Bee app, enable Developer Mode (Settings → tap Version
-   five times), then **Backstage → Bee Wearable → Connect Bee** and approve
-   Myna on the page that opens.
 
 Every pull request is compiled by `.github/workflows/ios-build.yml` on a
 macOS 26 runner (no signing).
@@ -108,9 +103,6 @@ Myna/
     NotesEngine          Chunked condensation → structured JSON note + personal follow-through
     EventScheduler       EventKit calendar writer / reader
     ReminderCenter       Notifications + Apple Reminders mirror
-  Integrations/
-    Bee/                 Bee developer API client, pairing (NaCl box), live sync
-    Keychain             Token storage
   Intents/               Siri & Shortcuts
   Models/                SwiftData schema (ConversationNote, MynaItem, PendingConversation)
   Views/                 Dashboard, orb, notes, lists, Neural Core, settings, onboarding
@@ -134,8 +126,7 @@ Myna/
   composed by Apple Intelligence if it's on. If you swipe Myna away, iOS
   stops it; leave it running.
 - **Talking back:** recognition pauses while Myna speaks so it never
-  transcribes itself, and a command heard by both the phone and a Bee is only
-  carried out once.
+  transcribes itself.
 - **Battery & thermals:** continuous on-device recognition plus periodic LLM
   runs is a heavy duty cycle; expect meaningful battery use on an all-day
   session. The 1B model is offered specifically as a battery-saver scribe.
@@ -150,8 +141,7 @@ Myna/
 - Audio is processed in memory and never written to disk or uploaded.
 - Speech-to-text uses Apple's on-device engine exclusively.
 - The LLM runs locally (MLX or Apple Intelligence). Network traffic is limited
-  to model downloads from Hugging Face and — only if you connect one — Bee's
-  developer API.
+  to model downloads from Hugging Face.
 - Notes and lists live in the app's private SwiftData store. Calendar events
   and Apple Reminders entries are created only for things you asked for or
   agreed to, and both can be switched off in Backstage.

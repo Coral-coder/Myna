@@ -7,7 +7,6 @@ struct DashboardView: View {
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var modelManager: ModelManager
     @EnvironmentObject private var brain: MynaBrain
-    @EnvironmentObject private var bee: BeeBridge
 
     @Query private var allNotes: [ConversationNote]
     @State private var question = ""
@@ -120,23 +119,12 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var statusChips: some View {
-        if pilot.queuedCount > 0 || bee.isConnected {
-            HStack(spacing: 8) {
-                if pilot.queuedCount > 0 {
-                    GlowChip(
-                        text: "\(pilot.queuedCount) waiting to compose",
-                        icon: "hourglass",
-                        tint: MynaTheme.gold
-                    )
-                }
-                if bee.isConnected {
-                    GlowChip(
-                        text: bee.isLive ? "Bee live" : "Bee connected",
-                        icon: "circle.hexagongrid.fill",
-                        tint: bee.isLive ? MynaTheme.mint : MynaTheme.cyan
-                    )
-                }
-            }
+        if pilot.queuedCount > 0 {
+            GlowChip(
+                text: "\(pilot.queuedCount) waiting to compose",
+                icon: "hourglass",
+                tint: MynaTheme.gold
+            )
         }
     }
 

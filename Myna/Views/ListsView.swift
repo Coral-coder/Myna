@@ -241,10 +241,6 @@ private struct ItemRow: View {
                     }
                     Label(sourceLabel, systemImage: item.source.icon)
                         .foregroundStyle(.white.opacity(0.4))
-                    if item.beeTodoID != nil {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .foregroundStyle(MynaTheme.cyan.opacity(0.7))
-                    }
                 }
                 .font(.system(size: 11, design: .rounded))
                 .labelStyle(.titleAndIcon)
@@ -274,7 +270,6 @@ private struct ItemRow: View {
         case .voice: return "Said"
         case .typed: return "Typed"
         case .conversation: return "Heard"
-        case .bee: return "Bee"
         case .siri: return "Siri"
         }
     }
