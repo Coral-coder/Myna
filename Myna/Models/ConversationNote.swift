@@ -46,6 +46,14 @@ final class ConversationNote {
     var followUps: [String] = []
     var transcript: String = ""
     var modelName: String = ""
+    /// Where the conversation was heard: "" for this iPhone's microphone.
+    var sourceRef: String = ""
+    /// Where it happened ("Home", or a geocoded name if you allowed that); "" when unknown.
+    var placeName: String = ""
+    /// Contacts who came up, as "Alex Chen (Product Lead, Acme)".
+    var people: [String] = []
+    /// Photos taken during the conversation (PhotoKit local identifiers).
+    var photoIdentifiers: [String] = []
 
     init(
         startedAt: Date,
@@ -59,7 +67,8 @@ final class ConversationNote {
         detectedEvents: [DetectedEvent],
         followUps: [String],
         transcript: String,
-        modelName: String
+        modelName: String,
+        sourceRef: String = ""
     ) {
         self.id = UUID()
         self.createdAt = .now
@@ -75,6 +84,7 @@ final class ConversationNote {
         self.followUps = followUps
         self.transcript = transcript
         self.modelName = modelName
+        self.sourceRef = sourceRef
     }
 
     var durationMinutes: Int {
@@ -88,6 +98,8 @@ final class ConversationNote {
         lines.append("")
         let range = "\(startedAt.formatted(date: .abbreviated, time: .shortened)) – \(endedAt.formatted(date: .omitted, time: .shortened))"
         lines.append("🕑 \(range)  ·  composed on-device by Myna")
+        if !placeName.isEmpty { lines.append("📍 \(placeName)") }
+        if !people.isEmpty { lines.append("👥 \(people.joined(separator: ", "))") }
         lines.append("")
         if !overview.isEmpty {
             lines.append("Overview")

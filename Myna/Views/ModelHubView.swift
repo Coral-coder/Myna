@@ -33,7 +33,7 @@ struct ModelHubView: View {
             Text("Neural Core")
                 .font(MynaTheme.display(24, weight: .bold))
                 .auroraText()
-            Text("Choose the mind that takes your notes. Weights download once from Hugging Face, then run on this iPhone's GPU — offline, private, yours.")
+            Text("Choose the mind behind Myna. Apple Intelligence is built in; the others download once from Hugging Face and run on this iPhone's GPU — offline, private, yours.")
                 .font(.system(size: 13, design: .rounded))
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
@@ -91,8 +91,19 @@ private struct ModelCard: View {
 
             HStack(spacing: 8) {
                 GlowChip(text: model.parameters, icon: "memorychip", tint: MynaTheme.cyan)
-                GlowChip(text: String(format: "%.1f GB download", model.downloadGB), icon: "arrow.down", tint: MynaTheme.mint)
-                GlowChip(text: String(format: "~%.1f GB RAM", model.peakRAMGB), icon: "gauge.with.needle", tint: MynaTheme.magenta)
+                if model.backend == .appleFoundation {
+                    GlowChip(text: "No download", icon: "checkmark.seal", tint: MynaTheme.mint)
+                    GlowChip(text: "Works when locked", icon: "lock.fill", tint: MynaTheme.magenta)
+                } else {
+                    GlowChip(text: String(format: "%.1f GB download", model.downloadGB), icon: "arrow.down", tint: MynaTheme.mint)
+                    GlowChip(text: String(format: "~%.1f GB RAM", model.peakRAMGB), icon: "gauge.with.needle", tint: MynaTheme.magenta)
+                }
+            }
+
+            if !model.fitsThisDevice {
+                Label("Built for iPhones with \(Int(model.minimumDeviceRAMGB)) GB of memory — this one may run out.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(MynaTheme.gold)
             }
 
             actionRow
@@ -145,23 +156,25 @@ private struct ModelCard: View {
                     }
                 }
                 Spacer()
-                Button(role: .destructive) {
-                    modelManager.delete(model)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.red.opacity(0.8))
+                if model.backend == .mlx {
+                    Button(role: .destructive) {
+                        modelManager.delete(model)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red.opacity(0.8))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
 
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Text(message)
                     .font(.system(size: 11, design: .rounded))
-                    .foregroundStyle(.red.opacity(0.9))
+                    .foregroundStyle(model.backend == .appleFoundation ? MynaTheme.gold : .red.opacity(0.9))
                     .lineLimit(3)
-                actionButton("Retry", icon: "arrow.clockwise", gradient: false) {
+                actionButton(model.backend == .appleFoundation ? "Check Again" : "Retry", icon: "arrow.clockwise", gradient: false) {
                     modelManager.downloadAndLoad(model)
                 }
             }
@@ -191,6 +204,8 @@ private struct ModelCard: View {
         case .recommended: return "crown.fill"
         case .fastest: return "hare.fill"
         case .maxQuality: return "brain.fill"
+        case .mostPowerful: return "bolt.horizontal.fill"
+        case .builtIn: return "apple.logo"
         }
     }
 
@@ -199,6 +214,8 @@ private struct ModelCard: View {
         case .recommended: return MynaTheme.gold
         case .fastest: return MynaTheme.mint
         case .maxQuality: return MynaTheme.magenta
+        case .mostPowerful: return MynaTheme.cyan
+        case .builtIn: return MynaTheme.mint
         }
     }
 }

@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Opening night: a guided tour through the three permissions Myna needs,
-/// shown once on first launch.
+/// Opening night: a guided tour through the permissions Myna needs, shown
+/// once on first launch.
 struct PermissionsView: View {
     @Binding var onboarded: Bool
     @EnvironmentObject private var pilot: ConversationPilot
+    @EnvironmentObject private var brain: MynaBrain
     @State private var micAndSpeechGranted = false
     @State private var calendarGranted = false
+    @State private var remindersGranted = false
     @State private var requesting = false
 
     var body: some View {
@@ -24,7 +26,7 @@ struct PermissionsView: View {
                     Text("Welcome to MYNA")
                         .font(MynaTheme.display(28, weight: .heavy))
                         .auroraText()
-                    Text("A listener that turns your day's conversations\ninto beautiful notes — entirely on this iPhone.")
+                    Text("A second brain that listens for you — notes,\nlists, reminders and plans, all on this iPhone.")
                         .font(.system(size: 14, design: .rounded))
                         .foregroundStyle(.white.opacity(0.65))
                         .multilineTextAlignment(.center)
@@ -44,6 +46,13 @@ struct PermissionsView: View {
                         title: "Calendar",
                         detail: "Schedule the meetings you agree to out loud.",
                         granted: calendarGranted
+                    )
+                    permissionRow(
+                        icon: "bell.badge.fill",
+                        tint: MynaTheme.gold,
+                        title: "Reminders & Alerts",
+                        detail: "Nudge you at the right moment, and sync your lists.",
+                        granted: remindersGranted
                     )
                     permissionRow(
                         icon: "lock.shield.fill",
@@ -105,6 +114,9 @@ struct PermissionsView: View {
         Task { @MainActor in
             micAndSpeechGranted = await SpeechListener.requestPermissions()
             calendarGranted = await pilot.scheduler.requestAccess()
+            let alerts = await brain.reminders.requestNotificationAccess()
+            let reminders = await brain.reminders.requestRemindersAccess()
+            remindersGranted = alerts || reminders
             requesting = false
             // Calendar is optional; the microphone is the heart of the app.
             if micAndSpeechGranted {

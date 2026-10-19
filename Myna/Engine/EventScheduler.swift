@@ -45,6 +45,13 @@ final class EventScheduler {
         return ekEvent.eventIdentifier
     }
 
+    /// Events on the calendar from `start` for `days` days, soonest first.
+    func events(from start: Date, days: Int) -> [EKEvent] {
+        guard hasAccess, let end = Calendar.current.date(byAdding: .day, value: days, to: start) else { return [] }
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
+    }
+
     enum SchedulerError: LocalizedError {
         case noAccess
         case unresolvedDate

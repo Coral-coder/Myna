@@ -1,0 +1,68 @@
+name: iOS build
+
+# Compiles Myna for iOS on every pull request so a broken build never reaches
+# main. No signing — this only proves the code builds with Xcode 26.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 or later
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::No Xcode 26+ on this runner:"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+
+      # MLX compiles Metal kernels; Xcode 26 ships the Metal toolchain separately.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download failed"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild -project Myna.xcodeproj -scheme Myna -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build > build.log 2>&1 || {
+              echo "::group::Errors"
+              grep -E ': error: ' build.log | sort -u | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+              echo "::endgroup::"
+              tail -80 build.log
+              exit 1
+            }
+          grep -E ': warning: ' build.log | grep '/Myna/' | sort -u | head -40 || true
+          echo "Build succeeded."
+
+  unit-tests:
+    # Platform-free logic (parsing, context matching, device protocols) is
+    # symlinked into a SwiftPM package under Tests/ and tested here.
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 or later
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$xcode/Contents/Developer"
+
+      - name: Test
+        run: swift test --package-path Tests

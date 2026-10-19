@@ -7,7 +7,17 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Myna transcribes speech using Apple&apos;s on-device speech recognition. Transcripts stay on this iPhone and are never uploaded.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation.</string>
+	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation, and tell you what&apos;s on your calendar when you ask.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Myna mirrors your to-dos, reminders and shopping list into Apple Reminders so they show up on your Watch and other devices.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>When you turn on Places, Myna notes where each conversation happened, using places you&apos;ve named like Home or Work. Your location stays on this iPhone unless you also turn on naming places with Apple Maps.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>When you turn on Contacts, Myna recognizes people mentioned in your conversations so it spells their names right in notes and calendar events. It reads names, company and job title only, on this iPhone.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>When you turn on Health, Myna can answer questions about your sleep, steps, resting heart rate and workouts. It only reads, only when you ask, and never stores or uploads your health data.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>When you turn on Photos, Myna attaches photos you take during a conversation to its note and reads text from whiteboards and slides on this iPhone. Photos are never uploaded.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

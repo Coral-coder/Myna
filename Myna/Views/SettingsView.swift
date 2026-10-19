@@ -5,6 +5,12 @@ struct SettingsView: View {
     @AppStorage("myna.silenceThreshold") private var silenceThreshold: Double = 90
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
+    @AppStorage("myna.alwaysOn") private var alwaysOn = true
+    @AppStorage("myna.wakeWord") private var wakeWord = true
+    @AppStorage("myna.speakReplies") private var speakReplies = true
+    @AppStorage("myna.autoCapture") private var autoCapture = true
+    @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
+    @AppStorage("myna.userName") private var userName = ""
 
     var body: some View {
         ScrollView {
@@ -14,8 +20,10 @@ struct SettingsView: View {
                     .auroraText()
                     .padding(.top, 16)
 
+                assistantCard
                 listeningCard
                 automationCard
+                ContextCard()
                 privacyCard
                 aboutCard
             }
@@ -23,6 +31,65 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var assistantCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeading(icon: "person.wave.2.fill", title: "Assistant", tint: MynaTheme.cyan)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Your name").settingsLabel()
+                TextField("So Myna knows which tasks are yours", text: $userName)
+                    .font(.system(size: 14, design: .rounded))
+                    .foregroundStyle(.white)
+                    .textContentType(.givenName)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+            }
+
+            Toggle(isOn: $alwaysOn) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Always on").settingsLabel()
+                    Text("Start listening whenever Myna opens and resume after calls. iOS stops Myna if you swipe it away, so leave it running.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $wakeWord) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Answer to “Myna”").settingsLabel()
+                    Text("Say “Myna, …” to add to lists, set reminders, schedule things or ask a question.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $speakReplies) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Talk back").settingsLabel()
+                    Text("Myna answers out loud. Download a Premium voice in Settings → Accessibility → Spoken Content for the most natural sound.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $autoCapture) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Catch things in conversation").settingsLabel()
+                    Text("Tasks you commit to, things to buy and times to be reminded go straight to your lists.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $mirrorReminders) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Mirror to Apple Reminders").settingsLabel()
+                    Text("To-dos, reminders and shopping also appear in Reminders, on your Watch and Mac.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
     }
 
     private var listeningCard: some View {
@@ -105,9 +172,11 @@ struct SettingsView: View {
         [
             "Audio is never recorded to disk and never leaves this iPhone.",
             "Speech recognition runs with Apple's on-device engine.",
-            "The AI model runs locally on the GPU — no cloud, no account.",
-            "The only network use is the one-time model download.",
-            "Notes are stored in the app's private database; sharing is always your explicit choice.",
+            "The AI runs locally — MLX on the GPU or Apple Intelligence — no cloud, no account.",
+            "The only network use is the one-time model download — plus Apple Maps place names, only if you turn that on.",
+            "Contacts, Health, Photos and Places are each off until you switch them on, and are read only on this iPhone.",
+            "Saved places are kept in the Keychain, on this device only.",
+            "Notes and lists are stored in the app's private database; sharing is always your explicit choice.",
         ]
     }
 
@@ -117,7 +186,7 @@ struct SettingsView: View {
                 .font(MynaTheme.display(16, weight: .heavy))
                 .tracking(8)
                 .auroraText()
-            Text("Your on-device conversation scribe.\nNamed for the myna bird — a brilliant listener.")
+            Text("Your on-device second brain.\nNamed for the myna bird — a brilliant listener.")
                 .settingsCaption()
                 .multilineTextAlignment(.center)
         }

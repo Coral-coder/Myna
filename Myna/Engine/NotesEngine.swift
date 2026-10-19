@@ -15,6 +15,15 @@ final class NotesEngine {
         var action_items: [RawActionItem]?
         var events: [RawEvent]?
         var follow_ups: [String]?
+        var my_tasks: [String]?
+        var shopping_items: [String]?
+        var reminders: [RawReminder]?
+
+        struct RawReminder: Codable {
+            var text: String
+            var at: String?
+            var as_heard: String?
+        }
 
         struct RawActionItem: Codable {
             var task: String
@@ -33,18 +42,31 @@ final class NotesEngine {
         }
     }
 
+    /// A finished note plus the personal follow-through Myna picked up for
+    /// your lists.
+    struct Result {
+        var note: ConversationNote
+        var myTasks: [String]
+        var shoppingItems: [String]
+        var reminders: [(text: String, at: Date?)]
+    }
+
     private let modelManager: ModelManager
-    private let chunkCharacterLimit = 6000
 
     init(modelManager: ModelManager) {
         self.modelManager = modelManager
     }
 
+    /// The user's name, so the model can tell their commitments from everyone else's.
+    private var userName: String {
+        UserDefaults.standard.string(forKey: "myna.userName")?.trimmingCharacters(in: .whitespaces) ?? ""
+    }
+
     // MARK: - Public API
 
-    func composeNote(transcript: String, startedAt: Date, endedAt: Date) async throws -> ConversationNote {
+    func composeNote(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String = "", context: NoteContext = .empty) async throws -> Result {
         let condensed = try await condenseIfNeeded(transcript)
-        let composed = try await composeStructuredNote(from: condensed, startedAt: startedAt)
+        let composed = try await composeStructuredNote(from: condensed, startedAt: startedAt, context: context)
 
         let events = (composed.events ?? []).map { raw -> DetectedEvent in
             DetectedEvent(
@@ -53,7 +75,7 @@ final class NotesEngine {
                 rawWhen: raw.as_heard ?? raw.start ?? "time not specified",
                 durationMinutes: raw.duration_minutes,
                 location: raw.location,
-                attendees: raw.attendees ?? [],
+                attendees: (raw.attendees ?? []).map(context.resolveAttendee),
                 confidence: raw.confidence
             )
         }
@@ -64,7 +86,7 @@ final class NotesEngine {
 
         let modelName = await MainActor.run { modelManager.activeModel?.displayName ?? "Local model" }
 
-        return ConversationNote(
+        let note = ConversationNote(
             startedAt: startedAt,
             endedAt: endedAt,
             title: composed.title.isEmpty ? "Conversation" : composed.title,
@@ -76,13 +98,27 @@ final class NotesEngine {
             detectedEvents: events,
             followUps: composed.follow_ups ?? [],
             transcript: transcript,
-            modelName: modelName
+            modelName: modelName,
+            sourceRef: sourceRef
+        )
+        note.placeName = context.place
+        note.people = context.people.map(\.summary)
+        note.photoIdentifiers = context.photoIdentifiers
+        let reminders = (composed.reminders ?? []).map { raw in
+            (text: raw.text, at: Self.resolveDate(iso: raw.at, phrase: raw.as_heard, reference: endedAt))
+        }
+        return Result(
+            note: note,
+            myTasks: (composed.my_tasks ?? []).filter { !$0.isEmpty },
+            shoppingItems: (composed.shopping_items ?? []).filter { !$0.isEmpty },
+            reminders: reminders.filter { !$0.text.isEmpty }
         )
     }
 
     // MARK: - Stage 1: condense long transcripts
 
     private func condenseIfNeeded(_ transcript: String) async throws -> String {
+        let chunkCharacterLimit = await MainActor.run { modelManager.promptCharacterBudget }
         guard transcript.count > chunkCharacterLimit else { return transcript }
 
         let chunks = Self.split(transcript, limit: chunkCharacterLimit)
@@ -108,10 +144,15 @@ final class NotesEngine {
 
     // MARK: - Stage 2: structured note
 
-    private func composeStructuredNote(from material: String, startedAt: Date) async throws -> ComposedNote {
+    private func composeStructuredNote(from material: String, startedAt: Date, context: NoteContext) async throws -> ComposedNote {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, yyyy-MM-dd 'at' HH:mm"
         let now = formatter.string(from: startedAt)
+        let owner = userName.isEmpty ? "the phone's owner (the person wearing Myna)" : "\(userName), the phone's owner"
+        let budget = await MainActor.run { modelManager.promptCharacterBudget }
+        // Keep the final pass inside the model's window even after condensing.
+        let fitted = material.count > budget * 2 ? String(material.suffix(budget * 2)) : material
+        let contextBlock = context.promptBlock(budget: max(400, budget / 3))
 
         let instructions = """
         You are Myna, an expert personal meeting scribe living on the user's iPhone. \
@@ -124,8 +165,8 @@ final class NotesEngine {
         The conversation below took place on \(now) (the user's local time).
 
         CONVERSATION MATERIAL:
-        \(material)
-
+        \(fitted)
+        \(contextBlock.isEmpty ? "" : "\n" + contextBlock + "\n")
         Produce a JSON object with exactly these keys:
         {
           "title": "short, vivid title for this conversation",
@@ -135,12 +176,17 @@ final class NotesEngine {
           "decisions": ["decisions that were made, empty array if none"],
           "action_items": [{"task": "...", "owner": "person responsible or null", "due": "deadline as spoken or null"}],
           "events": [{"title": "...", "start": "ISO 8601 local datetime like 2026-06-12T14:00, resolved from phrases like 'next Tuesday at 2' using the conversation date above; null if you cannot resolve it", "as_heard": "the scheduling phrase as spoken", "duration_minutes": 60, "location": "or null", "attendees": ["names"], "confidence": 0.9}],
-          "follow_ups": ["open questions or things to revisit"]
+          "follow_ups": ["open questions or things to revisit"],
+          "my_tasks": ["things \(owner) personally said they will do or must do, phrased as short to-dos"],
+          "shopping_items": ["anything \(owner) needs to buy or pick up, one item per entry"],
+          "reminders": [{"text": "what \(owner) should be reminded of", "at": "ISO 8601 local datetime or null", "as_heard": "the time phrase as spoken or null"}]
         }
 
         Only include events that are genuinely being planned or agreed (meetings, calls, \
         appointments) — not past events or hypotheticals. If the transcript is small talk \
-        with nothing substantive, still write an accurate title, overview and notes.
+        with nothing substantive, still write an accurate title, overview and notes. \
+        my_tasks, shopping_items and reminders are only for \(owner) — leave them empty \
+        rather than guessing.
 
         JSON:
         """
