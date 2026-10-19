@@ -6,6 +6,9 @@ import SwiftUI
 /// with a key Myna doesn't hold.
 struct BraceletCard: View {
     @EnvironmentObject private var bee: BeeManager
+    @State private var brightness: Double = 128
+    @State private var editingBrightness = false
+    private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -33,11 +36,67 @@ struct BraceletCard: View {
                     detailRow(icon: "number", text: "Device \(bee.deviceID.prefix(8))")
                 }
                 pairingDetail
+                if bee.isReadyForControl { controlsSection }
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(glow: MynaTheme.cyan)
+    }
+
+    private var controlsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Divider().overlay(.white.opacity(0.1))
+            HStack {
+                Text("Controls").braceletLabel()
+                Spacer()
+                Button { bee.refreshStatus() } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 13))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MynaTheme.cyan)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Brightness").braceletCaption()
+                    Spacer()
+                    Text("\(Int(brightness))").braceletCaption()
+                }
+                Slider(value: $brightness, in: 0...255, step: 1) { editing in
+                    editingBrightness = editing
+                    if !editing { bee.setBrightness(Int(brightness)) }
+                }
+                .tint(MynaTheme.cyan)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Audio bitrate").braceletCaption()
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { bee.bitrate ?? bitrateOptions[2] },
+                        set: { bee.setBitrate($0) }
+                    )) {
+                        ForEach(bitrateOptions, id: \.self) { rate in
+                            Text("\(rate / 1000) kbps").tag(rate)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(MynaTheme.cyan)
+                }
+            }
+
+            if let txPower = bee.txPower {
+                detailRow(icon: "antenna.radiowaves.left.and.right", text: "Transmit power: \(txPower)")
+            }
+        }
+        .onChange(of: bee.brightness) { _, value in
+            if let value, !editingBrightness { brightness = Double(value) }
+        }
+        .onAppear {
+            if let value = bee.brightness { brightness = Double(value) }
+        }
     }
 
     private var statusRow: some View {

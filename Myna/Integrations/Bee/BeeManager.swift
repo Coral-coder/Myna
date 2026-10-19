@@ -34,6 +34,9 @@ final class BeeManager: ObservableObject {
     @Published private(set) var deviceState: BeeDeviceState?
     @Published private(set) var codec: BeeCodec?
     @Published private(set) var packetsDecoded = 0
+    @Published private(set) var brightness: Int?
+    @Published private(set) var bitrate: Int?
+    @Published private(set) var txPower: Int?
 
     var isEnabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
     private static let enabledKey = "myna.bee.enabled"
@@ -87,6 +90,60 @@ final class BeeManager: ObservableObject {
         pairing = .scanning
         central.activate()
         central.startScan()
+    }
+
+    // MARK: - Direct control
+    //
+    // Driving the bracelet's own settings. These need a connected device; each
+    // write is followed by the matching read so the published value reflects
+    // what the bracelet actually accepted.
+
+    /// Command id for the brightness setter. The 0xC016 opcode is documented;
+    /// confirm the payload on the device.
+    private static let setBrightnessCommand: UInt16 = 0xC016
+
+    /// Screen/LED brightness, 0–255.
+    func setBrightness(_ value: Int) {
+        guard isReadyForControl else { return }
+        let byte = UInt8(max(0, min(255, value)))
+        central.writeControl(BeeProtocol.frame(Self.setBrightnessCommand, payload: [byte]))
+        central.writeControl(BeeCommand.getBrightness.frame(payload: [0x01]))
+    }
+
+    /// Audio bitrate in bits per second (sent as int32 little-endian, matching
+    /// the GetBitrate reply).
+    func setBitrate(_ value: Int) {
+        guard isReadyForControl, value > 0 else { return }
+        let v = UInt32(value)
+        let payload: [UInt8] = [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)]
+        central.writeControl(BeeCommand.setBitrate.frame(payload: payload))
+        central.writeControl(BeeCommand.getBitrate.frame())
+    }
+
+    /// Bluetooth transmit power (device-defined units).
+    func setTxPower(_ value: Int) {
+        guard isReadyForControl else { return }
+        central.writeControl(BeeCommand.setTxPower.frame(payload: [UInt8(max(0, min(255, value)))]))
+        central.writeControl(BeeCommand.getTxLevel.frame())
+    }
+
+    /// Re-read everything the bracelet reports.
+    func refreshStatus() {
+        guard isReadyForControl else { return }
+        central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
+        central.writeControl(BeeCommand.getBrightness.frame(payload: [0x01]))
+        central.writeControl(BeeCommand.getBitrate.frame())
+        central.writeControl(BeeCommand.getDeviceState.frame())
+        central.writeControl(BeeCommand.getTxLevel.frame())
+        central.writeControl(BeeCommand.getFirmwareVersion.frame())
+    }
+
+    /// A connected, provisioned bracelet that can take control commands.
+    var isReadyForControl: Bool {
+        switch pairing {
+        case .streaming, .audioUnavailable: return true
+        default: return false
+        }
     }
 
     private func reset() {
@@ -148,6 +205,9 @@ final class BeeManager: ObservableObject {
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
         central.writeControl(BeeCommand.getFirmwareVersion.frame())
+        central.writeControl(BeeCommand.getBrightness.frame(payload: [0x01]))
+        central.writeControl(BeeCommand.getBitrate.frame())
+        central.writeControl(BeeCommand.getTxLevel.frame())
     }
 
     private func handleDeviceState(state: BeeDeviceState, codec: BeeCodec) {
@@ -275,7 +335,13 @@ extension BeeManager: BeeCentralDelegate {
             isCharging = charging
         case .firmwareVersion(let major, let minor, let patch):
             firmware = "\(major).\(minor).\(patch)"
-        case .bitrate, .brightness, .deviceID, .txLevel, .txPower:
+        case .brightness(let value):
+            brightness = value
+        case .bitrate(let value):
+            bitrate = value
+        case .txLevel(let value), .txPower(let value):
+            txPower = value
+        case .deviceID:
             break
         }
     }
