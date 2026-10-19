@@ -47,9 +47,10 @@ struct BeeAudioDecryptor {
 
         var output = Data(count: ciphertext.count)
         var moved = 0
+        let outputCount = output.count
         let status = output.withUnsafeMutableBytes { outBytes in
             ciphertext.withUnsafeBytes { inBytes in
-                CCCryptorUpdate(cryptor, inBytes.baseAddress, ciphertext.count, outBytes.baseAddress, output.count, &moved)
+                CCCryptorUpdate(cryptor, inBytes.baseAddress, ciphertext.count, outBytes.baseAddress, outputCount, &moved)
             }
         }
         guard status == kCCSuccess else { throw DecryptError.cryptorFailed(status) }

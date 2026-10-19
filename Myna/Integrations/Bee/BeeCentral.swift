@@ -41,10 +41,11 @@ final class BeeCentral: NSObject, ObservableObject {
     private var controlCharacteristic: CBCharacteristic?
     private var audioCharacteristic: CBCharacteristic?
 
-    private let serviceUUID = CBUUID(string: BeeProtocol.serviceUUID)
-    private let advertisedUUID = CBUUID(string: BeeProtocol.advertisedServiceShort)
-    private let controlUUID = CBUUID(string: BeeProtocol.controlCharacteristicUUID)
-    private let audioUUID = CBUUID(string: BeeProtocol.audioCharacteristicUUID)
+    // Type-level so the nonisolated CoreBluetooth delegate callbacks can read them.
+    private static let serviceUUID = CBUUID(string: BeeProtocol.serviceUUID)
+    private static let advertisedUUID = CBUUID(string: BeeProtocol.advertisedServiceShort)
+    private static let controlUUID = CBUUID(string: BeeProtocol.controlCharacteristicUUID)
+    private static let audioUUID = CBUUID(string: BeeProtocol.audioCharacteristicUUID)
 
     private static let restoreIdentifier = "com.lightwave.myna.bee.central"
     /// Remember the paired bracelet so we can reconnect without scanning.
@@ -70,7 +71,7 @@ final class BeeCentral: NSObject, ObservableObject {
         guard let manager, manager.state == .poweredOn else { return }
         if reconnectKnownPeripheral() { return }
         phase = .scanning
-        manager.scanForPeripherals(withServices: [advertisedUUID, serviceUUID], options: nil)
+        manager.scanForPeripherals(withServices: [Self.advertisedUUID, Self.serviceUUID], options: nil)
     }
 
     func stopScan() {
@@ -134,7 +135,7 @@ extension BeeCentral: CBCentralManagerDelegate {
                 peripheral.delegate = self
                 discoveredName = peripheral.name
                 phase = peripheral.state == .connected ? .discovering : .connecting
-                if peripheral.state == .connected { peripheral.discoverServices([serviceUUID]) }
+                if peripheral.state == .connected { peripheral.discoverServices([Self.serviceUUID]) }
             }
         }
     }
@@ -150,7 +151,7 @@ extension BeeCentral: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             phase = .discovering
-            peripheral.discoverServices([serviceUUID])
+            peripheral.discoverServices([Self.serviceUUID])
             delegate?.beeCentralDidConnect(self)
         }
     }
@@ -179,11 +180,11 @@ extension BeeCentral: CBCentralManagerDelegate {
 extension BeeCentral: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
-            guard let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
+            guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
                 phase = .idle
                 return
             }
-            peripheral.discoverCharacteristics([controlUUID, audioUUID], for: service)
+            peripheral.discoverCharacteristics([Self.controlUUID, Self.audioUUID], for: service)
         }
     }
 
@@ -191,10 +192,10 @@ extension BeeCentral: CBPeripheralDelegate {
         Task { @MainActor in
             for characteristic in service.characteristics ?? [] {
                 switch characteristic.uuid {
-                case controlUUID:
+                case Self.controlUUID:
                     controlCharacteristic = characteristic
                     peripheral.setNotifyValue(true, for: characteristic)
-                case audioUUID:
+                case Self.audioUUID:
                     audioCharacteristic = characteristic
                     peripheral.setNotifyValue(true, for: characteristic)
                 default:
@@ -210,8 +211,8 @@ extension BeeCentral: CBPeripheralDelegate {
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let value = characteristic.value else { return }
-        let isControl = characteristic.uuid == controlUUID
-        let isAudio = characteristic.uuid == audioUUID
+        let isControl = characteristic.uuid == Self.controlUUID
+        let isAudio = characteristic.uuid == Self.audioUUID
         Task { @MainActor in
             if isControl {
                 delegate?.beeCentral(self, didReceiveControl: value)
