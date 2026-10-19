@@ -1,0 +1,138 @@
+name: TestFlight
+
+# Archives Myna for the App Store and uploads it to TestFlight.
+#
+# Run it from the Actions tab ("Run workflow") on main. Signing is automatic:
+# xcodebuild uses an App Store Connect API key to create or refresh the
+# distribution certificate and provisioning profile in the cloud, so no
+# certificates live in this repository. Required repository secrets:
+#
+#   APP_STORE_CONNECT_KEY_ID      Key ID of an App Store Connect API key
+#   APP_STORE_CONNECT_ISSUER_ID   Issuer ID shown above the key list
+#   APP_STORE_CONNECT_KEY         Contents of the AuthKey_XXXXXXXXXX.p8 file
+#
+# The key needs the Admin role (cloud-managed distribution certificates
+# require it), and an app record for com.lightwave.myna must already exist
+# in App Store Connect.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Build number (leave empty to use this workflow's run number)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      ASC_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+      BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+    steps:
+      - name: Check secrets
+        run: |
+          missing=""
+          [ -n "$ASC_KEY_ID" ] || missing="$missing APP_STORE_CONNECT_KEY_ID"
+          [ -n "$ASC_ISSUER_ID" ] || missing="$missing APP_STORE_CONNECT_ISSUER_ID"
+          [ -n "$ASC_KEY" ] || missing="$missing APP_STORE_CONNECT_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 or later
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::No Xcode 26+ on this runner:"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download failed"
+
+      - name: Install the API key
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          KEY_PATH="$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s\n' "$ASC_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Myna.xcodeproj -scheme Myna -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
+            -skipMacroValidation -skipPackagePluginValidation \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            > archive.log 2>&1 || {
+              grep -E ': error: |error:' archive.log | sort -u | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+              tail -80 archive.log
+              exit 1
+            }
+          echo "Archived build $BUILD_NUMBER."
+
+      - name: Upload to TestFlight
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>9BQDEVHKJZ</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee export.log
+          echo "### Uploaded Myna build $BUILD_NUMBER to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
+          echo "It appears in TestFlight once Apple finishes processing (usually 5–30 minutes)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-logs
+          path: |
+            archive.log
+            export.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"
