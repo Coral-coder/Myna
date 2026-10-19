@@ -23,6 +23,7 @@ struct SettingsView: View {
                 assistantCard
                 listeningCard
                 automationCard
+                ContextCard()
                 privacyCard
                 aboutCard
             }
@@ -172,7 +173,9 @@ struct SettingsView: View {
             "Audio is never recorded to disk and never leaves this iPhone.",
             "Speech recognition runs with Apple's on-device engine.",
             "The AI runs locally — MLX on the GPU or Apple Intelligence — no cloud, no account.",
-            "The only network use is the one-time model download.",
+            "The only network use is the one-time model download — plus Apple Maps place names, only if you turn that on.",
+            "Contacts, Health, Photos and Places are each off until you switch them on, and are read only on this iPhone.",
+            "Saved places are kept in the Keychain, on this device only.",
             "Notes and lists are stored in the app's private database; sharing is always your explicit choice.",
         ]
     }

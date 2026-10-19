@@ -15,6 +15,18 @@ struct NoteDetailView: View {
             VStack(alignment: .leading, spacing: 18) {
                 hero
 
+                if !note.people.isEmpty {
+                    section(icon: "person.2.fill", title: "People", tint: MynaTheme.gold) {
+                        bulletList(note.people, bullet: "•", tint: MynaTheme.gold)
+                    }
+                }
+
+                if !note.photoIdentifiers.isEmpty {
+                    section(icon: "photo.on.rectangle", title: "Photos", tint: MynaTheme.gold) {
+                        NotePhotoStrip(identifiers: note.photoIdentifiers)
+                    }
+                }
+
                 if !note.overview.isEmpty {
                     section(icon: "scope", title: "Overview", tint: MynaTheme.cyan) {
                         Text(note.overview).noteBody()
@@ -100,6 +112,9 @@ struct NoteDetailView: View {
                 if !note.modelName.isEmpty {
                     GlowChip(text: note.modelName, icon: "cpu", tint: MynaTheme.gold)
                 }
+            }
+            if !note.placeName.isEmpty {
+                GlowChip(text: note.placeName, icon: "mappin.and.ellipse", tint: MynaTheme.cyan)
             }
             Text("Composed entirely on this iPhone")
                 .font(.system(size: 11, design: .rounded))
@@ -230,6 +245,43 @@ struct NoteDetailView: View {
             } catch {
                 scheduleError = error.localizedDescription
             }
+        }
+    }
+}
+
+/// Thumbnails of the photos taken during a conversation. Photos you've since
+/// deleted, or that iOS no longer lets Myna see, simply don't appear.
+private struct NotePhotoStrip: View {
+    let identifiers: [String]
+    @State private var images: [Thumbnail] = []
+
+    private struct Thumbnail: Identifiable {
+        let id: String
+        let image: UIImage
+    }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                ForEach(images) { entry in
+                    Image(uiImage: entry.image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 96, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: images.isEmpty ? 0 : 96)
+        .task(id: identifiers) {
+            var loaded: [Thumbnail] = []
+            for id in identifiers {
+                if let image = await PhotosContext.thumbnail(for: id, side: 240) {
+                    loaded.append(Thumbnail(id: id, image: image))
+                }
+            }
+            images = loaded
         }
     }
 }

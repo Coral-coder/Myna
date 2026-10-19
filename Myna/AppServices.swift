@@ -13,6 +13,7 @@ final class AppServices {
     let listener: SpeechListener
     let pilot: ConversationPilot
     let brain: MynaBrain
+    let contextHub: ContextHub
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
@@ -29,8 +30,9 @@ final class AppServices {
 
         modelManager = ModelManager()
         listener = SpeechListener()
-        pilot = ConversationPilot(listener: listener, modelManager: modelManager)
-        brain = MynaBrain(listener: listener, modelManager: modelManager, pilot: pilot)
+        contextHub = ContextHub()
+        pilot = ConversationPilot(listener: listener, modelManager: modelManager, contextHub: contextHub)
+        brain = MynaBrain(listener: listener, modelManager: modelManager, pilot: pilot, contextHub: contextHub)
 
         pilot.brain = brain
 

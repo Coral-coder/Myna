@@ -64,9 +64,9 @@ final class NotesEngine {
 
     // MARK: - Public API
 
-    func composeNote(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String = "") async throws -> Result {
+    func composeNote(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String = "", context: NoteContext = .empty) async throws -> Result {
         let condensed = try await condenseIfNeeded(transcript)
-        let composed = try await composeStructuredNote(from: condensed, startedAt: startedAt)
+        let composed = try await composeStructuredNote(from: condensed, startedAt: startedAt, context: context)
 
         let events = (composed.events ?? []).map { raw -> DetectedEvent in
             DetectedEvent(
@@ -75,7 +75,7 @@ final class NotesEngine {
                 rawWhen: raw.as_heard ?? raw.start ?? "time not specified",
                 durationMinutes: raw.duration_minutes,
                 location: raw.location,
-                attendees: raw.attendees ?? [],
+                attendees: (raw.attendees ?? []).map(context.resolveAttendee),
                 confidence: raw.confidence
             )
         }
@@ -101,6 +101,9 @@ final class NotesEngine {
             modelName: modelName,
             sourceRef: sourceRef
         )
+        note.placeName = context.place
+        note.people = context.people.map(\.summary)
+        note.photoIdentifiers = context.photoIdentifiers
         let reminders = (composed.reminders ?? []).map { raw in
             (text: raw.text, at: Self.resolveDate(iso: raw.at, phrase: raw.as_heard, reference: endedAt))
         }
@@ -141,7 +144,7 @@ final class NotesEngine {
 
     // MARK: - Stage 2: structured note
 
-    private func composeStructuredNote(from material: String, startedAt: Date) async throws -> ComposedNote {
+    private func composeStructuredNote(from material: String, startedAt: Date, context: NoteContext) async throws -> ComposedNote {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, yyyy-MM-dd 'at' HH:mm"
         let now = formatter.string(from: startedAt)
@@ -149,6 +152,7 @@ final class NotesEngine {
         let budget = await MainActor.run { modelManager.promptCharacterBudget }
         // Keep the final pass inside the model's window even after condensing.
         let fitted = material.count > budget * 2 ? String(material.suffix(budget * 2)) : material
+        let contextBlock = context.promptBlock(budget: max(400, budget / 3))
 
         let instructions = """
         You are Myna, an expert personal meeting scribe living on the user's iPhone. \
@@ -162,7 +166,7 @@ final class NotesEngine {
 
         CONVERSATION MATERIAL:
         \(fitted)
-
+        \(contextBlock.isEmpty ? "" : "\n" + contextBlock + "\n")
         Produce a JSON object with exactly these keys:
         {
           "title": "short, vivid title for this conversation",

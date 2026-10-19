@@ -54,12 +54,14 @@ final class ConversationPilot: ObservableObject {
     weak var brain: MynaBrain?
     private let notesEngine: NotesEngine
     private var modelContext: ModelContext?
+    private let contextHub: ContextHub
     private var isDraining = false
     private var lastSpeechAt: Date = .distantPast
     private var watchdog: Timer?
 
-    init(listener: SpeechListener, modelManager: ModelManager) {
+    init(listener: SpeechListener, modelManager: ModelManager, contextHub: ContextHub) {
         self.listener = listener
+        self.contextHub = contextHub
         self.notesEngine = NotesEngine(modelManager: modelManager)
 
         listener.onFinalText = { [weak self] text, heardAt in
@@ -154,31 +156,36 @@ final class ConversationPilot: ObservableObject {
         phase = .composing
 
         Task {
+            // Where you are as the conversation ends — captured now, because a
+            // queued conversation may be composed hours later somewhere else.
+            let place = await contextHub.placeName()
             do {
-                try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
             } catch MynaModelError.needsForeground {
-                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
             } catch MynaModelError.noModelInstalled {
-                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 banner = "Heard a conversation — it'll become a note once a model is installed."
             } catch {
                 if UIApplication.shared.applicationState == .background {
                     // e.g. Apple Intelligence's background budget ran out — try again later.
-                    enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                    enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 } else {
-                    fileTranscriptOnly(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, error: error)
+                    fileTranscriptOnly(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, error: error)
                 }
             }
             phase = wasListening && listener.isListening ? .listening : .idle
         }
     }
 
-    private func composeAndFile(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) async throws {
+    private func composeAndFile(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String) async throws {
+        let context = await contextHub.noteContext(transcript: transcript, startedAt: startedAt, endedAt: endedAt, place: place)
         let result = try await notesEngine.composeNote(
             transcript: transcript,
             startedAt: startedAt,
             endedAt: endedAt,
-            sourceRef: sourceRef
+            sourceRef: sourceRef,
+            context: context
         )
         let note = result.note
         if autoSchedule {
@@ -192,7 +199,7 @@ final class ConversationPilot: ObservableObject {
     }
 
     /// Never lose what was heard — file the raw transcript as a note.
-    private func fileTranscriptOnly(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, error: Error) {
+    private func fileTranscriptOnly(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String, error: Error) {
         let fallback = ConversationNote(
             startedAt: startedAt,
             endedAt: endedAt,
@@ -208,6 +215,7 @@ final class ConversationPilot: ObservableObject {
             modelName: "",
             sourceRef: sourceRef
         )
+        fallback.placeName = place
         modelContext?.insert(fallback)
         try? modelContext?.save()
         banner = "Saved the transcript — \(error.localizedDescription)"
@@ -215,9 +223,9 @@ final class ConversationPilot: ObservableObject {
 
     // MARK: - Queue
 
-    private func enqueue(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
+    private func enqueue(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String) {
         guard let modelContext else { return }
-        modelContext.insert(PendingConversation(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef))
+        modelContext.insert(PendingConversation(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, placeName: place))
         try? modelContext.save()
         refreshQueueCount()
     }
@@ -240,7 +248,7 @@ final class ConversationPilot: ObservableObject {
             }
             queue: for item in pending {
                 do {
-                    try await composeAndFile(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef)
+                    try await composeAndFile(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef, place: item.placeName)
                     modelContext.delete(item)
                 } catch MynaModelError.needsForeground {
                     break queue
@@ -249,7 +257,7 @@ final class ConversationPilot: ObservableObject {
                 } catch {
                     item.attempts += 1
                     if item.attempts >= 2 {
-                        fileTranscriptOnly(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef, error: error)
+                        fileTranscriptOnly(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef, place: item.placeName, error: error)
                         modelContext.delete(item)
                     }
                 }

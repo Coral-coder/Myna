@@ -28,6 +28,7 @@ Named for the myna bird: a brilliant listener.
 | Reminders that remind | Time-sensitive notifications at the due time (they break through Focus), mirrored to Apple Reminders so they reach your Watch and Mac |
 | Siri & Shortcuts | "Add to my Myna shopping list", "Remind me with Myna", "Ask Myna", "Start Myna" — also usable from the Action button |
 | Never drops a conversation | iOS forbids GPU work in the background on iPhone, so with an MLX model a conversation that ends while the phone is locked is queued and composed the moment Myna is opened; Apple Intelligence keeps composing while locked |
+| On-device context (opt-in) | **Places** (where a conversation happened, named from places you saved — kept in the Keychain), **Contacts** (who was mentioned, spelled right; names, company and title only), **Health** (sleep, steps, resting heart rate, workouts — read-only, only when you ask), **Photos** (photos taken during a conversation attached to its note, whiteboards and slides read by Vision). Each is off until switched on in Backstage |
 | In-app model downloads | The **Neural Core** tab downloads pre-quantized weights straight from Hugging Face with live progress, stores them in Application Support (excluded from iCloud backup), and lets you delete or swap models any time |
 
 ## The interface ✨
@@ -78,7 +79,12 @@ Apple developer team for code signing.
    the note — and the to-dos you promised — appear.
 
 Every pull request is compiled by `.github/workflows/ios-build.yml` on a
-macOS 26 runner (no signing).
+macOS 26 runner (no signing), which also runs the unit tests in `Tests/` —
+a SwiftPM package whose sources are symlinks to the app's platform-free files.
+Run them locally (macOS or Linux) with `swift test --package-path Tests`.
+
+The Health switch needs the HealthKit capability on the App ID; Xcode's
+automatic signing adds it the first time you build with the entitlement.
 
 ### Project layout
 
@@ -103,6 +109,8 @@ Myna/
     NotesEngine          Chunked condensation → structured JSON note + personal follow-through
     EventScheduler       EventKit calendar writer / reader
     ReminderCenter       Notifications + Apple Reminders mirror
+  Context/               ContextHub + Location, Contacts, Health, Photos providers; ContextModels (pure matching logic)
+  Security/              Keychain (AfterFirstUnlockThisDeviceOnly)
   Intents/               Siri & Shortcuts
   Models/                SwiftData schema (ConversationNote, MynaItem, PendingConversation)
   Views/                 Dashboard, orb, notes, lists, Neural Core, settings, onboarding
@@ -141,7 +149,13 @@ Myna/
 - Audio is processed in memory and never written to disk or uploaded.
 - Speech-to-text uses Apple's on-device engine exclusively.
 - The LLM runs locally (MLX or Apple Intelligence). Network traffic is limited
-  to model downloads from Hugging Face.
+  to model downloads from Hugging Face — and, only if you turn on "Name other
+  places with Apple Maps", reverse-geocoding requests to Apple.
+- Location, Contacts, Health and Photos are each off until you switch them on.
+  They are read on-device when a note is composed or a question is asked; only
+  a place name, the names of people mentioned and photo references are saved
+  with a note. Health data is never stored. Saved places live in the Keychain,
+  on this device only.
 - Notes and lists live in the app's private SwiftData store. Calendar events
   and Apple Reminders entries are created only for things you asked for or
   agreed to, and both can be switched off in Backstage.
