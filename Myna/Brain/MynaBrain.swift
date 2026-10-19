@@ -48,15 +48,17 @@ final class MynaBrain: ObservableObject {
     private let modelManager: ModelManager
     private let scheduler: EventScheduler
     private weak var pilot: ConversationPilot?
+    private let contextHub: ContextHub
     private var modelContext: ModelContext?
     private var spotter = CommandSpotter()
     private var spotterTimer: Timer?
     /// Recently performed spoken commands, so a repeated recognition never acts twice.
     private var recentCommands: [(key: String, at: Date)] = []
 
-    init(listener: SpeechListener, modelManager: ModelManager, pilot: ConversationPilot) {
+    init(listener: SpeechListener, modelManager: ModelManager, pilot: ConversationPilot, contextHub: ContextHub) {
         self.listener = listener
         self.modelManager = modelManager
+        self.contextHub = contextHub
         self.scheduler = pilot.scheduler
         self.pilot = pilot
 
@@ -400,8 +402,9 @@ final class MynaBrain: ObservableObject {
         If the request needs something done, do it with actions. \
         Respond with one JSON object and nothing else.
         """
+        let deviceContext = await contextHub.assistantLines(for: question)
         let prompt = """
-        \(context())
+        \(context(extra: deviceContext))
 
         THE USER SAYS: "\(question)"
 
@@ -468,13 +471,15 @@ final class MynaBrain: ObservableObject {
         }
     }
 
-    /// What Myna knows right now, trimmed to fit the active model.
-    private func context() -> String {
+    /// What Myna knows right now, trimmed to fit the active model. `extra` is
+    /// on-device context (place, people, health) gathered for this question.
+    private func context(extra: [String] = []) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
         var lines: [String] = ["NOW: \(formatter.string(from: .now)) (user's local time)"]
         let name = UserDefaults.standard.string(forKey: "myna.userName") ?? ""
         if !name.isEmpty { lines.append("USER'S NAME: \(name)") }
+        lines.append(contentsOf: extra)
 
         let todos = openItems(.todo).prefix(20).map(\.text)
         if !todos.isEmpty { lines.append("TO-DO LIST: " + todos.joined(separator: "; ")) }

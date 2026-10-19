@@ -69,15 +69,18 @@ final class PendingConversation {
     var startedAt: Date = Date.now
     var endedAt: Date = Date.now
     var sourceRef: String = ""
+    /// Captured when the conversation ended — by the time it's composed you may be elsewhere.
+    var placeName: String = ""
     var queuedAt: Date = Date.now
     var attempts: Int = 0
 
-    init(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
+    init(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, placeName: String = "") {
         self.id = UUID()
         self.transcript = transcript
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.sourceRef = sourceRef
+        self.placeName = placeName
         self.queuedAt = .now
     }
 }
