@@ -192,3 +192,15 @@ struct SettingsView: View {
         .glassCard(glow: MynaTheme.gold)
     }
 }
+
+private extension Text {
+    func settingsLabel() -> Text {
+        font(.system(size: 14, weight: .medium, design: .rounded))
+            .foregroundColor(.white.opacity(0.9))
+    }
+
+    func settingsCaption() -> Text {
+        font(.system(size: 12, design: .rounded))
+            .foregroundColor(.white.opacity(0.5))
+    }
+}
