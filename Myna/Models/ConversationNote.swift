@@ -46,6 +46,9 @@ final class ConversationNote {
     var followUps: [String] = []
     var transcript: String = ""
     var modelName: String = ""
+    /// Where the conversation was heard: "" for this iPhone's microphone,
+    /// "bee:<id>" for a conversation captured by a Bee wearable.
+    var sourceRef: String = ""
 
     init(
         startedAt: Date,
@@ -59,7 +62,8 @@ final class ConversationNote {
         detectedEvents: [DetectedEvent],
         followUps: [String],
         transcript: String,
-        modelName: String
+        modelName: String,
+        sourceRef: String = ""
     ) {
         self.id = UUID()
         self.createdAt = .now
@@ -75,7 +79,10 @@ final class ConversationNote {
         self.followUps = followUps
         self.transcript = transcript
         self.modelName = modelName
+        self.sourceRef = sourceRef
     }
+
+    var isFromBee: Bool { sourceRef.hasPrefix("bee:") }
 
     var durationMinutes: Int {
         max(1, Int(endedAt.timeIntervalSince(startedAt) / 60))

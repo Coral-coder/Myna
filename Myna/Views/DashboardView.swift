@@ -6,8 +6,12 @@ struct DashboardView: View {
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var modelManager: ModelManager
+    @EnvironmentObject private var brain: MynaBrain
+    @EnvironmentObject private var bee: BeeBridge
 
     @Query private var allNotes: [ConversationNote]
+    @State private var question = ""
+    @FocusState private var askFocused: Bool
 
     private var notesToday: [ConversationNote] {
         allNotes.filter { Calendar.current.isDateInToday($0.createdAt) }
@@ -29,6 +33,10 @@ struct DashboardView: View {
                 .padding(.top, 6)
 
                 statusLine
+
+                statusChips
+
+                assistantCard
 
                 if pilot.phase == .listening || pilot.phase == .composing {
                     liveTranscriptCard
@@ -57,6 +65,7 @@ struct DashboardView: View {
             .padding(.top, 8)
         }
         .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     // MARK: - Pieces
@@ -103,10 +112,88 @@ struct DashboardView: View {
         case .idle:
             return "Tap the orb to begin. Everything is heard,\nunderstood and stored only on this iPhone."
         case .listening:
-            return "Myna takes notes when a conversation ends.\nTap the orb again to stop."
+            return "Say “Myna, …” any time. Notes appear when\na conversation ends. Tap the orb to stop."
         case .composing:
             return "The on-device model is composing detailed\nnotes from what it just heard."
         }
+    }
+
+    @ViewBuilder
+    private var statusChips: some View {
+        if pilot.queuedCount > 0 || bee.isConnected {
+            HStack(spacing: 8) {
+                if pilot.queuedCount > 0 {
+                    GlowChip(
+                        text: "\(pilot.queuedCount) waiting to compose",
+                        icon: "hourglass",
+                        tint: MynaTheme.gold
+                    )
+                }
+                if bee.isConnected {
+                    GlowChip(
+                        text: bee.isLive ? "Bee live" : "Bee connected",
+                        icon: "circle.hexagongrid.fill",
+                        tint: bee.isLive ? MynaTheme.mint : MynaTheme.cyan
+                    )
+                }
+            }
+        }
+    }
+
+    private var assistantCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading(icon: "bubble.left.and.text.bubble.right.fill", title: "Ask Myna", tint: MynaTheme.magenta)
+
+            if let exchange = brain.lastExchange {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("“\(exchange.heard)”")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(2)
+                    Text(exchange.reply)
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                Text("Try “Myna, add eggs to the shopping list”, “remind me to call Mom at 6”, “what's on my calendar tomorrow?” or ask about any conversation.")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+
+            HStack(spacing: 10) {
+                TextField("Type to Myna…", text: $question)
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundStyle(.white)
+                    .focused($askFocused)
+                    .submitLabel(.send)
+                    .onSubmit(sendQuestion)
+                if brain.isThinking {
+                    ProgressView().tint(MynaTheme.magenta)
+                } else if !question.isEmpty {
+                    Button(action: sendQuestion) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundStyle(MynaTheme.magenta)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.06)))
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(glow: MynaTheme.magenta)
+        .animation(.easeOut(duration: 0.25), value: brain.lastExchange)
+    }
+
+    private func sendQuestion() {
+        let text = question
+        question = ""
+        askFocused = false
+        Task { await brain.handleTyped(text) }
     }
 
     private var liveTranscriptCard: some View {
@@ -149,7 +236,7 @@ struct DashboardView: View {
             Text("Install your AI scribe")
                 .font(MynaTheme.display(16, weight: .semibold))
                 .foregroundStyle(.white)
-            Text("Myna needs a local model before it can compose notes. Head to the Neural Core tab and download \(ModelCatalog.model(withID: ModelCatalog.recommendedID)?.displayName ?? "a model") — it's a one-time download.")
+            Text("Myna needs a local model before it can compose notes and answer questions. Head to the Neural Core tab and download \(ModelCatalog.model(withID: ModelCatalog.recommendedID)?.displayName ?? "a model") — it's a one-time download. Voice commands and lists already work.")
                 .font(.system(size: 13, design: .rounded))
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)

@@ -1,10 +1,15 @@
 import Foundation
 import SwiftData
 import SwiftUI
+import UIKit
 
 /// The conductor: watches the live transcript stream, decides when a
 /// conversation has ended, hands it to the notes engine, files the note,
 /// and (optionally) schedules any meetings it heard being planned.
+///
+/// When the model can't run (the phone is locked and only an MLX model is
+/// installed), finished conversations wait in a queue and are composed the
+/// moment Myna is back on screen — nothing heard is ever dropped.
 @MainActor
 final class ConversationPilot: ObservableObject {
 
@@ -25,6 +30,7 @@ final class ConversationPilot: ObservableObject {
     @Published private(set) var segmentStartedAt: Date?
     @Published private(set) var notesComposedToday = 0
     @Published private(set) var eventsScheduledToday = 0
+    @Published private(set) var queuedCount = 0
     @Published var banner: String?
 
     // Tunables owned by SettingsView via @AppStorage; read live so changes
@@ -45,8 +51,10 @@ final class ConversationPilot: ObservableObject {
 
     let listener: SpeechListener
     let scheduler = EventScheduler()
+    weak var brain: MynaBrain?
     private let notesEngine: NotesEngine
     private var modelContext: ModelContext?
+    private var isDraining = false
     private var lastSpeechAt: Date = .distantPast
     private var watchdog: Timer?
 
@@ -66,6 +74,7 @@ final class ConversationPilot: ObservableObject {
 
     func attach(modelContext: ModelContext) {
         self.modelContext = modelContext
+        refreshQueueCount()
     }
 
     // MARK: - Controls
@@ -137,46 +146,133 @@ final class ConversationPilot: ObservableObject {
 
         let transcript = lines.map(\.text).joined(separator: "\n")
         guard transcript.count > 40 else { return }
+        compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: "")
+    }
 
+    /// Files a conversation heard somewhere else — e.g. by a Bee wearable.
+    func composeExternal(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
+        guard transcript.count > 40, !alreadyFiled(sourceRef) else { return }
+        compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+    }
+
+    private func compose(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
         let wasListening = listener.isListening
         phase = .composing
 
         Task {
             do {
-                let note = try await notesEngine.composeNote(
-                    transcript: transcript,
-                    startedAt: startedAt,
-                    endedAt: endedAt
-                )
-                if autoSchedule {
-                    scheduleEvents(in: note)
-                }
-                modelContext?.insert(note)
-                try? modelContext?.save()
-                notesComposedToday += 1
-                banner = "✨ Note composed: \(note.title)"
+                try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+            } catch MynaModelError.needsForeground {
+                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+            } catch MynaModelError.noModelInstalled {
+                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                banner = "Heard a conversation — it'll become a note once a model is installed."
             } catch {
-                // Never lose what was heard — file the raw transcript as a note.
-                let fallback = ConversationNote(
-                    startedAt: startedAt,
-                    endedAt: endedAt,
-                    title: "Conversation (transcript only)",
-                    overview: error.localizedDescription,
-                    detailedNotes: "",
-                    keyPoints: [],
-                    decisions: [],
-                    actionItems: [],
-                    detectedEvents: [],
-                    followUps: [],
-                    transcript: transcript,
-                    modelName: ""
-                )
-                modelContext?.insert(fallback)
-                try? modelContext?.save()
-                banner = "Saved the transcript — \(error.localizedDescription)"
+                if UIApplication.shared.applicationState == .background {
+                    // e.g. Apple Intelligence's background budget ran out — try again later.
+                    enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef)
+                } else {
+                    fileTranscriptOnly(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, error: error)
+                }
             }
             phase = wasListening && listener.isListening ? .listening : .idle
         }
+    }
+
+    private func composeAndFile(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) async throws {
+        let result = try await notesEngine.composeNote(
+            transcript: transcript,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            sourceRef: sourceRef
+        )
+        let note = result.note
+        if autoSchedule {
+            scheduleEvents(in: note)
+        }
+        modelContext?.insert(note)
+        try? modelContext?.save()
+        brain?.absorb(result)
+        notesComposedToday += 1
+        banner = "✨ Note composed: \(note.title)"
+    }
+
+    /// Never lose what was heard — file the raw transcript as a note.
+    private func fileTranscriptOnly(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, error: Error) {
+        let fallback = ConversationNote(
+            startedAt: startedAt,
+            endedAt: endedAt,
+            title: "Conversation (transcript only)",
+            overview: error.localizedDescription,
+            detailedNotes: "",
+            keyPoints: [],
+            decisions: [],
+            actionItems: [],
+            detectedEvents: [],
+            followUps: [],
+            transcript: transcript,
+            modelName: "",
+            sourceRef: sourceRef
+        )
+        modelContext?.insert(fallback)
+        try? modelContext?.save()
+        banner = "Saved the transcript — \(error.localizedDescription)"
+    }
+
+    // MARK: - Queue
+
+    private func enqueue(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
+        guard let modelContext else { return }
+        modelContext.insert(PendingConversation(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef))
+        try? modelContext.save()
+        refreshQueueCount()
+    }
+
+    /// Composes everything heard while the model couldn't run. Call when the
+    /// app comes to the foreground.
+    func drainQueue() {
+        guard !isDraining, let modelContext else { return }
+        let descriptor = FetchDescriptor<PendingConversation>(sortBy: [SortDescriptor(\.startedAt)])
+        let pending = (try? modelContext.fetch(descriptor)) ?? []
+        guard !pending.isEmpty else { return }
+        isDraining = true
+        let wasListening = listener.isListening
+        phase = .composing
+        Task {
+            defer {
+                isDraining = false
+                refreshQueueCount()
+                phase = wasListening && listener.isListening ? .listening : .idle
+            }
+            queue: for item in pending {
+                do {
+                    try await composeAndFile(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef)
+                    modelContext.delete(item)
+                } catch MynaModelError.needsForeground {
+                    break queue
+                } catch MynaModelError.noModelInstalled {
+                    break queue
+                } catch {
+                    item.attempts += 1
+                    if item.attempts >= 2 {
+                        fileTranscriptOnly(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef, error: error)
+                        modelContext.delete(item)
+                    }
+                }
+                try? modelContext.save()
+            }
+        }
+    }
+
+    private func refreshQueueCount() {
+        queuedCount = (try? modelContext?.fetchCount(FetchDescriptor<PendingConversation>())) ?? 0
+    }
+
+    private func alreadyFiled(_ sourceRef: String) -> Bool {
+        guard !sourceRef.isEmpty, let modelContext else { return false }
+        let notes = FetchDescriptor<ConversationNote>(predicate: #Predicate { $0.sourceRef == sourceRef })
+        let queued = FetchDescriptor<PendingConversation>(predicate: #Predicate { $0.sourceRef == sourceRef })
+        return ((try? modelContext.fetchCount(notes)) ?? 0) > 0 || ((try? modelContext.fetchCount(queued)) ?? 0) > 0
     }
 
     private func scheduleEvents(in note: ConversationNote) {

@@ -5,6 +5,7 @@ struct RootView: View {
     enum Tab: String, CaseIterable {
         case listen = "Listen"
         case notes = "Notes"
+        case lists = "Lists"
         case models = "Neural Core"
         case settings = "Backstage"
 
@@ -12,6 +13,7 @@ struct RootView: View {
             switch self {
             case .listen: return "waveform"
             case .notes: return "sparkles.rectangle.stack"
+            case .lists: return "checklist"
             case .models: return "cpu"
             case .settings: return "slider.horizontal.3"
             }
@@ -30,6 +32,7 @@ struct RootView: View {
                 switch tab {
                 case .listen: DashboardView()
                 case .notes: NotesListView()
+                case .lists: ListsView()
                 case .models: ModelHubView()
                 case .settings: SettingsView()
                 }
@@ -42,6 +45,9 @@ struct RootView: View {
         .overlay(alignment: .top) { bannerView }
         .fullScreenCover(isPresented: .constant(!onboarded)) {
             PermissionsView(onboarded: $onboarded)
+        }
+        .onChange(of: onboarded) { _, isOnboarded in
+            if isOnboarded { AppServices.shared.becameActive() }
         }
     }
 
@@ -99,10 +105,12 @@ struct RootView: View {
 }
 
 #Preview {
-    let manager = ModelManager()
-    let listener = SpeechListener()
+    let services = AppServices.shared
     RootView()
-        .environmentObject(manager)
-        .environmentObject(listener)
-        .environmentObject(ConversationPilot(listener: listener, modelManager: manager))
+        .environmentObject(services.modelManager)
+        .environmentObject(services.listener)
+        .environmentObject(services.pilot)
+        .environmentObject(services.brain)
+        .environmentObject(services.bee)
+        .modelContainer(services.container)
 }

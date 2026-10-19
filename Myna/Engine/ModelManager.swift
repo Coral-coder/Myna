@@ -4,6 +4,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import SwiftUI
+import UIKit
 
 /// Downloads, stores, loads and runs the local language models.
 ///
@@ -51,12 +52,20 @@ final class ModelManager: ObservableObject {
     // MARK: - State
 
     var hasAnyModelInstalled: Bool {
-        states.values.contains { state in
-            switch state {
+        ModelCatalog.all.contains { model in
+            switch state(of: model) {
             case .installed, .ready, .loading: return true
             default: return false
             }
         }
+    }
+
+    /// Myna can keep composing while locked when Apple Intelligence is on.
+    var canComposeInBackground: Bool { AppleIntelligenceEngine.isAvailable }
+
+    /// Characters of transcript to feed the active model per pass.
+    var promptCharacterBudget: Int {
+        activeModel?.backend == .appleFoundation ? AppleIntelligenceEngine.promptCharacterBudget / 2 : 6_000
     }
 
     var activeModel: CatalogModel? { ModelCatalog.model(withID: activeModelID) }
@@ -67,7 +76,11 @@ final class ModelManager: ObservableObject {
 
     func refreshInstalledStates() {
         for model in ModelCatalog.all {
-            if loadedModelID == model.id {
+            if model.backend == .appleFoundation {
+                states[model.id] = AppleIntelligenceEngine.isAvailable
+                    ? .ready
+                    : .failed(AppleIntelligenceEngine.unavailableReason ?? "Unavailable")
+            } else if loadedModelID == model.id {
                 states[model.id] = .ready
             } else if isInstalled(model) {
                 states[model.id] = .installed
@@ -110,6 +123,11 @@ final class ModelManager: ObservableObject {
     /// Downloads the model from Hugging Face (resumable via the Hub cache) and
     /// warms it up. Safe to call for an already-installed model to just load it.
     func downloadAndLoad(_ model: CatalogModel) {
+        if model.backend == .appleFoundation {
+            refreshInstalledStates()
+            if AppleIntelligenceEngine.isAvailable { activeModelID = model.id }
+            return
+        }
         switch state(of: model) {
         case .downloading, .loading:
             return
@@ -143,6 +161,7 @@ final class ModelManager: ObservableObject {
     }
 
     func delete(_ model: CatalogModel) {
+        guard model.backend == .mlx else { return }
         if loadedModelID == model.id {
             container = nil
             loadedModelID = nil
@@ -156,7 +175,7 @@ final class ModelManager: ObservableObject {
         if let container, loadedModelID == activeModelID {
             return container
         }
-        guard let model = activeModel, isInstalled(model) else {
+        guard let model = activeModel, model.backend == .mlx, isInstalled(model) else {
             throw MynaModelError.noModelInstalled
         }
         states[model.id] = .loading
@@ -174,21 +193,47 @@ final class ModelManager: ObservableObject {
 
     /// One-shot generation: a fresh chat session per request keeps long days
     /// from accumulating context (and memory).
+    ///
+    /// iOS won't let MLX use the GPU while the app is in the background, so a
+    /// locked phone falls back to Apple Intelligence when it's available and
+    /// otherwise throws `needsForeground` — callers queue the work for later.
     func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
+        let inBackground = UIApplication.shared.applicationState == .background
+        let useApple = activeModel?.backend == .appleFoundation
+            || (inBackground && AppleIntelligenceEngine.isAvailable)
+            || (!hasMLXModelInstalled && AppleIntelligenceEngine.isAvailable)
+        if useApple {
+            return try await AppleIntelligenceEngine.respond(instructions: instructions, prompt: prompt, maxTokens: maxTokens)
+        }
+        if inBackground {
+            throw MynaModelError.needsForeground
+        }
         let container = try await ensureContainer()
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0.3, topP: 0.9)
         let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
-        return try await session.respond(to: prompt)
+        // Qwen 3's chat template honours a /no_think switch; skip the musing.
+        let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
+        return try await session.respond(to: finalPrompt)
+    }
+
+    private var hasMLXModelInstalled: Bool {
+        ModelCatalog.all.contains { $0.backend == .mlx && isInstalled($0) }
     }
 }
 
 enum MynaModelError: LocalizedError {
     case noModelInstalled
+    case needsForeground
+    case appleIntelligenceUnavailable
 
     var errorDescription: String? {
         switch self {
         case .noModelInstalled:
-            return "No AI model is installed yet. Visit the Model Hub to download one."
+            return "No AI model is installed yet. Visit the Neural Core to download one."
+        case .needsForeground:
+            return "The on-device model needs Myna on screen to run."
+        case .appleIntelligenceUnavailable:
+            return AppleIntelligenceEngine.unavailableReason ?? "Apple Intelligence isn't available."
         }
     }
 }

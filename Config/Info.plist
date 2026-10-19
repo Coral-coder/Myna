@@ -7,7 +7,9 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Myna transcribes speech using Apple&apos;s on-device speech recognition. Transcripts stay on this iPhone and are never uploaded.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation.</string>
+	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation, and tell you what&apos;s on your calendar when you ask.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Myna mirrors your to-dos, reminders and shopping list into Apple Reminders so they show up on your Watch and other devices.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

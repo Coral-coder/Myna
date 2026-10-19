@@ -8,7 +8,8 @@ import Speech
 /// `requiresOnDeviceRecognition = true`, so no audio or transcript ever
 /// touches the network. The recognition task is rotated periodically to keep
 /// long all-day sessions stable; each finalized utterance is handed to
-/// `onFinalText`.
+/// `onFinalText`. Phone calls, Siri and other interruptions pause listening,
+/// which picks back up by itself when they end.
 @MainActor
 final class SpeechListener: NSObject, ObservableObject {
     @Published private(set) var isListening = false
@@ -19,15 +20,31 @@ final class SpeechListener: NSObject, ObservableObject {
 
     /// Called with each finalized chunk of speech and the time it was heard.
     var onFinalText: ((String, Date) -> Void)?
+    /// Called with the full in-progress text of the current recognition task.
+    var onPartialText: ((String) -> Void)?
+    /// Called once when a recognition task finishes, with its final text.
+    var onTaskFinished: ((String) -> Void)?
 
     private let audioEngine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: Locale.preferredLanguages.first ?? "en-US"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var rotationTimer: Timer?
+    /// Bumped for every recognition task so late callbacks from old tasks are ignored.
+    private var generation = 0
+    /// Recognition paused (e.g. while Myna is speaking) but the session stays up.
+    private var isPaused = false
+    private var resumeAfterInterruption = false
 
     /// Rotate the recognition task once a minute so a single task never grows unbounded.
     private let taskRotationInterval: TimeInterval = 60
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleMediaReset(_:)), name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+    }
 
     // MARK: - Permissions
 
@@ -41,6 +58,11 @@ final class SpeechListener: NSObject, ObservableObject {
         return await AVAudioApplication.requestRecordPermission()
     }
 
+    static var hasPermissions: Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized
+            && AVAudioApplication.shared.recordPermission == .granted
+    }
+
     // MARK: - Lifecycle
 
     func start() {
@@ -48,7 +70,8 @@ final class SpeechListener: NSObject, ObservableObject {
         lastError = nil
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers, .allowBluetooth])
+            // playAndRecord so Myna can answer out loud without dropping the mic.
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             let inputNode = audioEngine.inputNode
@@ -67,8 +90,10 @@ final class SpeechListener: NSObject, ObservableObject {
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
+            isPaused = false
             startRecognitionTask()
 
+            rotationTimer?.invalidate()
             rotationTimer = Timer.scheduledTimer(withTimeInterval: taskRotationInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.rotateRecognitionTask() }
             }
@@ -79,19 +104,32 @@ final class SpeechListener: NSObject, ObservableObject {
     }
 
     func stop() {
+        resumeAfterInterruption = false
         rotationTimer?.invalidate()
         rotationTimer = nil
         flushPartialIfMeaningful()
-        task?.cancel()
-        task = nil
-        request?.endAudio()
-        request = nil
+        endTask()
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isListening = false
+        isPaused = false
         liveTranscript = ""
         audioLevel = 0
+    }
+
+    /// Stops transcribing without releasing the microphone — used while Myna talks.
+    func pauseRecognition() {
+        guard isListening, !isPaused else { return }
+        flushPartialIfMeaningful()
+        endTask()
+        isPaused = true
+    }
+
+    func resumeRecognition() {
+        guard isPaused else { return }
+        isPaused = false
+        if isListening { startRecognitionTask() }
     }
 
     // MARK: - Recognition
@@ -111,23 +149,30 @@ final class SpeechListener: NSObject, ObservableObject {
             newRequest.requiresOnDeviceRecognition = true
         }
         request = newRequest
+        generation += 1
+        let taskGeneration = generation
 
         task = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, taskGeneration == self.generation else { return }
                 if let result {
                     let text = result.bestTranscription.formattedString
                     self.liveTranscript = text
                     if result.isFinal {
                         self.deliver(text)
                         self.liveTranscript = ""
-                        if self.isListening {
+                        self.onTaskFinished?(text)
+                        if self.isListening && !self.isPaused {
                             self.startRecognitionTask()
                         }
+                    } else {
+                        self.onPartialText?(text)
                     }
-                } else if error != nil, self.isListening {
+                } else if error != nil, self.isListening, !self.isPaused {
                     // On-device tasks occasionally end after silence; just spin up a fresh one.
+                    let pending = self.liveTranscript
                     self.flushPartialIfMeaningful()
+                    self.onTaskFinished?(pending)
                     self.startRecognitionTask()
                 }
             }
@@ -136,8 +181,19 @@ final class SpeechListener: NSObject, ObservableObject {
 
     /// Ends the current task gracefully; its final result is delivered via the handler above.
     private func rotateRecognitionTask() {
-        guard isListening else { return }
+        guard isListening, !isPaused else { return }
         request?.endAudio()
+    }
+
+    /// Tears down the current task without waiting for its result.
+    private func endTask() {
+        let pending = liveTranscript
+        generation += 1
+        task?.cancel()
+        task = nil
+        request?.endAudio()
+        request = nil
+        onTaskFinished?(pending)
     }
 
     private func flushPartialIfMeaningful() {
@@ -152,6 +208,46 @@ final class SpeechListener: NSObject, ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onFinalText?(trimmed, .now)
+    }
+
+    // MARK: - Interruptions
+
+    @objc private nonisolated func handleInterruption(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        Task { @MainActor in
+            switch type {
+            case .began:
+                // A call or Siri took the mic; remember to come back.
+                if self.isListening {
+                    self.resumeAfterInterruption = true
+                    self.stopForInterruption()
+                }
+            case .ended:
+                if self.resumeAfterInterruption {
+                    self.resumeAfterInterruption = false
+                    try? await Task.sleep(for: .milliseconds(600))
+                    self.start()
+                }
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    @objc private nonisolated func handleMediaReset(_ notification: Notification) {
+        Task { @MainActor in
+            guard self.isListening else { return }
+            self.stopForInterruption()
+            try? await Task.sleep(for: .seconds(1))
+            self.start()
+        }
+    }
+
+    private func stopForInterruption() {
+        let resume = resumeAfterInterruption
+        stop()
+        resumeAfterInterruption = resume
     }
 
     private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Double {
