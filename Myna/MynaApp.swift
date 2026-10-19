@@ -14,6 +14,7 @@ struct MynaApp: App {
                 .environmentObject(services.pilot)
                 .environmentObject(services.brain)
                 .environmentObject(services.contextHub)
+                .environmentObject(services.bee)
                 .preferredColorScheme(.dark)
         }
         .modelContainer(services.container)

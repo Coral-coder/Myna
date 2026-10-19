@@ -28,6 +28,7 @@ Named for the myna bird: a brilliant listener.
 | Reminders that remind | Time-sensitive notifications at the due time (they break through Focus), mirrored to Apple Reminders so they reach your Watch and Mac |
 | Siri & Shortcuts | "Add to my Myna shopping list", "Remind me with Myna", "Ask Myna", "Start Myna" — also usable from the Action button |
 | Never drops a conversation | iOS forbids GPU work in the background on iPhone, so with an MLX model a conversation that ends while the phone is locked is queued and composed the moment Myna is opened; Apple Intelligence keeps composing while locked |
+| Bee bracelet (your own) | Myna talks to a Bee bracelet you own **directly over Bluetooth** instead of the vendor's app: it generates its **own** AES-128 key on the iPhone, installs it on the bracelet with the device's own key-set command, then decrypts the bracelet's audio and feeds it into the same on-device speech pipeline. Battery, charging, firmware and the action button surface in Myna. Switch it on in **Backstage → Bee Bracelet** |
 | On-device context (opt-in) | **Places** (where a conversation happened, named from places you saved — kept in the Keychain), **Contacts** (who was mentioned, spelled right; names, company and title only), **Health** (sleep, steps, resting heart rate, workouts — read-only, only when you ask), **Photos** (photos taken during a conversation attached to its note, whiteboards and slides read by Vision). Each is off until switched on in Backstage |
 | In-app model downloads | The **Neural Core** tab downloads pre-quantized weights straight from Hugging Face with live progress, stores them in Application Support (excluded from iCloud backup), and lets you delete or swap models any time |
 
@@ -92,6 +93,24 @@ Connect. It needs the repository secrets `ASC_KEY_ID`, `ASC_ISSUER_ID` and
 used when present. The build number defaults to the workflow's run
 number.
 
+### Bee bracelet
+
+Myna controls a Bee bracelet **you own** directly, rather than through the
+vendor's subscription app. On an unsealed bracelet it generates a random
+16-byte AES-128 key (stored in the Keychain, this device only), installs it
+with the device's own `SetEncryptionKey` command, reads the 12-byte session
+nonce, confirms the codec, then decrypts each audio packet with AES-128-CTR
+(`counter = nonce || sequence`) and decodes it to PCM for the speech pipeline.
+A bracelet already sealed with a key Myna doesn't hold is left untouched: Myna
+asks you to factory-reset it (rapid-press the button 5× to blue+green), which
+clears the stored key, then installs yours. Myna never recovers or uses the
+vendor's existing key.
+
+The byte-level protocol and crypto framing are covered by the unit tests in
+`Tests/`. The CoreBluetooth, AAC decode and on-device behaviour are verified on
+hardware. Opus bracelets need libopus added to the app (an `OpusFrameDecoder`
+seam is in place); AAC decodes with the built-in AudioToolbox.
+
 The Health switch needs the HealthKit capability on the App ID; Xcode's
 automatic signing adds it the first time you build with the entitlement.
 
@@ -119,6 +138,8 @@ Myna/
     EventScheduler       EventKit calendar writer / reader
     ReminderCenter       Notifications + Apple Reminders mirror
   Context/               ContextHub + Location, Contacts, Health, Photos providers; ContextModels (pure matching logic)
+  Integrations/Bee/      BeeProtocol + BeeAudioFraming (pure, tested), BeeCrypto (AES-128-CTR),
+                         BeeKeyVault, BeeAudioDecoder, BeeCentral (CoreBluetooth), BeeManager
   Security/              Keychain (AfterFirstUnlockThisDeviceOnly)
   Intents/               Siri & Shortcuts
   Models/                SwiftData schema (ConversationNote, MynaItem, PendingConversation)
@@ -160,6 +181,10 @@ Myna/
 - The LLM runs locally (MLX or Apple Intelligence). Network traffic is limited
   to model downloads from Hugging Face — and, only if you turn on "Name other
   places with Apple Maps", reverse-geocoding requests to Apple.
+- The Bee bracelet is off until you switch it on. Myna uses a key it generates
+  on this iPhone and installs on the bracelet itself; it never recovers or uses
+  the vendor's key. The key lives in the Keychain, on this device only, and the
+  bracelet's audio is decrypted and transcribed entirely on the iPhone.
 - Location, Contacts, Health and Photos are each off until you switch them on.
   They are read on-device when a note is composed or a question is asked; only
   a place name, the names of people mentioned and photo references are saved

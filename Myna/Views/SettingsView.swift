@@ -24,6 +24,7 @@ struct SettingsView: View {
                 listeningCard
                 automationCard
                 ContextCard()
+                BraceletCard()
                 privacyCard
                 aboutCard
             }

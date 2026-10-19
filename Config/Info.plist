@@ -20,9 +20,12 @@
 	<string>Myna only reads from Health to answer your questions. It never writes or changes your health data.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>When you turn on Photos, Myna attaches photos you take during a conversation to its note and reads text from whiteboards and slides on this iPhone. Photos are never uploaded.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Myna connects to your Bee bracelet over Bluetooth to bring its audio into Myna, so it can listen and take notes through the bracelet you&apos;re wearing. Everything is processed on this iPhone.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>bluetooth-central</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
