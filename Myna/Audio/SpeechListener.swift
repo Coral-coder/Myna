@@ -39,6 +39,11 @@ final class SpeechListener: NSObject, ObservableObject {
     /// Rotate the recognition task once a minute so a single task never grows unbounded.
     private let taskRotationInterval: TimeInterval = 60
 
+    /// When true, an external source (the Bee bracelet) is driving audio, so the
+    /// phone's own microphone is kept out of the recognition request. Read from
+    /// the audio-thread tap, so it's a plain flag.
+    nonisolated(unsafe) private var externalSourceActive = false
+
     override init() {
         super.init()
         let center = NotificationCenter.default
@@ -78,7 +83,8 @@ final class SpeechListener: NSObject, ObservableObject {
             let format = inputNode.outputFormat(forBus: 0)
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-                self?.request?.append(buffer)
+                // While the bracelet is the source, the mic stays off the request.
+                if self?.externalSourceActive != true { self?.request?.append(buffer) }
                 let level = Self.rms(of: buffer)
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -130,6 +136,30 @@ final class SpeechListener: NSObject, ObservableObject {
         guard isPaused else { return }
         isPaused = false
         if isListening { startRecognitionTask() }
+    }
+
+    // MARK: - External audio source (Bee bracelet)
+
+    /// Switch recognition to an external source: the phone's microphone stops
+    /// feeding the recognizer, and `feedExternalAudio` drives it instead. The
+    /// audio session and recognition task stay up, so conversation
+    /// segmentation, wake-word commands and notes all keep working unchanged.
+    func beginExternalSource() {
+        externalSourceActive = true
+    }
+
+    /// Hand the recognizer a buffer of PCM decoded from the bracelet.
+    func feedExternalAudio(_ buffer: AVAudioPCMBuffer) {
+        guard externalSourceActive, !isPaused else { return }
+        request?.append(buffer)
+        let level = Self.rms(of: buffer)
+        audioLevel = max(level, audioLevel * 0.86)
+    }
+
+    /// Hand audio back to the phone's microphone.
+    func endExternalSource() {
+        externalSourceActive = false
+        audioLevel = 0
     }
 
     // MARK: - Recognition
