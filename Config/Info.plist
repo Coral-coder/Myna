@@ -16,6 +16,8 @@
 	<string>When you turn on Contacts, Myna recognizes people mentioned in your conversations so it spells their names right in notes and calendar events. It reads names, company and job title only, on this iPhone.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>When you turn on Health, Myna can answer questions about your sleep, steps, resting heart rate and workouts. It only reads, only when you ask, and never stores or uploads your health data.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Myna only reads from Health to answer your questions. It never writes or changes your health data.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>When you turn on Photos, Myna attaches photos you take during a conversation to its note and reads text from whiteboards and slides on this iPhone. Photos are never uploaded.</string>
 	<key>UIBackgroundModes</key>

@@ -83,6 +83,14 @@ macOS 26 runner (no signing), which also runs the unit tests in `Tests/` —
 a SwiftPM package whose sources are symlinks to the app's platform-free files.
 Run them locally (macOS or Linux) with `swift test --package-path Tests`.
 
+**TestFlight:** run the *TestFlight* workflow from the Actions tab. It archives
+a Release build with automatic cloud signing and uploads it to App Store
+Connect. It needs three repository secrets from an App Store Connect API key
+with the Admin role — `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`
+and `APP_STORE_CONNECT_KEY` (the `.p8` file's contents) — and an app record
+for `com.lightwave.myna`. The build number defaults to the workflow's run
+number.
+
 The Health switch needs the HealthKit capability on the App ID; Xcode's
 automatic signing adds it the first time you build with the entitlement.
 
