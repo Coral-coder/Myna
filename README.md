@@ -85,10 +85,11 @@ Run them locally (macOS or Linux) with `swift test --package-path Tests`.
 
 **TestFlight:** run the *TestFlight* workflow from the Actions tab. It archives
 a Release build with automatic cloud signing and uploads it to App Store
-Connect. It needs three repository secrets from an App Store Connect API key
-with the Admin role — `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`
-and `APP_STORE_CONNECT_KEY` (the `.p8` file's contents) — and an app record
-for `com.lightwave.myna`. The build number defaults to the workflow's run
+Connect. It needs the repository secrets `ASC_KEY_ID`, `ASC_ISSUER_ID` and
+`ASC_KEY_P8` (an App Store Connect API key) and an app record for
+`com.lightwave.myna`; `APPLE_TEAM_ID`, and `DEV_CERT_P12` /
+`DEV_CERT_PASSWORD` for signing with your own distribution certificate, are
+used when present. The build number defaults to the workflow's run
 number.
 
 The Health switch needs the HealthKit capability on the App ID; Xcode's
