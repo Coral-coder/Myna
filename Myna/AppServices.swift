@@ -22,6 +22,17 @@ final class AppServices {
         UserDefaults.standard.object(forKey: "myna.alwaysOn") as? Bool ?? true
     }
 
+    /// Wake word setting key, and how its text becomes a word list.
+    static let wakeWordKey = "myna.customWakeWord"
+
+    static func applyCustomWakeWords() {
+        let raw = UserDefaults.standard.string(forKey: wakeWordKey) ?? ""
+        CommandParser.customWakeWords = raw
+            .split(whereSeparator: { $0 == "," || $0 == "\n" })
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
     private init() {
         do {
             container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self)
@@ -29,6 +40,7 @@ final class AppServices {
             fatalError("Could not create SwiftData container: \(error)")
         }
 
+        Self.applyCustomWakeWords()
         modelManager = ModelManager()
         listener = SpeechListener()
         contextHub = ContextHub()

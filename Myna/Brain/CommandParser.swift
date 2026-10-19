@@ -50,8 +50,22 @@ enum CommandParser {
     /// Words that wake Myna up. Speech recognition hears "Myna" a few ways.
     static let wakeWords = ["myna", "mynah", "mina", "minah", "maina", "myena"]
 
+    /// Extra wake words/phrases the user set in Backstage (lowercased). The app
+    /// keeps this in sync with their setting; empty by default so tests and the
+    /// pure logic don't depend on persistence.
+    static var customWakeWords: [String] = []
+
+    /// Every wake word currently in effect — the user's own first, so a custom
+    /// word is preferred, then the built-in "Myna" variants.
+    static var activeWakeWords: [String] {
+        var seen = Set<String>()
+        return (customWakeWords + wakeWords)
+            .map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
     private static var wakePattern: String {
-        let names = wakeWords.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
+        let names = activeWakeWords.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
         return #"(?:\b(?:hey|hi|ok|okay|yo|alright)[,]? )?\b(?:"# + names + #")\b[,.!:]?\s*"#
     }
 

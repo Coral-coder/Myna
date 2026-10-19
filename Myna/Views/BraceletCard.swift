@@ -37,11 +37,39 @@ struct BraceletCard: View {
                 }
                 pairingDetail
                 if bee.isReadyForControl { controlsSection }
+                if !bee.diagnostics.isEmpty { deviceLog }
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(glow: MynaTheme.cyan)
+    }
+
+    private var deviceLog: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(bee.diagnostics.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button {
+                    UIPasteboard.general.string = bee.diagnosticsText
+                } label: {
+                    Label("Copy log", systemImage: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MynaTheme.cyan)
+                .padding(.top, 4)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Device log").braceletLabel()
+        }
+        .tint(.white.opacity(0.6))
     }
 
     private var controlsSection: some View {
@@ -130,7 +158,12 @@ struct BraceletCard: View {
         case .unauthorized:
             detailRow(icon: "exclamationmark.triangle.fill", text: "Myna needs Bluetooth permission. Enable it in Settings.", tint: MynaTheme.gold)
         case .error(let message):
-            detailRow(icon: "xmark.octagon.fill", text: message, tint: MynaTheme.magenta)
+            VStack(alignment: .leading, spacing: 8) {
+                detailRow(icon: "xmark.octagon.fill", text: message, tint: MynaTheme.magenta)
+                Button("Try again") { bee.retry() }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.cyan)
+            }
         case .streaming:
             detailRow(icon: "dot.radiowaves.left.and.right", text: "Listening through the bracelet.", tint: MynaTheme.mint)
         default:
