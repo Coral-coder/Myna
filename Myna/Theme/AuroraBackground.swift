@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Slow-breathing aurora mesh with drifting "pixie dust" — the stage lighting behind every screen.
+/// The Grid: a dark field ruled with thin cyan lines, a slow scanline sweeping
+/// down it, and a few drifting data motes. Brightens when Myna is listening.
+/// (Name kept from the old aurora background so every screen keeps using it.)
 struct AuroraBackground: View {
-    /// Ramps the aurora up when Myna is actively listening.
+    /// Ramps the Grid up when Myna is actively listening.
     var energy: Double = 0.35
 
     var body: some View {
@@ -11,69 +13,86 @@ struct AuroraBackground: View {
             ZStack {
                 MynaTheme.void.ignoresSafeArea()
 
-                MeshGradient(
-                    width: 3,
-                    height: 3,
-                    points: meshPoints(t: t),
-                    colors: meshColors
-                )
-                .opacity(0.55 + 0.3 * energy)
-                .blur(radius: 40)
-                .ignoresSafeArea()
-
-                StardustField(time: t, energy: energy)
+                GridField(time: t, energy: energy)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+
+                // Vignette: pull the eye to the centre, darken the edges.
+                RadialGradient(
+                    colors: [.clear, MynaTheme.void.opacity(0.85)],
+                    center: .center,
+                    startRadius: 140,
+                    endRadius: 560
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             }
         }
-    }
-
-    private var meshColors: [Color] {
-        [
-            MynaTheme.void, MynaTheme.nebula, MynaTheme.void,
-            MynaTheme.indigo, MynaTheme.magenta.opacity(0.45), MynaTheme.cyan.opacity(0.35),
-            MynaTheme.void, MynaTheme.indigo, MynaTheme.void,
-        ]
-    }
-
-    private func meshPoints(t: TimeInterval) -> [SIMD2<Float>] {
-        let s = Float(sin(t * 0.18)) * 0.12
-        let c = Float(cos(t * 0.13)) * 0.12
-        return [
-            [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-            [0.0, 0.5 + s], [0.5 + c, 0.5 - s], [1.0, 0.5 + c],
-            [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
-        ]
     }
 }
 
-/// Deterministic floating sparkle particles drawn with Canvas (cheap, no state).
-private struct StardustField: View {
+/// Cheap, state-free Grid drawn with Canvas: ruled lines, a glowing horizontal
+/// scanline, and drifting motes.
+private struct GridField: View {
     let time: TimeInterval
     let energy: Double
 
+    private let spacing: CGFloat = 46
+
     var body: some View {
         Canvas { context, size in
-            for i in 0..<46 {
-                let seed = Double(i)
-                let speed = 0.012 + 0.02 * fract(seed * 0.717)
-                let x = fract(seed * 0.371 + time * speed * 0.3) * size.width
-                let y = fract(seed * 0.613 - time * speed) * size.height
-                let twinkle = 0.5 + 0.5 * sin(time * (1.2 + fract(seed * 0.911) * 2) + seed)
-                let radius = 0.8 + 1.8 * fract(seed * 0.527)
-                let alpha = (0.12 + 0.5 * twinkle) * (0.5 + energy)
+            let base = 0.05 + 0.06 * energy
+            let lineColor = MynaTheme.cyan.opacity(base)
 
-                let colors: [Color] = [MynaTheme.cyan, MynaTheme.gold, MynaTheme.magenta, .white]
-                let color = colors[i % colors.count].opacity(alpha)
-                let rect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
-                context.fill(Ellipse().path(in: rect), with: .color(color))
+            // Ruled grid.
+            var grid = Path()
+            var x: CGFloat = 0
+            while x <= size.width {
+                grid.move(to: CGPoint(x: x, y: 0))
+                grid.addLine(to: CGPoint(x: x, y: size.height))
+                x += spacing
+            }
+            var y: CGFloat = 0
+            while y <= size.height {
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
+                y += spacing
+            }
+            context.stroke(grid, with: .color(lineColor), lineWidth: 0.75)
+
+            // Scanline sweeping down, with a soft glow band behind it.
+            let scanY = CGFloat(fract(time * 0.05)) * size.height
+            let band = CGRect(x: 0, y: scanY - 36, width: size.width, height: 72)
+            context.fill(
+                Rectangle().path(in: band),
+                with: .linearGradient(
+                    Gradient(colors: [.clear, MynaTheme.cyan.opacity(0.10 + 0.12 * energy), .clear]),
+                    startPoint: CGPoint(x: 0, y: band.minY),
+                    endPoint: CGPoint(x: 0, y: band.maxY)
+                )
+            )
+            var scan = Path()
+            scan.move(to: CGPoint(x: 0, y: scanY))
+            scan.addLine(to: CGPoint(x: size.width, y: scanY))
+            context.stroke(scan, with: .color(MynaTheme.cyan.opacity(0.35 + 0.3 * energy)), lineWidth: 1)
+
+            // Drifting data motes along grid columns.
+            for i in 0..<18 {
+                let seed = Double(i)
+                let col = (Double(i) * 2 + 1)
+                let mx = CGFloat(col) * spacing
+                guard mx <= size.width else { continue }
+                let speed = 0.03 + 0.05 * fract(seed * 0.613)
+                let my = CGFloat(fract(seed * 0.271 + time * speed)) * size.height
+                let glow = 0.25 + 0.55 * (0.5 + 0.5 * sin(time * 1.4 + seed))
+                let color = (i % 7 == 0 ? MynaTheme.gold : MynaTheme.cyan).opacity(glow * (0.5 + energy))
+                let dot = CGRect(x: mx - 1.5, y: my - 1.5, width: 3, height: 3)
+                context.fill(Rectangle().path(in: dot), with: .color(color))
             }
         }
     }
 
-    private func fract(_ value: Double) -> Double {
-        value - value.rounded(.down)
-    }
+    private func fract(_ value: Double) -> Double { value - value.rounded(.down) }
 }
 
 #Preview {
