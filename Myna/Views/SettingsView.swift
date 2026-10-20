@@ -7,7 +7,7 @@ struct SettingsView: View {
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
-    @AppStorage("myna.micEnabled") private var micEnabled = true
+    @AppStorage("myna.micEnabled") private var micEnabled = false
     @AppStorage("myna.wakeWord") private var wakeWord = true
     @AppStorage("myna.speakReplies") private var speakReplies = true
     @AppStorage("myna.autoCapture") private var autoCapture = true
@@ -25,6 +25,12 @@ struct SettingsView: View {
     @EnvironmentObject private var whisper: WhisperTranscriber
     @EnvironmentObject private var neuralVoice: NeuralVoice
     @EnvironmentObject private var brain: MynaBrain
+
+    /// The installed system voices, enumerated once. `AVSpeechSynthesisVoice
+    /// .speechVoices()` is slow and was being called on every render of this
+    /// screen (once for the label, once per row in the picker), which is what
+    /// made Backstage lag. Cache it.
+    @State private var cachedVoices: [VoiceOption] = []
 
     private var whisperStatus: String {
         switch whisper.state {
@@ -52,7 +58,7 @@ struct SettingsView: View {
 
     private var selectedVoiceName: String {
         guard !voiceIdentifier.isEmpty,
-              let match = brain.voice.availableVoices().first(where: { $0.id == voiceIdentifier }) else {
+              let match = cachedVoices.first(where: { $0.id == voiceIdentifier }) else {
             return "Best available"
         }
         return match.name
@@ -80,6 +86,9 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+        .task {
+            if cachedVoices.isEmpty { cachedVoices = brain.voice.availableVoices() }
+        }
     }
 
     private var naturalVoicesCard: some View {
@@ -225,7 +234,7 @@ struct SettingsView: View {
                                 voiceIdentifier = ""
                                 brain.voice.preview(identifier: "")
                             }
-                            ForEach(brain.voice.availableVoices()) { voice in
+                            ForEach(cachedVoices) { voice in
                                 Button {
                                     voiceIdentifier = voice.id
                                     brain.voice.preview(identifier: voice.id)

@@ -136,12 +136,17 @@ final class BeeCloudImporter: ObservableObject {
         do {
             let summaries = try await api.recentConversations(limit: limit)
             var added = 0
+            // Suggestions we've already offered (any status) — so we never
+            // re-surface one you dismissed, and never duplicate across notes.
+            var knownKeys = Self.existingSuggestionKeys(in: modelContext)
             for summary in summaries {
                 let sourceRef = "bee:\(summary.id)"
                 if Self.alreadyImported(sourceRef, in: modelContext) { continue }
                 let conversation = try await api.conversation(id: summary.id)
                 guard !conversation.transcript.isEmpty else { continue }
-                modelContext.insert(Self.note(from: conversation, sourceRef: sourceRef))
+                let note = Self.note(from: conversation, sourceRef: sourceRef)
+                modelContext.insert(note)
+                Self.makeSuggestions(from: conversation.transcript, note: note, in: modelContext, known: &knownKeys)
                 added += 1
             }
             try? modelContext.save()
@@ -153,6 +158,31 @@ final class BeeCloudImporter: ObservableObject {
             status = .failed(error.localizedDescription)
             return 0
         }
+    }
+
+    /// Parse a transcript for actionable items and file the new ones as pending
+    /// suggestions. `known` accumulates dedup keys across the whole import pass.
+    private static func makeSuggestions(
+        from transcript: String,
+        note: ConversationNote,
+        in context: ModelContext,
+        known: inout Set<String>
+    ) {
+        for parsed in TranscriptParser.parse(transcript) where known.insert(parsed.dedupKey).inserted {
+            context.insert(Suggestion(
+                kind: parsed.kind,
+                text: parsed.text,
+                detail: parsed.detail,
+                date: parsed.date,
+                noteID: note.id,
+                sourceTitle: note.title
+            ))
+        }
+    }
+
+    private static func existingSuggestionKeys(in context: ModelContext) -> Set<String> {
+        let all = (try? context.fetch(FetchDescriptor<Suggestion>())) ?? []
+        return Set(all.map { $0.dedupKey })
     }
 
     private static func alreadyImported(_ sourceRef: String, in context: ModelContext) -> Bool {

@@ -26,10 +26,12 @@ final class AppServices {
         UserDefaults.standard.object(forKey: "myna.alwaysOn") as? Bool ?? true
     }
 
-    /// Whether Myna may use the iPhone microphone at all. Off → Myna runs purely
-    /// on the Bee backend (and anything you ask it directly); the mic is never opened.
+    /// Whether Myna may use the iPhone microphone at all. Myna is now a Bee
+    /// companion — it imports your Bee conversations and turns them into
+    /// suggestions — so the mic is OFF by default and nothing is ever recorded
+    /// on this phone unless you deliberately turn it back on in Backstage.
     var micEnabled: Bool {
-        UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? false
     }
 
     /// Wake word setting key, and how its text becomes a word list.
@@ -45,7 +47,7 @@ final class AppServices {
 
     private init() {
         do {
-            container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self)
+            container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self)
         } catch {
             fatalError("Could not create SwiftData container: \(error)")
         }
