@@ -18,6 +18,7 @@ final class AppServices {
     let beeCloud: BeeCloudImporter
     let beeRefresh: BeeBackgroundRefresh
     let whisper: WhisperTranscriber
+    let neuralVoice: NeuralVoice
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
@@ -59,9 +60,11 @@ final class AppServices {
         beeCloud = BeeCloudImporter()
         beeRefresh = BeeBackgroundRefresh(importer: beeCloud, pilot: pilot)
         whisper = WhisperTranscriber()
+        neuralVoice = NeuralVoice()
 
         pilot.brain = brain
         pilot.whisper = whisper
+        brain.voice.neural = neuralVoice
 
         let context = container.mainContext
         pilot.attach(modelContext: context)

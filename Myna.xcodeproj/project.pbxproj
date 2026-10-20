@@ -11,6 +11,8 @@
 		4D594E410000000000000017 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000014 /* MLXLMCommon */; };
 		4D594E410000000000000018 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000015 /* MLX */; };
 		4D594E410000000000000019 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001B /* WhisperKit */; };
+		4D594E41000000000000001C /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001E /* sherpa-onnx */; };
+		4D594E41000000000000001F /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000021 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +41,8 @@
 				4D594E410000000000000017 /* MLXLMCommon in Frameworks */,
 				4D594E410000000000000018 /* MLX in Frameworks */,
 				4D594E410000000000000019 /* WhisperKit in Frameworks */,
+				4D594E41000000000000001C /* sherpa-onnx in Frameworks */,
+				4D594E41000000000000001F /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -86,6 +90,8 @@
 				4D594E410000000000000014 /* MLXLMCommon */,
 				4D594E410000000000000015 /* MLX */,
 				4D594E41000000000000001B /* WhisperKit */,
+				4D594E41000000000000001E /* sherpa-onnx */,
+				4D594E410000000000000021 /* ZIPFoundation */,
 			);
 			productName = Myna;
 			productReference = 4D594E410000000000000001 /* Myna.app */;
@@ -119,6 +125,8 @@
 				4D594E410000000000000011 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				4D594E410000000000000012 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				4D594E41000000000000001A /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+				4D594E41000000000000001D /* XCRemoteSwiftPackageReference "sherpa-onnx" */,
+				4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D594E410000000000000005 /* Products */;
@@ -381,6 +389,22 @@
 				minimumVersion = 1.1.0;
 			};
 		};
+		4D594E41000000000000001D /* XCRemoteSwiftPackageReference "sherpa-onnx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/k2-fsa/sherpa-onnx";
+			requirement = {
+				kind = exactVersion;
+				version = 1.13.8;
+			};
+		};
+		4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.19;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -403,6 +427,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D594E41000000000000001A /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
 			productName = WhisperKit;
+		};
+		4D594E41000000000000001E /* sherpa-onnx */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D594E41000000000000001D /* XCRemoteSwiftPackageReference "sherpa-onnx" */;
+			productName = "sherpa-onnx";
+		};
+		4D594E410000000000000021 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

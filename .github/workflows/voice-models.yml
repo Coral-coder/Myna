@@ -1,0 +1,44 @@
+name: Publish voice models
+
+# Repackages the MIT-licensed Piper "hfc" English voices from sherpa-onnx's
+# model zoo into <id>.zip bundles (model.onnx + tokens.txt + espeak-ng-data) and
+# publishes them to the `voice-models` release, which the app downloads from.
+# Run manually (Actions → Publish voice models → Run workflow).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build voice zips
+        run: |
+          set -euo pipefail
+          base="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
+          mkdir -p out
+          for id in en_US-hfc_female-medium en_US-hfc_male-medium; do
+            src="vits-piper-$id"
+            echo "Fetching $src"
+            curl -fL -o "$src.tar.bz2" "$base/$src.tar.bz2"
+            tar xjf "$src.tar.bz2"
+            (
+              cd "$src"
+              cp -- *.onnx model.onnx
+              # Piper bundles ship model.onnx.json; keep it next to model.onnx.
+              [ -f *.onnx.json ] && cp -- *.onnx.json model.onnx.json || true
+              zip -r "../out/$id.zip" model.onnx tokens.txt espeak-ng-data model.onnx.json
+            )
+          done
+          ls -la out
+
+      - name: Publish to the voice-models release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: voice-models
+          name: Neural voice models
+          body: MIT-licensed Piper neural voices for Myna's on-device TTS.
+          files: out/*.zip
