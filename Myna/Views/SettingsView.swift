@@ -15,12 +15,23 @@ struct SettingsView: View {
     @AppStorage("myna.userName") private var userName = ""
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
     @AppStorage("myna.micSensitivity") private var micSensitivity: Double = 3.0
+    @AppStorage("myna.useWhisper") private var useWhisper = false
     @AppStorage("myna.voiceIdentifier") private var voiceIdentifier = ""
     @AppStorage("myna.speakImportant") private var speakImportant = true
     @AppStorage("myna.agentPrompt") private var agentPrompt = ""
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var listener: SpeechListener
+    @EnvironmentObject private var whisper: WhisperTranscriber
     @EnvironmentObject private var brain: MynaBrain
+
+    private var whisperStatus: String {
+        switch whisper.state {
+        case .notLoaded: return "Downloads a small model the first time."
+        case .loading: return "Downloading the Whisper model…"
+        case .ready: return "Ready — transcribing with Whisper."
+        case .failed(let message): return "Couldn't load Whisper: \(message)"
+        }
+    }
 
     private var assistantName: String {
         let first = customWakeWord.split(whereSeparator: { $0 == "," || $0 == "\n" }).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
@@ -235,6 +246,21 @@ struct SettingsView: View {
                     }
                 Text("Higher lets Myna hear voices farther across a room. If it starts catching background noise, ease it back down.")
                     .settingsCaption()
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $useWhisper) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Transcribe with Whisper").settingsLabel()
+                        Text("Use OpenAI's Whisper for conversation notes — more accurate on distant or noisy speech. The quick “Myna…” wake word still uses Apple's recognizer.").settingsCaption()
+                    }
+                }
+                .tint(MynaTheme.cyan)
+                .onChange(of: useWhisper) { _, on in whisper.setEnabled(on) }
+
+                if useWhisper {
+                    Text(whisperStatus).settingsCaption()
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {

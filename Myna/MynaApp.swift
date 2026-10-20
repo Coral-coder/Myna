@@ -16,6 +16,7 @@ struct MynaApp: App {
                 .environmentObject(services.contextHub)
                 .environmentObject(services.bee)
                 .environmentObject(services.beeCloud)
+                .environmentObject(services.whisper)
                 .preferredColorScheme(.dark)
         }
         .modelContainer(services.container)
