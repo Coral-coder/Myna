@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Backstage: tune how Myna listens, composes and schedules.
 struct SettingsView: View {
@@ -15,9 +16,13 @@ struct SettingsView: View {
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
     @AppStorage("myna.micSensitivity") private var micSensitivity: Double = 3.0
     @AppStorage("myna.useWhisper") private var useWhisper = false
+    @AppStorage("myna.voiceIdentifier") private var voiceIdentifier = ""
+    @AppStorage("myna.speakImportant") private var speakImportant = true
+    @AppStorage("myna.agentPrompt") private var agentPrompt = ""
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var whisper: WhisperTranscriber
+    @EnvironmentObject private var brain: MynaBrain
 
     private var whisperStatus: String {
         switch whisper.state {
@@ -28,6 +33,12 @@ struct SettingsView: View {
         }
     }
 
+    private var assistantName: String {
+        let first = customWakeWord.split(whereSeparator: { $0 == "," || $0 == "\n" }).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard !first.isEmpty else { return "Myna" }
+        return first.prefix(1).uppercased() + String(first.dropFirst())
+    }
+
     private var sensitivityLabel: String {
         switch micSensitivity {
         case ..<1.5: return "Normal"
@@ -35,6 +46,14 @@ struct SettingsView: View {
         case ..<6.5: return "Far"
         default: return "Max"
         }
+    }
+
+    private var selectedVoiceName: String {
+        guard !voiceIdentifier.isEmpty,
+              let match = brain.voice.availableVoices().first(where: { $0.id == voiceIdentifier }) else {
+            return "Best available"
+        }
+        return match.name
     }
 
     var body: some View {
@@ -114,17 +133,77 @@ struct SettingsView: View {
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
                         .onChange(of: customWakeWord) { _, _ in AppServices.applyCustomWakeWords() }
-                    Text("Leave blank to use “Myna”. Set your own word or short phrase (e.g. your name, or “hey scribe”). Pick something distinct and two or more syllables so it’s easy to hear; separate several with commas. Your word is used alongside “Myna”.").settingsCaption()
+                    Text("Leave blank to use “Myna”. Set your own word or short phrase (e.g. your name, or “hey scribe”). Pick something distinct and two or more syllables so it’s easy to hear; separate several with commas. Your word is used alongside “Myna”. This is also the name it answers to.").settingsCaption()
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("How \(assistantName) should act").settingsLabel()
+                TextField("Describe its personality and how it should treat you…", text: $agentPrompt, axis: .vertical)
+                    .lineLimit(3...6)
+                    .font(.system(size: 14, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                Text("Optional. Shapes its personality and tone — it keeps its name, its skills and the way it takes actions, this just changes how it feels to talk to. Leave blank for the default.").settingsCaption()
             }
 
             Toggle(isOn: $speakReplies) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Talk back").settingsLabel()
-                    Text("Myna answers out loud. Download a Premium voice in Settings → Accessibility → Spoken Content for the most natural sound.").settingsCaption()
+                    Text("\(assistantName) answers out loud in the voice you pick below.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
+
+            if speakReplies {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Voice").settingsLabel()
+                        Spacer()
+                        Menu {
+                            Button("Best available") {
+                                voiceIdentifier = ""
+                                brain.voice.preview(identifier: "")
+                            }
+                            ForEach(brain.voice.availableVoices()) { voice in
+                                Button {
+                                    voiceIdentifier = voice.id
+                                    brain.voice.preview(identifier: voice.id)
+                                } label: {
+                                    Text(voice.quality == .standard ? voice.name : "\(voice.name) · \(voice.quality.label)")
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(selectedVoiceName)
+                                Image(systemName: "chevron.up.chevron.down").font(.system(size: 11))
+                            }
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(MynaTheme.cyan)
+                        }
+                    }
+                    HStack(spacing: 16) {
+                        Button("Preview") { brain.voice.preview(identifier: voiceIdentifier) }
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(MynaTheme.cyan)
+                        Button("Get more voices") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.6))
+                    }
+                    Text("For the most natural, Siri-quality sound, download a Premium or Enhanced voice in Settings → Accessibility → Spoken Content → Voices, then pick it here.").settingsCaption()
+                }
+
+                Toggle(isOn: $speakImportant) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Speak up about important things").settingsLabel()
+                        Text("\(assistantName) says a quick line out loud when it captures a note or something needs you — only while the app is open.").settingsCaption()
+                    }
+                }
+                .tint(MynaTheme.cyan)
+            }
 
             Toggle(isOn: $autoCapture) {
                 VStack(alignment: .leading, spacing: 3) {
