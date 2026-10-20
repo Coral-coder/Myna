@@ -13,6 +13,7 @@
 		4D594E410000000000000019 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001B /* WhisperKit */; };
 		4D594E41000000000000001C /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001E /* sherpa-onnx */; };
 		4D594E41000000000000001F /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000021 /* ZIPFoundation */; };
+		4D594E410000000000000024 /* YbridOpus in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000023 /* YbridOpus */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +44,7 @@
 				4D594E410000000000000019 /* WhisperKit in Frameworks */,
 				4D594E41000000000000001C /* sherpa-onnx in Frameworks */,
 				4D594E41000000000000001F /* ZIPFoundation in Frameworks */,
+				4D594E410000000000000024 /* YbridOpus in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +94,7 @@
 				4D594E41000000000000001B /* WhisperKit */,
 				4D594E41000000000000001E /* sherpa-onnx */,
 				4D594E410000000000000021 /* ZIPFoundation */,
+				4D594E410000000000000023 /* YbridOpus */,
 			);
 			productName = Myna;
 			productReference = 4D594E410000000000000001 /* Myna.app */;
@@ -127,6 +130,7 @@
 				4D594E41000000000000001A /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
 				4D594E41000000000000001D /* XCRemoteSwiftPackageReference "sherpa-onnx" */,
 				4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				4D594E410000000000000022 /* XCRemoteSwiftPackageReference "opus-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D594E410000000000000005 /* Products */;
@@ -405,6 +409,14 @@
 				minimumVersion = 0.9.19;
 			};
 		};
+		4D594E410000000000000022 /* XCRemoteSwiftPackageReference "opus-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ybrid/opus-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 0.8.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -437,6 +449,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		4D594E410000000000000023 /* YbridOpus */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D594E410000000000000022 /* XCRemoteSwiftPackageReference "opus-swift" */;
+			productName = YbridOpus;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

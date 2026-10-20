@@ -6,10 +6,9 @@ import Foundation
 /// speech pipeline.
 ///
 /// AAC is decoded with AVAudioConverter, built into iOS. Opus has no system
-/// decoder on iOS, so that path needs libopus added to the app (SPM or an
-/// xcframework) wired to `OpusFrameDecoder`; until then an Opus stream surfaces
-/// `unavailableReason` rather than silently dropping. Confirm the emitted codec
-/// with GetDeviceState before relying on either; `SetBitrate` may change it.
+/// decoder on iOS, so that path uses libopus via the YbridOpus framework, wired
+/// through `OpusFrameDecoder`. Confirm the emitted codec with GetDeviceState
+/// before relying on either; `SetBitrate` may change it.
 ///
 /// Output is Float32 mono PCM at the codec's sample rate — the format
 /// `SFSpeechAudioBufferRecognitionRequest` accepts.
@@ -46,7 +45,7 @@ final class BeeAudioDecoder {
             if let decoder = OpusFrameDecoder(sampleRate: sampleRate, channels: channels) {
                 opusDecoder = decoder
             } else {
-                unavailableReason = "This bracelet is streaming Opus, which needs libopus added to Myna. Switch the device to AAC, or add the Opus library."
+                unavailableReason = "Couldn't start the Opus decoder for this stream (unexpected sample rate or channel count)."
             }
         case .unknown:
             unavailableReason = "The bracelet's audio codec wasn't recognized."
@@ -124,16 +123,47 @@ final class BeeAudioDecoder {
     }
 }
 
-/// Seam for an Opus decoder. Returns nil from `init` until libopus is wired in,
-/// which is what makes `BeeAudioDecoder` report Opus as unavailable rather than
-/// dropping the stream. Implement this against libopus (or a C shim) to enable
-/// Opus bracelets.
-struct OpusFrameDecoder {
+#if canImport(YbridOpus)
+import YbridOpus
+
+/// Decodes raw Opus packets to Float32 mono PCM with libopus (via the YbridOpus
+/// binary framework). The bracelet sends bare Opus frames (no Ogg container), so
+/// `opus_decode_float` is all that's needed. Mono only — matching wearable voice
+/// capture and the decoder's non-interleaved output buffer.
+final class OpusFrameDecoder {
+    private let decoder: OpaquePointer
+    /// Largest number of samples per channel an Opus frame can carry (120 ms).
+    private let maxFrameSamples: Int
+
     init?(sampleRate: Double, channels: UInt32) {
-        return nil
+        // Opus decodes only at these rates, and this path assumes mono.
+        let fs = Int32(sampleRate)
+        guard [8000, 12000, 16000, 24000, 48000].contains(fs), channels == 1 else { return nil }
+        var err: Int32 = 0
+        guard let created = opus_decoder_create(fs, 1, &err), err == 0 else { return nil }
+        decoder = created
+        maxFrameSamples = Int(sampleRate * 0.12)
     }
 
+    deinit { opus_decoder_destroy(decoder) }
+
     func decode(_ frame: Data, into format: AVAudioFormat) -> AVAudioPCMBuffer? {
-        nil
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(maxFrameSamples)),
+              let channelData = output.floatChannelData else { return nil }
+
+        let decoded: Int32 = frame.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return -1 }
+            return opus_decode_float(decoder, base, Int32(frame.count), channelData[0], Int32(maxFrameSamples), 0)
+        }
+        guard decoded > 0 else { return nil }
+        output.frameLength = AVAudioFrameCount(decoded)
+        return output
     }
 }
+#else
+/// libopus not linked in this build — Opus stays unavailable (AAC bracelets work).
+struct OpusFrameDecoder {
+    init?(sampleRate: Double, channels: UInt32) { return nil }
+    func decode(_ frame: Data, into format: AVAudioFormat) -> AVAudioPCMBuffer? { nil }
+}
+#endif
