@@ -46,6 +46,9 @@ final class BeeManager: ObservableObject {
 
     /// Bumped each handshake so a stale timeout from an earlier attempt is ignored.
     private var handshakeToken = 0
+    /// True while iOS is showing the Bluetooth pairing prompt, so the handshake
+    /// timeout waits longer — a slow tap shouldn't look like a failure.
+    private var isPairing = false
 
     private let central = BeeCentral()
     private weak var listener: SpeechListener?
@@ -159,6 +162,7 @@ final class BeeManager: ObservableObject {
         decoder = nil
         deviceState = nil
         codec = nil
+        isPairing = false
     }
 
     // MARK: - Handshake
@@ -176,6 +180,7 @@ final class BeeManager: ObservableObject {
     private func beginHandshake() {
         pairing = .provisioning
         handshakeToken += 1
+        isPairing = false
         diagnostics.removeAll()
         log("Connected. Requesting secure IDs (0xC01B)…")
         central.writeControl(BeeCommand.getSecureIds.frame())
@@ -188,9 +193,15 @@ final class BeeManager: ObservableObject {
     /// no-ops then.
     private func scheduleHandshakeTimeout(_ token: Int) {
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(12))
+            // Normally 12s is plenty. If an iOS pairing prompt is up, keep
+            // waiting (up to ~48s total) so accepting it isn't rushed.
+            for _ in 0..<4 {
+                try? await Task.sleep(for: .seconds(12))
+                guard let self, self.handshakeToken == token, case .provisioning = self.pairing else { return }
+                if !self.isPairing { break }
+            }
             guard let self, self.handshakeToken == token, case .provisioning = self.pairing else { return }
-            self.log("No reply that finished key setup within 12s.")
+            self.log("No reply that finished key setup in time.")
             self.pairing = .error("The bracelet didn't finish key setup. Open the device log below and send it to me — your bracelet may use a different provisioning step than this build expects.")
         }
     }
@@ -205,6 +216,7 @@ final class BeeManager: ObservableObject {
     var diagnosticsText: String { diagnostics.joined(separator: "\n") }
 
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
+        isPairing = false   // a reply means the link is bonded and encrypted
         self.deviceID = deviceID
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
@@ -346,6 +358,12 @@ extension BeeManager: BeeCentralDelegate {
 
     func beeCentralDidReady(_ central: BeeCentral) {
         beginHandshake()
+    }
+
+    func beeCentralDidBeginPairing(_ central: BeeCentral) {
+        guard !isPairing else { return }
+        isPairing = true
+        log("Pairing with the bracelet — accept the prompt on your iPhone.")
     }
 
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
