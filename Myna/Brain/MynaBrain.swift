@@ -45,6 +45,33 @@ final class MynaBrain: ObservableObject {
         UserDefaults.standard.object(forKey: "myna.autoCapture") as? Bool ?? true
     }
 
+    /// Myna answers to whatever name you set as the wake word — that's its name.
+    var assistantName: String {
+        let raw = UserDefaults.standard.string(forKey: AppServices.wakeWordKey) ?? ""
+        let first = raw.split(whereSeparator: { $0 == "," || $0 == "\n" }).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+        guard let first = first.isEmpty ? nil : first else { return "Myna" }
+        return first.prefix(1).uppercased() + String(first.dropFirst())
+    }
+
+    /// Optional user-written persona that shapes how it acts (its skills and the
+    /// reply format stay fixed so nothing breaks).
+    var customPersona: String {
+        (UserDefaults.standard.string(forKey: "myna.agentPrompt") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whether Myna may speak up on its own about something important.
+    var speaksImportant: Bool {
+        UserDefaults.standard.object(forKey: "myna.speakImportant") as? Bool ?? true
+    }
+
+    /// Say something proactively — only when you'd actually hear it (app in front,
+    /// talk-back on) and Myna isn't already speaking.
+    func speakProactively(_ text: String) {
+        guard speaksImportant, voice.isEnabled, !voice.isSpeaking,
+              UIApplication.shared.applicationState == .active else { return }
+        voice.say(text)
+    }
+
     private let listener: SpeechListener
     private let modelManager: ModelManager
     private let scheduler: EventScheduler
@@ -439,11 +466,18 @@ final class MynaBrain: ObservableObject {
         isThinking = true
         defer { isThinking = false }
 
+        let persona = customPersona.isEmpty ? """
+        You are \(assistantName), a warm, loyal, quick personal assistant living on the user's \
+        iPhone — the trusty computer in their pocket that always has their back. You are their \
+        memory and their second pair of ears: you remember their conversations, keep their lists, \
+        calendar and reminders, and quietly take care of things for them like a trusted human \
+        assistant would. When something genuinely matters, you speak up.
+        """ : """
+        Your name is \(assistantName). \(customPersona)
+        """
         let instructions = """
-        You are Myna, a warm, quick, capable personal assistant living on the user's iPhone. \
-        You are their memory and their second pair of ears: you remember their conversations, \
-        keep their lists and calendar, and take care of things for them like a trusted human \
-        assistant would. Answer in one to three natural spoken sentences — no lists, no markdown. \
+        \(persona) \
+        Answer in one to three natural spoken sentences — no lists, no markdown. \
         If the request needs something done, do it with actions. \
         Respond with one JSON object and nothing else.
         """

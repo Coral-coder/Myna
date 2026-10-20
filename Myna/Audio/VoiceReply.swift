@@ -14,8 +14,15 @@ final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
 
     private let synthesizer = AVSpeechSynthesizer()
 
+    static let voiceKey = "myna.voiceIdentifier"
+
     var isEnabled: Bool {
         UserDefaults.standard.object(forKey: "myna.speakReplies") as? Bool ?? true
+    }
+
+    /// The voice the user picked, if any (empty = let Myna choose the best).
+    private var chosenVoiceID: String {
+        UserDefaults.standard.string(forKey: Self.voiceKey) ?? ""
     }
 
     override init() {
@@ -28,8 +35,18 @@ final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
 
     func say(_ text: String) {
         guard isEnabled, !text.isEmpty else { return }
+        speak(text, voice: resolvedVoice())
+    }
+
+    /// Speak a one-line sample in a specific voice, for the picker's Preview.
+    func preview(identifier: String) {
+        let voice = AVSpeechSynthesisVoice(identifier: identifier) ?? resolvedVoice()
+        speak("Hi, I'm here and ready whenever you need me.", voice: voice)
+    }
+
+    private func speak(_ text: String, voice: AVSpeechSynthesisVoice?) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.bestVoice
+        utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.04
         utterance.pitchMultiplier = 1.03
         utterance.postUtteranceDelay = 0.1
@@ -40,16 +57,34 @@ final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
         synthesizer.stopSpeaking(at: .immediate)
     }
 
-    private static let bestVoice: AVSpeechSynthesisVoice? = {
-        let language = Locale.preferredLanguages.first ?? "en-US"
-        let prefix = String(language.prefix(2))
-        let candidates = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(prefix) }
-        return candidates.first { $0.quality == .premium && $0.language == language }
-            ?? candidates.first { $0.quality == .premium }
-            ?? candidates.first { $0.quality == .enhanced && $0.language == language }
-            ?? candidates.first { $0.quality == .enhanced }
-            ?? AVSpeechSynthesisVoice(language: language)
-    }()
+    // MARK: - Voice selection
+
+    private static var preferredLanguage: String { Locale.preferredLanguages.first ?? "en-US" }
+
+    private static func option(from voice: AVSpeechSynthesisVoice) -> VoiceOption {
+        let quality: VoiceOption.Quality
+        switch voice.quality {
+        case .premium: quality = .premium
+        case .enhanced: quality = .enhanced
+        default: quality = .standard
+        }
+        return VoiceOption(id: voice.identifier, name: voice.name, quality: quality, language: voice.language)
+    }
+
+    /// Voices to show in the picker, best first, in the user's language.
+    func availableVoices() -> [VoiceOption] {
+        VoiceCatalog.ordered(AVSpeechSynthesisVoice.speechVoices().map(Self.option), preferredLanguage: Self.preferredLanguage)
+    }
+
+    /// The AVSpeechSynthesisVoice to actually speak with.
+    func resolvedVoice() -> AVSpeechSynthesisVoice? {
+        let options = AVSpeechSynthesisVoice.speechVoices().map(Self.option)
+        if let pick = VoiceCatalog.select(identifier: chosenVoiceID, from: options, preferredLanguage: Self.preferredLanguage),
+           let voice = AVSpeechSynthesisVoice(identifier: pick.id) {
+            return voice
+        }
+        return AVSpeechSynthesisVoice(language: Self.preferredLanguage)
+    }
 
     // MARK: - AVSpeechSynthesizerDelegate
 

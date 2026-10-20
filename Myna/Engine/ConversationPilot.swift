@@ -196,6 +196,7 @@ final class ConversationPilot: ObservableObject {
         brain?.absorb(result)
         notesComposedToday += 1
         banner = "✨ Note composed: \(note.title)"
+        brain?.speakProactively("I just captured a note: \(note.title).")
     }
 
     /// Never lose what was heard — file the raw transcript as a note.
