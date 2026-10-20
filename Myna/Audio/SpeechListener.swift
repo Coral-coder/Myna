@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Speech
+import UIKit
 
 /// Continuous, fully on-device speech capture.
 ///
@@ -35,6 +36,11 @@ final class SpeechListener: NSObject, ObservableObject {
     /// Recognition paused (e.g. while Myna is speaking) but the session stays up.
     private var isPaused = false
     private var resumeAfterInterruption = false
+    /// We want to be listening, but something (backgrounding, an interruption)
+    /// stopped the engine; resume the moment the app is active and the mic is
+    /// available again. The iPhone can't open the mic while backgrounded, so
+    /// restarting the engine there would crash — we wait instead.
+    private var wantsToListen = false
 
     /// Rotate the recognition task once a minute so a single task never grows unbounded.
     private let taskRotationInterval: TimeInterval = 60
@@ -49,7 +55,11 @@ final class SpeechListener: NSObject, ObservableObject {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         center.addObserver(self, selector: #selector(handleMediaReset(_:)), name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleBecameActive(_:)), name: UIApplication.didBecomeActiveNotification, object: nil)
     }
+
+    /// The mic can only be opened while the app is foreground-active.
+    private var appIsActive: Bool { UIApplication.shared.applicationState == .active }
 
     // MARK: - Permissions
 
@@ -72,6 +82,12 @@ final class SpeechListener: NSObject, ObservableObject {
 
     func start() {
         guard !isListening else { return }
+        // Remember the intent even if we can't start right now, so we resume
+        // when the app is next active (see handleBecameActive).
+        wantsToListen = true
+        // The iPhone microphone can't be opened from the background; trying would
+        // throw or, worse, install a tap on a zero-rate format and crash. Defer.
+        guard appIsActive else { return }
         lastError = nil
         do {
             let session = AVAudioSession.sharedInstance()
@@ -84,6 +100,15 @@ final class SpeechListener: NSObject, ObservableObject {
 
             let inputNode = audioEngine.inputNode
             let format = inputNode.outputFormat(forBus: 0)
+            // When the mic is unavailable (just backgrounded, taken by a call, or
+            // revoked) the input format comes back with a 0 sample rate, and
+            // installTap would hit a fatal assertion. Bail gracefully instead —
+            // this is the background-crash fix.
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                lastError = "The microphone isn't available right now."
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                return
+            }
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                 // While the bracelet is the source, the mic stays off the request.
@@ -114,6 +139,7 @@ final class SpeechListener: NSObject, ObservableObject {
 
     func stop() {
         resumeAfterInterruption = false
+        wantsToListen = false
         rotationTimer?.invalidate()
         rotationTimer = nil
         flushPartialIfMeaningful()
@@ -259,6 +285,9 @@ final class SpeechListener: NSObject, ObservableObject {
             case .ended:
                 if self.resumeAfterInterruption {
                     self.resumeAfterInterruption = false
+                    // Only reopen the mic if we're foreground-active; otherwise
+                    // wantsToListen stays set and handleBecameActive resumes us.
+                    guard self.appIsActive else { return }
                     try? await Task.sleep(for: .milliseconds(600))
                     self.start()
                 }
@@ -272,7 +301,18 @@ final class SpeechListener: NSObject, ObservableObject {
         Task { @MainActor in
             guard self.isListening else { return }
             self.stopForInterruption()
+            guard self.appIsActive else { return }
             try? await Task.sleep(for: .seconds(1))
+            self.start()
+        }
+    }
+
+    /// Back in the foreground: reopen the mic if we meant to be listening but an
+    /// interruption or backgrounding had stopped the engine.
+    @objc private nonisolated func handleBecameActive(_ notification: Notification) {
+        Task { @MainActor in
+            guard self.wantsToListen, !self.isListening, !self.isPaused else { return }
+            try? await Task.sleep(for: .milliseconds(300))
             self.start()
         }
     }
@@ -281,6 +321,9 @@ final class SpeechListener: NSObject, ObservableObject {
         let resume = resumeAfterInterruption
         stop()
         resumeAfterInterruption = resume
+        // An interruption or backgrounding is temporary — keep the intent to
+        // listen so we resume automatically.
+        wantsToListen = true
     }
 
     private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Double {

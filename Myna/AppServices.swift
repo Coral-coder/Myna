@@ -16,11 +16,18 @@ final class AppServices {
     let contextHub: ContextHub
     let bee: BeeManager
     let beeCloud: BeeCloudImporter
+    let beeRefresh: BeeBackgroundRefresh
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
     var alwaysOn: Bool {
         UserDefaults.standard.object(forKey: "myna.alwaysOn") as? Bool ?? true
+    }
+
+    /// Whether Myna may use the iPhone microphone at all. Off → Myna runs purely
+    /// on the Bee backend (and anything you ask it directly); the mic is never opened.
+    var micEnabled: Bool {
+        UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
     }
 
     /// Wake word setting key, and how its text becomes a word list.
@@ -49,6 +56,7 @@ final class AppServices {
         brain = MynaBrain(listener: listener, modelManager: modelManager, pilot: pilot, contextHub: contextHub)
         bee = BeeManager(listener: listener, pilot: pilot)
         beeCloud = BeeCloudImporter()
+        beeRefresh = BeeBackgroundRefresh(importer: beeCloud, pilot: pilot)
 
         pilot.brain = brain
 
@@ -59,17 +67,24 @@ final class AppServices {
 
         UNUserNotificationCenter.current().delegate = notificationPresenter
         ActionNotifier.registerCategory()
+        // Must register during launch, before the app finishes launching.
+        beeRefresh.register()
     }
 
     /// First launch after onboarding, and every return to the foreground.
     func becameActive() {
         modelManager.refreshInstalledStates()
         beeCloud.importIfEnabled()
-        if alwaysOn, UserDefaults.standard.bool(forKey: "myna.onboarded"), SpeechListener.hasPermissions,
+        if alwaysOn, micEnabled, UserDefaults.standard.bool(forKey: "myna.onboarded"), SpeechListener.hasPermissions,
            pilot.phase == .idle, !listener.isListening {
             pilot.startListening()
         }
         pilot.drainQueue()
+    }
+
+    /// Entered the background: ask iOS to wake us later to pull from Bee.
+    func enteredBackground() {
+        beeRefresh.schedule()
     }
 }
 

@@ -116,6 +116,14 @@ final class BeeCloudImporter: ObservableObject {
         }
     }
 
+    /// Awaitable refresh for the background task — pulls account, facts and new
+    /// conversations, then returns so the task can report completion to iOS.
+    func backgroundRefresh() async {
+        guard isEnabled, status != .importing else { return }
+        await refreshAccount()
+        await importRecent()
+    }
+
     /// Pulls recent conversations and files the new ones. Returns how many were added.
     @discardableResult
     func importRecent(limit: Int = 20) async -> Int {

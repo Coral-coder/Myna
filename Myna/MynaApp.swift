@@ -20,8 +20,13 @@ struct MynaApp: App {
         }
         .modelContainer(services.container)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
+            switch phase {
+            case .active:
                 services.becameActive()
+            case .background:
+                services.enteredBackground()
+            default:
+                break
             }
         }
     }
