@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("myna.voiceIdentifier") private var voiceIdentifier = ""
     @AppStorage("myna.speakImportant") private var speakImportant = true
     @AppStorage("myna.agentPrompt") private var agentPrompt = ""
+    @AppStorage("myna.webLookup") private var webLookup = true
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var whisper: WhisperTranscriber
@@ -275,6 +276,14 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Mirror to Apple Reminders").settingsLabel()
                     Text("To-dos, reminders and shopping also appear in Reminders, on your Watch and Mac.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $webLookup) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Look things up online").settingsLabel()
+                    Text("When \(assistantName) doesn't know something, it searches the web and answers from what it finds. Only your search query leaves the device, and only when it needs to look something up.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
