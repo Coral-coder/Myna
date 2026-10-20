@@ -117,6 +117,35 @@ jobs:
             }
           echo "Archived build $BUILD_NUMBER."
 
+      - name: Strip statically-linked frameworks from the archive
+        # sherpa-onnx ships onnxruntime (and itself) as STATIC frameworks: the
+        # "executable" inside the .framework is an ar archive, and its code is
+        # already linked into Myna's main binary. Xcode still copies these into
+        # the app's Frameworks/ folder, and App Store validation rejects a
+        # bundled framework whose executable isn't a real dynamic library
+        # (ITMS-90208: "onnxruntime.framework does not support the minimum OS
+        # Version"). Remove any such static framework here; nothing loads it at
+        # runtime, and the next step (-exportArchive) re-signs the app, so the
+        # removal is sealed into a valid signature.
+        run: |
+          APP="$RUNNER_TEMP/Myna.xcarchive/Products/Applications/Myna.app"
+          FWDIR="$APP/Frameworks"
+          if [ ! -d "$FWDIR" ]; then
+            echo "No Frameworks directory in the archive — nothing to strip."
+            exit 0
+          fi
+          for fw in "$FWDIR"/*.framework; do
+            [ -d "$fw" ] || continue
+            name="$(basename "$fw" .framework)"
+            exe="$fw/$name"
+            if [ -f "$exe" ] && file "$exe" | grep -q "ar archive"; then
+              echo "::notice::Removing statically-linked framework $name.framework (already linked into the app binary)"
+              rm -rf "$fw"
+            fi
+          done
+          echo "Frameworks remaining in the app bundle:"
+          ls "$FWDIR" 2>/dev/null || echo "(none)"
+
       - name: Upload to TestFlight
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
