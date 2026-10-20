@@ -50,6 +50,21 @@ final class SpeechListener: NSObject, ObservableObject {
     /// the audio-thread tap, so it's a plain flag.
     nonisolated(unsafe) private var externalSourceActive = false
 
+    /// Far-field boost, read from the audio-thread tap. 1 = off. Updated from the
+    /// main actor when the Microphone sensitivity slider changes.
+    nonisolated(unsafe) private var sensitivity: Float = SpeechListener.storedSensitivity
+
+    static let sensitivityKey = "myna.micSensitivity"
+    static var storedSensitivity: Float {
+        let v = UserDefaults.standard.object(forKey: sensitivityKey) as? Double
+        return Float(v ?? 3.0)
+    }
+
+    /// How hard Myna boosts distant speech (1...8). Takes effect on the next buffer.
+    func setSensitivity(_ value: Float) {
+        sensitivity = min(max(value, 1), 8)
+    }
+
     override init() {
         super.init()
         let center = NotificationCenter.default
@@ -112,7 +127,11 @@ final class SpeechListener: NSObject, ObservableObject {
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                 // While the bracelet is the source, the mic stays off the request.
-                if self?.externalSourceActive != true { self?.request?.append(buffer) }
+                if self?.externalSourceActive != true {
+                    // Lift distant, quiet speech so the recognizer can hear it.
+                    Self.boost(buffer, gain: self?.sensitivity ?? 1)
+                    self?.request?.append(buffer)
+                }
                 let level = Self.rms(of: buffer)
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -324,6 +343,27 @@ final class SpeechListener: NSObject, ObservableObject {
         // An interruption or backgrounding is temporary — keep the intent to
         // listen so we resume automatically.
         wantsToListen = true
+    }
+
+    /// Applies the far-field boost in place on the live mic buffer, using the
+    /// same gate → gain → soft-clip as `AudioGain` (which is unit-tested). Runs
+    /// on the audio thread, so it stays allocation-free.
+    private nonisolated static func boost(_ buffer: AVAudioPCMBuffer, gain: Float) {
+        guard gain > 1.001, let channels = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        let channelCount = Int(buffer.format.channelCount)
+
+        // Gate: don't amplify a near-silent room into phantom speech.
+        var sum: Float = 0
+        let first = channels[0]
+        for i in 0..<frames { sum += first[i] * first[i] }
+        guard (sum / Float(frames)).squareRoot() >= 0.004 else { return }
+
+        for c in 0..<channelCount {
+            let samples = channels[c]
+            for i in 0..<frames { samples[i] = tanhf(samples[i] * gain) }
+        }
     }
 
     private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Double {

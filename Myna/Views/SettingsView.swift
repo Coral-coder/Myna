@@ -13,7 +13,18 @@ struct SettingsView: View {
     @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
     @AppStorage("myna.userName") private var userName = ""
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
+    @AppStorage("myna.micSensitivity") private var micSensitivity: Double = 3.0
     @EnvironmentObject private var pilot: ConversationPilot
+    @EnvironmentObject private var listener: SpeechListener
+
+    private var sensitivityLabel: String {
+        switch micSensitivity {
+        case ..<1.5: return "Normal"
+        case ..<4: return "High"
+        case ..<6.5: return "Far"
+        default: return "Max"
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -128,6 +139,24 @@ struct SettingsView: View {
     private var listeningCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeading(icon: "ear.badge.waveform", title: "Listening", tint: MynaTheme.cyan)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Microphone sensitivity")
+                        .settingsLabel()
+                    Spacer()
+                    Text(sensitivityLabel)
+                        .font(MynaTheme.display(14, weight: .bold))
+                        .foregroundStyle(MynaTheme.cyan)
+                }
+                Slider(value: $micSensitivity, in: 1...8, step: 0.5)
+                    .tint(MynaTheme.cyan)
+                    .onChange(of: micSensitivity) { _, value in
+                        listener.setSensitivity(Float(value))
+                    }
+                Text("Higher lets Myna hear voices farther across a room. If it starts catching background noise, ease it back down.")
+                    .settingsCaption()
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
