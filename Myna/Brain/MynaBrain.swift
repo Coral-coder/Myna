@@ -35,6 +35,7 @@ final class MynaBrain: ObservableObject {
 
     let voice = VoiceReply()
     let reminders = ReminderCenter()
+    let notifier = ActionNotifier()
 
     var isWakeWordEnabled: Bool {
         UserDefaults.standard.object(forKey: "myna.wakeWord") as? Bool ?? true
@@ -116,6 +117,9 @@ final class MynaBrain: ObservableObject {
     @discardableResult
     func perform(_ command: MynaCommand, heard: String, origin: Origin) async -> String {
         let reply: String
+        // Anything the command announces to your wrist (with its own Cancel button)
+        // stands in for the generic "Myna" banner, so we don't notify twice.
+        let announcedBefore = notifier.postedCount
         switch command {
         case .addItems(let kind, let texts):
             let added = add(kind, texts: texts, source: origin.itemSource)
@@ -156,11 +160,11 @@ final class MynaBrain: ObservableObject {
             reply = await ask(question, origin: origin)
         }
 
-        respond(heard: heard, reply: reply, origin: origin)
+        respond(heard: heard, reply: reply, origin: origin, actionAnnounced: notifier.postedCount > announcedBefore)
         return reply
     }
 
-    private func respond(heard: String, reply: String, origin: Origin) {
+    private func respond(heard: String, reply: String, origin: Origin, actionAnnounced: Bool = false) {
         withAnimation(.easeOut(duration: 0.25)) {
             lastExchange = Exchange(heard: heard, reply: reply, at: .now)
         }
@@ -170,7 +174,7 @@ final class MynaBrain: ObservableObject {
         case .typed, .siri:
             break
         }
-        if origin != .typed, UIApplication.shared.applicationState != .active {
+        if origin != .typed, !actionAnnounced, UIApplication.shared.applicationState != .active {
             reminders.announce("Myna", body: reply)
         }
     }
@@ -178,7 +182,7 @@ final class MynaBrain: ObservableObject {
     // MARK: - Lists
 
     @discardableResult
-    func add(_ kind: ItemKind, texts: [String], due: Date? = nil, detail: String = "", source: ItemSource, noteID: UUID? = nil) -> [MynaItem] {
+    func add(_ kind: ItemKind, texts: [String], due: Date? = nil, detail: String = "", source: ItemSource, noteID: UUID? = nil, announce: Bool = true) -> [MynaItem] {
         guard let modelContext else { return [] }
         let existing = openItems(kind)
         var added: [MynaItem] = []
@@ -197,7 +201,27 @@ final class MynaBrain: ObservableObject {
             added.append(item)
         }
         try? modelContext.save()
+        // Notify the wrist only when Myna acted on its own (voice, Siri, the
+        // assistant) — not when you typed the item into the list yourself.
+        if announce, source != .typed, !added.isEmpty { announceAdded(kind, items: added, due: due) }
         return added
+    }
+
+    /// One wrist notification for a batch Myna just added, with a Cancel button
+    /// that deletes exactly those items.
+    private func announceAdded(_ kind: ItemKind, items: [MynaItem], due: Date?) {
+        let names = Self.joined(items.map { lowercasedFirst($0.text) })
+        let title: String
+        var body = names
+        switch kind {
+        case .shopping: title = "Myna added to shopping"
+        case .todo: title = items.count == 1 ? "Myna added a to-do" : "Myna added \(items.count) to-dos"
+        case .reminder:
+            title = "Myna set a reminder"
+            if let due { body = "\(names) — \(Self.spoken(due))" }
+        case .memo: title = "Myna saved a note"
+        }
+        notifier.announce(title: title, body: body, undo: .items(ids: items.map { $0.id.uuidString }))
     }
 
     func setDone(_ item: MynaItem, _ done: Bool) {
@@ -245,10 +269,28 @@ final class MynaBrain: ObservableObject {
     func absorb(_ result: NotesEngine.Result) {
         guard autoCapture else { return }
         let noteID = result.note.id
-        add(.todo, texts: result.myTasks, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID)
-        add(.shopping, texts: result.shoppingItems, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID)
+        // Bulk follow-ups from a conversation are surfaced on the note itself, so
+        // they don't each buzz the wrist — unlike a direct "Myna, …" action.
+        add(.todo, texts: result.myTasks, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID, announce: false)
+        add(.shopping, texts: result.shoppingItems, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID, announce: false)
         for reminder in result.reminders {
-            add(.reminder, texts: [reminder.text], due: reminder.at, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID)
+            add(.reminder, texts: [reminder.text], due: reminder.at, detail: "From “\(result.note.title)”", source: .conversation, noteID: noteID, announce: false)
+        }
+    }
+
+    // MARK: - Undo (from an action notification's Cancel button)
+
+    /// Reverses an action Myna announced, triggered by the Cancel button on its
+    /// iPhone / Apple Watch notification.
+    func undo(_ request: ActionUndo) {
+        switch request {
+        case .event(let id):
+            scheduler.remove(eventID: id)
+        case .items(let ids):
+            let targets = Set(ids.compactMap(UUID.init(uuidString:)))
+            guard !targets.isEmpty, let modelContext else { return }
+            let all = (try? modelContext.fetch(FetchDescriptor<MynaItem>())) ?? []
+            for item in all where targets.contains(item.id) { delete(item) }
         }
     }
 
@@ -271,7 +313,10 @@ final class MynaBrain: ObservableObject {
             confidence: 1
         )
         do {
-            _ = try scheduler.schedule(event)
+            let eventID = try scheduler.schedule(event)
+            if origin != .typed {
+                notifier.announce(title: "Myna added to your calendar", body: "\(title) — \(Self.spoken(at))", undo: .event(id: eventID))
+            }
             return "Done — \(title) is on your calendar \(Self.spoken(at))."
         } catch {
             add(.todo, texts: ["Schedule: \(title) \(Self.spoken(at))"], source: origin.itemSource)
