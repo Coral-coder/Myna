@@ -117,21 +117,24 @@ jobs:
             }
           echo "Archived build $BUILD_NUMBER."
 
-      - name: Align embedded framework minimum OS versions
-        # Fix ITMS-90208 ("<framework> does not support the minimum OS Version
-        # specified in the Info.plist"). The SPM binary frameworks Xcode embeds
-        # (onnxruntime, SherpaOnnxC, YbridOpus — all dynamic in the built app)
-        # ship an Info.plist whose MinimumOSVersion is LOWER than the binary's
-        # actual build minimum, which App Store validation rejects. Set each
-        # embedded framework's declared MinimumOSVersion to its binary's real
-        # minos (read with vtool/otool), falling back to the app's own minimum.
-        # The next step (-exportArchive) re-signs the app and its embedded
-        # frameworks, so the edited Info.plist is re-sealed into a valid signature.
+      - name: Normalize embedded frameworks (arm64-only, matching min OS)
+        # Two App Store validation issues with the dynamic SPM binary frameworks
+        # Xcode embeds (onnxruntime, SherpaOnnxC, YbridOpus):
+        #   1. ITMS-90208 — a framework's Info.plist MinimumOSVersion is lower
+        #      than its binary actually supports.
+        #   2. A 32-bit (armv7) slice in an old framework (YbridOpus), which is
+        #      unsupported on modern iOS and clashes with the app's min OS.
+        # The app is arm64-only (iOS 26), so: thin every embedded framework
+        # binary to arm64, then set its declared MinimumOSVersion to the app's
+        # own minimum. The arm64 slices all build for far below 26, so declaring
+        # the app min is always supported, and dropping the dead 32-bit slices
+        # removes the architecture warning. -exportArchive re-signs the app and
+        # its embedded frameworks afterwards, so the edits are re-sealed.
         run: |
           APP="$RUNNER_TEMP/Myna.xcarchive/Products/Applications/Myna.app"
           FWDIR="$APP/Frameworks"
           if [ ! -d "$FWDIR" ]; then
-            echo "No Frameworks directory in the archive — nothing to align."
+            echo "No Frameworks directory in the archive — nothing to normalize."
             exit 0
           fi
           APP_MIN="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" 2>/dev/null || echo 26.0)"
@@ -143,30 +146,43 @@ jobs:
             plist="$fw/Info.plist"
             exe="$fw/$name"
             [ -f "$plist" ] || continue
-            # Read the binary's real minimum deployment version.
-            minos=""
+            # Thin the binary to arm64 only, dropping any 32-bit / simulator slices.
             if [ -f "$exe" ]; then
-              minos="$(vtool -arch arm64 -show-build "$exe" 2>/dev/null | awk '/minos/{print $2; exit}')"
-              [ -z "$minos" ] && minos="$(otool -l "$exe" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+              archs="$(lipo -archs "$exe" 2>/dev/null || echo "")"
+              echo "$name.framework archs: $archs"
+              if printf ' %s ' "$archs" | grep -q ' arm64 '; then
+                for a in $archs; do
+                  if [ "$a" != arm64 ]; then
+                    lipo "$exe" -remove "$a" -output "$exe" 2>/dev/null || true
+                  fi
+                done
+                echo "  -> after thinning: $(lipo -archs "$exe" 2>/dev/null)"
+              fi
             fi
-            [ -z "$minos" ] && minos="$APP_MIN"
+            # Declare the app's minimum (arm64 binaries all support it).
             cur="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null || echo '(none)')"
-            /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $minos" "$plist" 2>/dev/null \
-              || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $minos" "$plist"
+            /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $APP_MIN" "$plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $APP_MIN" "$plist"
             new="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null)"
-            echo "$name.framework MinimumOSVersion: $cur -> $new (binary minos: $minos)"
-            [ "$new" = "$minos" ] || { echo "::error::Failed to set MinimumOSVersion for $name.framework"; fail=1; }
+            echo "$name.framework MinimumOSVersion: $cur -> $new"
+            [ "$new" = "$APP_MIN" ] || { echo "::error::Failed to set MinimumOSVersion for $name.framework"; fail=1; }
           done
           # Hard stop: never ship onnxruntime.framework still declaring the old
-          # 15.1 that App Store validation rejects.
-          onx="$FWDIR/onnxruntime.framework/Info.plist"
-          if [ -f "$onx" ]; then
-            v="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$onx" 2>/dev/null)"
-            if [ "$v" = "15.1" ] || [ -z "$v" ]; then
-              echo "::error::onnxruntime.framework MinimumOSVersion is still '$v' — would be rejected (ITMS-90208)."
+          # 15.1 that App Store validation rejects, or any leftover 32-bit slice.
+          onx="$FWDIR/onnxruntime.framework"
+          if [ -d "$onx" ]; then
+            v="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$onx/Info.plist" 2>/dev/null)"
+            [ "$v" = "$APP_MIN" ] || { echo "::error::onnxruntime.framework MinimumOSVersion is '$v', expected $APP_MIN."; fail=1; }
+          fi
+          for fw in "$FWDIR"/*.framework; do
+            name="$(basename "$fw" .framework)"
+            exe="$fw/$name"
+            [ -f "$exe" ] || continue
+            if lipo -archs "$exe" 2>/dev/null | grep -Eqw 'armv7|armv7s|i386'; then
+              echo "::error::$name.framework still contains a 32-bit slice."
               fail=1
             fi
-          fi
+          done
           exit $fail
 
       - name: Upload to TestFlight
