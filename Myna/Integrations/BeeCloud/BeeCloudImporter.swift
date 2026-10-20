@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftData
 
@@ -19,15 +20,42 @@ final class BeeCloudImporter: ObservableObject {
 
     @Published private(set) var status: Status = .idle
     @Published private(set) var lastImport: Date?
+    /// Display name on the connected Bee account, once known.
+    @Published private(set) var accountName: String?
+    /// Facts Bee has learned about you (fed to the assistant as context).
+    @Published private(set) var facts: [String] = []
+
+    /// The log-in / pairing flow. Approve Myna once on bee.computer and the
+    /// token arrives automatically — no copy-paste.
+    let pairing = BeeCloudPairing()
 
     private static let tokenAccount = "bee.cloud.token"
     private static let enabledKey = "myna.beeCloud.enabled"
     private static let lastImportKey = "myna.beeCloud.lastImport"
 
     private var modelContext: ModelContext?
+    private var cancellables: Set<AnyCancellable> = []
 
     init() {
         lastImport = UserDefaults.standard.object(forKey: Self.lastImportKey) as? Date
+        pairing.onToken = { [weak self] token in
+            self?.saveToken(token)
+        }
+        // Re-publish pairing progress so views observing the importer update.
+        pairing.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+
+    /// Begin the Bee log-in flow.
+    func connect() {
+        pairing.start()
+    }
+
+    func disconnect() {
+        saveToken("")
+        accountName = nil
+        facts = []
     }
 
     func attach(modelContext: ModelContext) {
@@ -57,8 +85,24 @@ final class BeeCloudImporter: ObservableObject {
             Keychain.delete(Self.tokenAccount)
         } else {
             try? Keychain.set(Data(trimmed.utf8), for: Self.tokenAccount)
+            Task { await refreshAccount() }
         }
         objectWillChange.send()
+    }
+
+    // MARK: - Account & facts
+
+    /// Pulls the account name and facts; also refreshes on foreground.
+    func refreshAccount() async {
+        guard let token, !token.isEmpty else { return }
+        let api = BeeCloudAPI(token: token)
+        accountName = (try? await api.accountName()) ?? accountName
+        if let fetched = try? await api.facts() { facts = fetched }
+    }
+
+    /// Facts for the assistant's context, capped so the prompt stays small.
+    func assistantFacts(limit: Int = 25) -> [String] {
+        Array(facts.prefix(limit))
     }
 
     // MARK: - Import
@@ -66,7 +110,10 @@ final class BeeCloudImporter: ObservableObject {
     /// Called on foreground when auto-import is on.
     func importIfEnabled() {
         guard isEnabled, status != .importing else { return }
-        Task { await importRecent() }
+        Task {
+            await refreshAccount()
+            await importRecent()
+        }
     }
 
     /// Pulls recent conversations and files the new ones. Returns how many were added.

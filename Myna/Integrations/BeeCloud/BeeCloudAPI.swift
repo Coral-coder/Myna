@@ -79,6 +79,23 @@ struct BeeCloudAPI {
         )
     }
 
+    /// The display name on the connected Bee account, if any.
+    func accountName() async throws -> String? {
+        let body = try await get("/v1/me")
+        let record = (body["user"] as? [String: Any]) ?? body
+        return (record["first_name"] as? String)
+            ?? (record["name"] as? String)
+            ?? (record["email"] as? String)
+    }
+
+    /// Facts Bee has learned about you — handy context for Myna's assistant.
+    func facts(limit: Int = 50) async throws -> [String] {
+        let body = try await get("/v1/facts?limit=\(limit)")
+        let list = (body["facts"] as? [[String: Any]]) ?? (body["items"] as? [[String: Any]]) ?? []
+        return list.compactMap { ($0["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     // MARK: - HTTP
 
     private func get(_ path: String) async throws -> [String: Any] {
