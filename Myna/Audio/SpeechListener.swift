@@ -127,7 +127,11 @@ final class SpeechListener: NSObject, ObservableObject {
                 return
             }
             inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            // Pass format: nil so CoreAudio uses the input node's own format. An
+            // explicit format that doesn't exactly match the node makes installTap
+            // raise an Objective-C exception (which Swift can't catch) and the app
+            // aborts — seen on iOS 26/27. nil is the mismatch-proof choice.
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
                 // While the bracelet is the source, the mic stays off the request.
                 if self?.externalSourceActive != true {
                     // Lift distant, quiet speech so the recognizer can hear it.
