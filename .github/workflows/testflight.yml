@@ -117,56 +117,57 @@ jobs:
             }
           echo "Archived build $BUILD_NUMBER."
 
-      - name: Strip statically-linked frameworks from the archive
-        # sherpa-onnx ships onnxruntime (and itself) as STATIC frameworks: the
-        # "executable" inside the .framework is an ar archive, and its code is
-        # already linked into Myna's main binary. Xcode still copies these into
-        # the app's Frameworks/ folder, and App Store validation rejects a
-        # bundled framework whose executable isn't a real dynamic library
-        # (ITMS-90208: "onnxruntime.framework does not support the minimum OS
-        # Version"). Remove any such static framework here; nothing loads it at
-        # runtime, and the next step (-exportArchive) re-signs the app, so the
-        # removal is sealed into a valid signature.
+      - name: Align embedded framework minimum OS versions
+        # Fix ITMS-90208 ("<framework> does not support the minimum OS Version
+        # specified in the Info.plist"). The SPM binary frameworks Xcode embeds
+        # (onnxruntime, SherpaOnnxC, YbridOpus — all dynamic in the built app)
+        # ship an Info.plist whose MinimumOSVersion is LOWER than the binary's
+        # actual build minimum, which App Store validation rejects. Set each
+        # embedded framework's declared MinimumOSVersion to its binary's real
+        # minos (read with vtool/otool), falling back to the app's own minimum.
+        # The next step (-exportArchive) re-signs the app and its embedded
+        # frameworks, so the edited Info.plist is re-sealed into a valid signature.
         run: |
           APP="$RUNNER_TEMP/Myna.xcarchive/Products/Applications/Myna.app"
           FWDIR="$APP/Frameworks"
           if [ ! -d "$FWDIR" ]; then
-            echo "No Frameworks directory in the archive — nothing to strip."
+            echo "No Frameworks directory in the archive — nothing to align."
             exit 0
           fi
+          APP_MIN="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" 2>/dev/null || echo 26.0)"
+          echo "App MinimumOSVersion: $APP_MIN"
+          fail=0
           for fw in "$FWDIR"/*.framework; do
             [ -d "$fw" ] || continue
             name="$(basename "$fw" .framework)"
+            plist="$fw/Info.plist"
             exe="$fw/$name"
-            [ -f "$exe" ] || continue
-            # KEEP a framework only when we can positively confirm its executable
-            # is a Mach-O DYNAMIC library (those must be embedded, e.g. YbridOpus).
-            # Everything else is a static framework whose code is already linked
-            # into the app binary; embedding it makes App Store validation reject
-            # the build (ITMS-90208), so strip it. Two independent checks so one
-            # tool's wording can't cause a miss: `file` says "dynamically linked
-            # shared library", or `otool -hv` reports the DYLIB filetype.
-            fdesc="$(file -b "$exe" 2>/dev/null || true)"
-            is_dynamic=no
-            if printf '%s' "$fdesc" | grep -q "dynamically linked shared library"; then is_dynamic=yes; fi
-            if otool -hv "$exe" 2>/dev/null | grep -qw DYLIB; then is_dynamic=yes; fi
-            echo "Inspecting $name.framework (dynamic=$is_dynamic): $fdesc"
-            if [ "$is_dynamic" = yes ]; then
-              echo "  -> dynamic framework, keeping it."
-            else
-              echo "::notice::Removing statically-linked framework $name.framework (already linked into the app binary)"
-              rm -rf "$fw"
+            [ -f "$plist" ] || continue
+            # Read the binary's real minimum deployment version.
+            minos=""
+            if [ -f "$exe" ]; then
+              minos="$(vtool -arch arm64 -show-build "$exe" 2>/dev/null | awk '/minos/{print $2; exit}')"
+              [ -z "$minos" ] && minos="$(otool -l "$exe" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
             fi
+            [ -z "$minos" ] && minos="$APP_MIN"
+            cur="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null || echo '(none)')"
+            /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $minos" "$plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $minos" "$plist"
+            new="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null)"
+            echo "$name.framework MinimumOSVersion: $cur -> $new (binary minos: $minos)"
+            [ "$new" = "$minos" ] || { echo "::error::Failed to set MinimumOSVersion for $name.framework"; fail=1; }
           done
-          echo "Frameworks remaining in the app bundle:"
-          ls "$FWDIR" 2>/dev/null || echo "(none)"
-          # Hard stop: a static onnxruntime.framework must never ship — it is the
-          # exact bundle App Store validation rejects. If it's still here, the
-          # detection missed and we fail now rather than wasting an upload cycle.
-          if [ -d "$FWDIR/onnxruntime.framework" ]; then
-            echo "::error::onnxruntime.framework is still embedded after stripping — would be rejected (ITMS-90208)."
-            exit 1
+          # Hard stop: never ship onnxruntime.framework still declaring the old
+          # 15.1 that App Store validation rejects.
+          onx="$FWDIR/onnxruntime.framework/Info.plist"
+          if [ -f "$onx" ]; then
+            v="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$onx" 2>/dev/null)"
+            if [ "$v" = "15.1" ] || [ -z "$v" ]; then
+              echo "::error::onnxruntime.framework MinimumOSVersion is still '$v' — would be rejected (ITMS-90208)."
+              fail=1
+            fi
           fi
+          exit $fail
 
       - name: Upload to TestFlight
         run: |
