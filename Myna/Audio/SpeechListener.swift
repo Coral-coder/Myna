@@ -54,8 +54,10 @@ final class SpeechListener: NSObject, ObservableObject {
     /// main actor when the Microphone sensitivity slider changes.
     nonisolated(unsafe) private var sensitivity: Float = SpeechListener.storedSensitivity
 
-    static let sensitivityKey = "myna.micSensitivity"
-    static var storedSensitivity: Float {
+    nonisolated static let sensitivityKey = "myna.micSensitivity"
+    // nonisolated so it can seed the audio-thread `sensitivity` default; it only
+    // reads UserDefaults, which is thread-safe.
+    nonisolated static var storedSensitivity: Float {
         let v = UserDefaults.standard.object(forKey: sensitivityKey) as? Double
         return Float(v ?? 3.0)
     }
