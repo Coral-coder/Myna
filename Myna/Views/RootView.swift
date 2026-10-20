@@ -113,5 +113,6 @@ struct RootView: View {
         .environmentObject(services.brain)
         .environmentObject(services.contextHub)
         .environmentObject(services.bee)
+        .environmentObject(services.beeCloud)
         .modelContainer(services.container)
 }

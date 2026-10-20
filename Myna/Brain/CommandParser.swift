@@ -48,7 +48,12 @@ enum MynaCommand: Equatable {
 enum CommandParser {
 
     /// Words that wake Myna up. Speech recognition hears "Myna" a few ways.
-    static let wakeWords = ["myna", "mynah", "mina", "minah", "maina", "myena"]
+    static let wakeWords = [
+        "myna", "mynah", "mina", "minah", "maina", "myena",
+        // Common on-device mis-hears of "Myna" (Apple's recognizer leans toward
+        // real words). "minor" is the one reported most.
+        "minor", "miner", "mynuh", "meina", "mynar", "mena", "myla",
+    ]
 
     /// Extra wake words/phrases the user set in Backstage (lowercased). The app
     /// keeps this in sync with their setting; empty by default so tests and the

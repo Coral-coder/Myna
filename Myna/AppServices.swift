@@ -15,6 +15,7 @@ final class AppServices {
     let brain: MynaBrain
     let contextHub: ContextHub
     let bee: BeeManager
+    let beeCloud: BeeCloudImporter
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
@@ -47,12 +48,14 @@ final class AppServices {
         pilot = ConversationPilot(listener: listener, modelManager: modelManager, contextHub: contextHub)
         brain = MynaBrain(listener: listener, modelManager: modelManager, pilot: pilot, contextHub: contextHub)
         bee = BeeManager(listener: listener, pilot: pilot)
+        beeCloud = BeeCloudImporter()
 
         pilot.brain = brain
 
         let context = container.mainContext
         pilot.attach(modelContext: context)
         brain.attach(modelContext: context)
+        beeCloud.attach(modelContext: context)
 
         UNUserNotificationCenter.current().delegate = notificationPresenter
     }
@@ -60,6 +63,7 @@ final class AppServices {
     /// First launch after onboarding, and every return to the foreground.
     func becameActive() {
         modelManager.refreshInstalledStates()
+        beeCloud.importIfEnabled()
         if alwaysOn, UserDefaults.standard.bool(forKey: "myna.onboarded"), SpeechListener.hasPermissions,
            pilot.phase == .idle, !listener.isListening {
             pilot.startListening()

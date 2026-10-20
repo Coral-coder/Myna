@@ -26,6 +26,7 @@ struct SettingsView: View {
                 automationCard
                 ContextCard()
                 BraceletCard()
+                BeeCloudCard()
                 privacyCard
                 aboutCard
             }
