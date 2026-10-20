@@ -6,11 +6,16 @@ import Foundation
 /// premium ones) and pauses recognition while talking so Myna never
 /// transcribes itself.
 @MainActor
-final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     @Published private(set) var isSpeaking = false
 
     var onStart: (() -> Void)?
     var onFinish: (() -> Void)?
+
+    /// On-device neural voice (sherpa-onnx). When active, Myna speaks with it
+    /// instead of the system synthesizer. Set by AppServices.
+    weak var neural: NeuralVoice?
+    private var player: AVAudioPlayer?
 
     private let synthesizer = AVSpeechSynthesizer()
 
@@ -35,7 +40,28 @@ final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
 
     func say(_ text: String) {
         guard isEnabled, !text.isEmpty else { return }
-        speak(text, voice: resolvedVoice())
+        if neural?.isActive == true {
+            speakNeural(text)
+        } else {
+            speak(text, voice: resolvedVoice())
+        }
+    }
+
+    /// Speak with the on-device neural voice; synthesize to a WAV and play it.
+    /// Any failure drops cleanly to the system voice.
+    private func speakNeural(_ text: String) {
+        guard let neural else { speak(text, voice: resolvedVoice()); return }
+        if !isSpeaking { isSpeaking = true; onStart?() }
+        Task { @MainActor in
+            if let url = await neural.synthesize(text), let audioPlayer = try? AVAudioPlayer(contentsOf: url) {
+                audioPlayer.delegate = self
+                self.player = audioPlayer
+                audioPlayer.play()
+            } else {
+                // Couldn't synthesize — keep isSpeaking and let the system voice finish it.
+                self.speak(text, voice: self.resolvedVoice())
+            }
+        }
     }
 
     /// Speak a one-line sample in a specific voice, for the picker's Preview.
@@ -55,6 +81,18 @@ final class VoiceReply: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        player?.stop()
+        player = nil
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.player = nil
+            if self.isSpeaking {
+                self.isSpeaking = false
+                self.onFinish?()
+            }
+        }
     }
 
     // MARK: - Voice selection

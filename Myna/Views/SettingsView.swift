@@ -22,6 +22,7 @@ struct SettingsView: View {
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var whisper: WhisperTranscriber
+    @EnvironmentObject private var neuralVoice: NeuralVoice
     @EnvironmentObject private var brain: MynaBrain
 
     private var whisperStatus: String {
@@ -65,6 +66,7 @@ struct SettingsView: View {
                     .padding(.top, 16)
 
                 assistantCard
+                naturalVoicesCard
                 listeningCard
                 automationCard
                 ContextCard()
@@ -77,6 +79,62 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var naturalVoicesCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeading(icon: "waveform.circle.fill", title: "Natural voices", tint: MynaTheme.cyan)
+            Text("On-device neural voices (MIT-licensed) — fully offline once downloaded. Choose one and \(assistantName) speaks with it; the system voice is the fallback.")
+                .settingsCaption()
+
+            ForEach(neuralVoice.models) { model in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.name).settingsLabel()
+                            Text("\(model.mb) MB").settingsCaption()
+                        }
+                        Spacer()
+                        neuralControl(for: model)
+                    }
+                    if case .downloading(let p) = neuralVoice.status(of: model.id) {
+                        ProgressView(value: p).tint(MynaTheme.cyan)
+                    } else if case .failed(let msg) = neuralVoice.status(of: model.id) {
+                        Text(msg).font(.system(size: 12, design: .rounded)).foregroundStyle(MynaTheme.gold)
+                    }
+                }
+            }
+
+            if neuralVoice.isActive {
+                Button("Use the system voice instead") { neuralVoice.setSelected("") }
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
+    }
+
+    @ViewBuilder
+    private func neuralControl(for model: NeuralVoiceModel) -> some View {
+        if neuralVoice.isInstalled(model.id) {
+            if neuralVoice.selectedID == model.id {
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(MynaTheme.mint)
+            } else {
+                Button("Use") { neuralVoice.setSelected(model.id) }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(MynaTheme.cyan)
+            }
+        } else if case .downloading = neuralVoice.status(of: model.id) {
+            ProgressView().controlSize(.small).tint(MynaTheme.cyan)
+        } else {
+            Button("Download") { neuralVoice.download(model) }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(MynaTheme.cyan)
+        }
     }
 
     private var assistantCard: some View {
