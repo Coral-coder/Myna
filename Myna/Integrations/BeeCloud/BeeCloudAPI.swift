@@ -98,8 +98,16 @@ struct BeeCloudAPI {
 
     // MARK: - HTTP
 
+    /// Builds a request URL. Uses string concatenation, not
+    /// `appendingPathComponent`, which percent-encodes the `?` of a query string
+    /// into `%3F` and turns e.g. `/v1/facts?limit=50` into a 404.
+    static func endpoint(_ path: String) -> URL? {
+        URL(string: baseURL.absoluteString + path)
+    }
+
     private func get(_ path: String) async throws -> [String: Any] {
-        var request = URLRequest(url: Self.baseURL.appendingPathComponent(String(path.dropFirst())))
+        guard let url = Self.endpoint(path) else { throw Failure.malformed }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
