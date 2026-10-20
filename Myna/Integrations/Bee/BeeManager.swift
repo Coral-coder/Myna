@@ -37,9 +37,15 @@ final class BeeManager: ObservableObject {
     @Published private(set) var brightness: Int?
     @Published private(set) var bitrate: Int?
     @Published private(set) var txPower: Int?
+    /// A short rolling log of what the bracelet sent and what Myna did, so a
+    /// stalled handshake can be diagnosed from the device itself.
+    @Published private(set) var diagnostics: [String] = []
 
     var isEnabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
     private static let enabledKey = "myna.bee.enabled"
+
+    /// Bumped each handshake so a stale timeout from an earlier attempt is ignored.
+    private var handshakeToken = 0
 
     private let central = BeeCentral()
     private weak var listener: SpeechListener?
@@ -157,24 +163,63 @@ final class BeeManager: ObservableObject {
 
     // MARK: - Handshake
 
+    /// Retry after an error — re-run the handshake if still connected, else rescan.
+    func retry() {
+        diagnostics.removeAll()
+        if central.isReady {
+            beginHandshake()
+        } else {
+            start()
+        }
+    }
+
     private func beginHandshake() {
         pairing = .provisioning
+        handshakeToken += 1
+        diagnostics.removeAll()
+        log("Connected. Requesting secure IDs (0xC01B)…")
         central.writeControl(BeeCommand.getSecureIds.frame())
+        scheduleHandshakeTimeout(handshakeToken)
     }
+
+    /// If the handshake is still provisioning after a while, stop waiting and
+    /// point the user at the device log rather than hanging on "Setting up your
+    /// key…". A completed or factory-reset flow leaves `.provisioning`, so this
+    /// no-ops then.
+    private func scheduleHandshakeTimeout(_ token: Int) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, self.handshakeToken == token, case .provisioning = self.pairing else { return }
+            self.log("No reply that finished key setup within 12s.")
+            self.pairing = .error("The bracelet didn't finish key setup. Open the device log below and send it to me — your bracelet may use a different provisioning step than this build expects.")
+        }
+    }
+
+    private func log(_ line: String) {
+        let stamp = Date.now.formatted(date: .omitted, time: .standard)
+        diagnostics.append("\(stamp)  \(line)")
+        if diagnostics.count > 40 { diagnostics.removeFirst(diagnostics.count - 40) }
+    }
+
+    /// Copyable device log for sharing.
+    var diagnosticsText: String { diagnostics.joined(separator: "\n") }
 
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
         self.deviceID = deviceID
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
+        log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
 
         if isSealed {
             if let heldKey {
                 // Sealed with the key we installed before — reuse it, no re-provision.
                 key = heldKey
                 installDecryptor()
+                log("Reusing stored key. Requesting session nonce (0xC019)…")
                 central.writeControl(BeeCommand.getSessionNonce.frame())
             } else {
                 // Sealed with a key we don't have. Never try to recover it;
                 // the user factory-resets, which clears it, then we set ours.
+                log("Sealed with a key Myna doesn't hold → factory reset needed.")
                 pairing = .needsFactoryReset
             }
             return
@@ -185,6 +230,7 @@ final class BeeManager: ObservableObject {
             let ourKey = try BeeKeyVault.loadOrCreateKey(deviceID: deviceID)
             key = ourKey
             installDecryptor()
+            log("Unsealed. Installing our key (0xC018, \(ourKey.count) bytes)…")
             central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](ourKey)))
         } catch {
             pairing = .error("Couldn't prepare a key: \(error.localizedDescription)")
@@ -194,14 +240,17 @@ final class BeeManager: ObservableObject {
     private func handleKeyResult(_ result: BeeKeyResult) {
         switch result {
         case .installed, .alreadySet:
+            log("Key accepted (\(result == .installed ? "INSTALLED" : "ALREADY_SET")). Requesting session nonce (0xC019)…")
             central.writeControl(BeeCommand.getSessionNonce.frame())
         case .unknown(let code):
+            log("Key reply code \(code) (unrecognized).")
             pairing = .error("The bracelet rejected the key (code \(code)).")
         }
     }
 
     private func handleNonce(_ value: Data) {
         nonce = value
+        log("Session nonce received (\(value.count) bytes). Reading device state…")
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
         central.writeControl(BeeCommand.getFirmwareVersion.frame())
@@ -306,13 +355,19 @@ extension BeeManager: BeeCentralDelegate {
     }
 
     func beeCentral(_ central: BeeCentral, didReceiveControl data: Data) {
-        switch BeeProtocol.parseControlMessage(data) {
+        let message = BeeProtocol.parseControlMessage(data)
+        switch message {
         case .event(let event):
             handleEvent(event)
         case .response(let response):
             handleResponse(response)
-        case .unhandled, .malformed:
-            break
+        case .unhandled(let id, let payload):
+            // A well-formed message Myna doesn't model. During provisioning this
+            // is probably the real key-set reply in a shape this build didn't
+            // expect — log the raw bytes so we can learn the device's scheme.
+            log("Unhandled 0x\(String(format: "%04X", id)) ← \(BeeProtocol.hex([UInt8](data)))")
+        case .malformed:
+            log("Malformed ← \(BeeProtocol.hex([UInt8](data)))")
         }
     }
 

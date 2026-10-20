@@ -28,6 +28,7 @@ Named for the myna bird: a brilliant listener.
 | Reminders that remind | Time-sensitive notifications at the due time (they break through Focus), mirrored to Apple Reminders so they reach your Watch and Mac |
 | Siri & Shortcuts | "Add to my Myna shopping list", "Remind me with Myna", "Ask Myna", "Start Myna" — also usable from the Action button |
 | Never drops a conversation | iOS forbids GPU work in the background on iPhone, so with an MLX model a conversation that ends while the phone is locked is queued and composed the moment Myna is opened; Apple Intelligence keeps composing while locked |
+| Import from Bee | **Backstage → Import from Bee**: paste a Bee API token and Myna pulls your Bee conversations in as notes — Bee's far-field recording and speaker-labelled transcripts, filed and kept in Myna. Read-only; the token stays in the Keychain on this iPhone. Each conversation imports once |
 | Bee bracelet (your own) | Myna talks to a Bee bracelet you own **directly over Bluetooth** instead of the vendor's app: it generates its **own** AES-128 key on the iPhone, installs it on the bracelet with the device's own key-set command, then decrypts the bracelet's audio and feeds it into the same on-device speech pipeline. Battery, charging, firmware and the action button surface in Myna. Switch it on in **Backstage → Bee Bracelet** |
 | On-device context (opt-in) | **Places** (where a conversation happened, named from places you saved — kept in the Keychain), **Contacts** (who was mentioned, spelled right; names, company and title only), **Health** (sleep, steps, resting heart rate, workouts — read-only, only when you ask), **Photos** (photos taken during a conversation attached to its note, whiteboards and slides read by Vision). Each is off until switched on in Backstage |
 | In-app model downloads | The **Neural Core** tab downloads pre-quantized weights straight from Hugging Face with live progress, stores them in Application Support (excluded from iCloud backup), and lets you delete or swap models any time |
@@ -140,6 +141,7 @@ Myna/
   Context/               ContextHub + Location, Contacts, Health, Photos providers; ContextModels (pure matching logic)
   Integrations/Bee/      BeeProtocol + BeeAudioFraming (pure, tested), BeeCrypto (AES-128-CTR),
                          BeeKeyVault, BeeAudioDecoder, BeeCentral (CoreBluetooth), BeeManager
+  Integrations/BeeCloud/ BeeCloudAPI (developer API), BeeCloudImporter (conversations → notes)
   Security/              Keychain (AfterFirstUnlockThisDeviceOnly)
   Intents/               Siri & Shortcuts
   Models/                SwiftData schema (ConversationNote, MynaItem, PendingConversation)

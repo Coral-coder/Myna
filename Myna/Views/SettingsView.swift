@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("myna.autoCapture") private var autoCapture = true
     @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
     @AppStorage("myna.userName") private var userName = ""
+    @AppStorage("myna.customWakeWord") private var customWakeWord = ""
 
     var body: some View {
         ScrollView {
@@ -25,6 +26,7 @@ struct SettingsView: View {
                 automationCard
                 ContextCard()
                 BraceletCard()
+                BeeCloudCard()
                 privacyCard
                 aboutCard
             }
@@ -58,11 +60,26 @@ struct SettingsView: View {
 
             Toggle(isOn: $wakeWord) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Answer to “Myna”").settingsLabel()
-                    Text("Say “Myna, …” to add to lists, set reminders, schedule things or ask a question.").settingsCaption()
+                    Text("Answer to a wake word").settingsLabel()
+                    Text("Say the wake word, then your request — add to lists, set reminders, schedule things or ask a question.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
+
+            if wakeWord {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Custom wake word").settingsLabel()
+                    TextField("Myna", text: $customWakeWord)
+                        .font(.system(size: 14, design: .rounded))
+                        .foregroundStyle(.white)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                        .onChange(of: customWakeWord) { _, _ in AppServices.applyCustomWakeWords() }
+                    Text("Leave blank to use “Myna”. Set your own word or short phrase (e.g. your name, or “hey scribe”). Pick something distinct and two or more syllables so it’s easy to hear; separate several with commas. Your word is used alongside “Myna”.").settingsCaption()
+                }
+            }
 
             Toggle(isOn: $speakReplies) {
                 VStack(alignment: .leading, spacing: 3) {

@@ -1,0 +1,132 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+/// Reads your own conversations from Bee's developer API (docs.bee.computer)
+/// with an API token from your Bee account. Used to bring Bee's recordings and
+/// speaker-labelled transcripts into Myna — Bee does the far-field capture, Myna
+/// keeps and works the notes. Read-only; it never sends your audio or notes out.
+struct BeeCloudAPI {
+    static let baseURL = URL(string: "https://api.developer.bee.amazon.dev")!
+
+    var token: String
+    var session: URLSession = .shared
+
+    struct ConversationSummary: Equatable {
+        var id: Int
+        var start: Date?
+        var end: Date?
+        var summary: String
+        var state: String
+    }
+
+    /// A conversation ready to file as a Myna note.
+    struct ImportedConversation {
+        var id: Int
+        var start: Date
+        var end: Date
+        var summary: String
+        /// "Speaker 1: …" lines in spoken order.
+        var transcript: String
+        var title: String
+    }
+
+    enum Failure: LocalizedError {
+        case http(Int)
+        case malformed
+        var errorDescription: String? {
+            switch self {
+            case .http(401), .http(403): return "Bee didn't accept that token. Check it in Backstage."
+            case .http(let code): return "Bee returned HTTP \(code)."
+            case .malformed: return "Bee sent something Myna couldn't read."
+            }
+        }
+    }
+
+    /// Finished conversations, most recent first.
+    func recentConversations(limit: Int = 20) async throws -> [ConversationSummary] {
+        let body = try await get("/v1/conversations?limit=\(limit)")
+        let list = (body["conversations"] as? [[String: Any]]) ?? []
+        return list.compactMap(Self.summary).filter { $0.state.lowercased() != "in_progress" }
+    }
+
+    /// One conversation with its full speaker-labelled transcript.
+    func conversation(id: Int) async throws -> ImportedConversation {
+        let body = try await get("/v1/conversations/\(id)")
+        let record = (body["conversation"] as? [String: Any]) ?? body
+        guard let summary = Self.summary(record) else { throw Failure.malformed }
+
+        let transcriptions = (record["transcriptions"] as? [[String: Any]]) ?? []
+        let utterances = transcriptions.flatMap { ($0["utterances"] as? [[String: Any]]) ?? [] }
+        let lines = utterances.compactMap { raw -> (Date, String)? in
+            guard let text = (raw["text"] as? String), !text.isEmpty else { return nil }
+            let speakerRaw = (raw["speaker"] as? String) ?? ""
+            let speaker = speakerRaw.replacingOccurrences(of: "speaker_", with: "Speaker ")
+            let when = Self.date(raw["spoken_at"] ?? raw["start"]) ?? .distantPast
+            return (when, speaker.isEmpty ? text : "\(speaker): \(text)")
+        }
+        let transcript = lines.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: "\n")
+
+        let title = Self.title(from: summary.summary)
+        return ImportedConversation(
+            id: summary.id,
+            start: summary.start ?? .now,
+            end: summary.end ?? summary.start ?? .now,
+            summary: summary.summary,
+            transcript: transcript,
+            title: title
+        )
+    }
+
+    // MARK: - HTTP
+
+    private func get(_ path: String) async throws -> [String: Any] {
+        var request = URLRequest(url: Self.baseURL.appendingPathComponent(String(path.dropFirst())))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw Failure.http(code) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.malformed }
+        return object
+    }
+
+    // MARK: - Parsing
+
+    private static func summary(_ raw: [String: Any]) -> ConversationSummary? {
+        guard let id = raw["id"] as? Int else { return nil }
+        return ConversationSummary(
+            id: id,
+            start: date(raw["start_time"] ?? raw["started_at"]),
+            end: date(raw["end_time"] ?? raw["ended_at"]),
+            summary: (raw["summary"] as? String) ?? (raw["short_summary"] as? String) ?? "",
+            state: (raw["state"] as? String) ?? ""
+        )
+    }
+
+    private static func title(from summary: String) -> String {
+        let firstLine = summary
+            .split(whereSeparator: { $0 == "\n" || $0 == "." })
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        if firstLine.isEmpty { return "Bee conversation" }
+        return String(firstLine.prefix(80))
+    }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static func date(_ value: Any?) -> Date? {
+        if let string = value as? String {
+            return isoFormatter.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        }
+        if let seconds = value as? Double { return Date(timeIntervalSince1970: seconds) }
+        if let seconds = value as? Int { return Date(timeIntervalSince1970: Double(seconds)) }
+        return nil
+    }
+}

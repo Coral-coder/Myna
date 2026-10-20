@@ -76,7 +76,10 @@ final class SpeechListener: NSObject, ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             // playAndRecord so Myna can answer out loud without dropping the mic.
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+            // .default (not .measurement) keeps Apple's automatic gain and noise
+            // handling on, which picks up farther, quieter voices in a room;
+            // .measurement disables that processing and left distant speech faint.
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             let inputNode = audioEngine.inputNode
