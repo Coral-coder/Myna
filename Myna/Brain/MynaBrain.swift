@@ -459,6 +459,7 @@ final class MynaBrain: ObservableObject {
             var start: String?
             var duration_minutes: Int?
             var attendees: [String]?
+            var query: String?
         }
     }
 
@@ -475,54 +476,75 @@ final class MynaBrain: ObservableObject {
         """ : """
         Your name is \(assistantName). \(customPersona)
         """
+        let searchLine = WebLookup.isEnabled
+            ? " If you need facts you don't have — current events, people, places, definitions — look them up with a search action and answer from the results I return."
+            : ""
         let instructions = """
         \(persona) \
         Answer in one to three natural spoken sentences — no lists, no markdown. \
-        If the request needs something done, do it with actions. \
+        If the request needs something done, do it with actions.\(searchLine) \
         Respond with one JSON object and nothing else.
         """
         let deviceContext = await contextHub.assistantLines(for: question)
-        let prompt = """
-        \(context(extra: deviceContext))
+        let searchTool = WebLookup.isEnabled ? "\n           {\"type\": \"search\", \"query\": \"what to look up on the web\"}," : ""
 
-        THE USER SAYS: "\(question)"
+        // The agent runs at most twice: once to answer or request a search, and —
+        // if it searched — again with the web results in hand to answer from them.
+        var webResults: String?
+        for round in 0..<2 {
+            let webBlock = webResults.map { "\nWEB RESULTS (use these to answer; cite nothing, just answer naturally):\n\($0)\n" } ?? ""
+            let prompt = """
+            \(context(extra: deviceContext))
+            \(webBlock)
+            THE USER SAYS: "\(question)"
 
-        Respond with JSON:
-        {"reply": "what you say back, spoken aloud",
-         "actions": [
-           {"type": "add_todo", "text": "...", "at": "ISO 8601 local datetime or null"},
-           {"type": "add_shopping", "items": ["..."]},
-           {"type": "remind", "text": "...", "at": "ISO 8601 local datetime"},
-           {"type": "schedule", "title": "...", "start": "ISO 8601 local datetime", "duration_minutes": 30, "attendees": ["..."]},
-           {"type": "note", "text": "..."},
-           {"type": "complete", "text": "the item to check off"}
-         ]}
-        Use an empty actions array when nothing needs doing. Never invent facts about the \
-        user's life — if the context doesn't say, say you don't know.
+            Respond with JSON:
+            {"reply": "what you say back, spoken aloud",
+             "actions": [
+               {"type": "add_todo", "text": "...", "at": "ISO 8601 local datetime or null"},
+               {"type": "add_shopping", "items": ["..."]},
+               {"type": "remind", "text": "...", "at": "ISO 8601 local datetime"},
+               {"type": "schedule", "title": "...", "start": "ISO 8601 local datetime", "duration_minutes": 30, "attendees": ["..."]},
+               {"type": "note", "text": "..."},
+               {"type": "complete", "text": "the item to check off"},\(searchTool)
+             ]}
+            Use an empty actions array when nothing needs doing. Never invent facts about the \
+            user's life — if the context doesn't say, say you don't know.
 
-        JSON:
-        """
+            JSON:
+            """
 
-        do {
-            let raw = try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 700)
-            guard let json = NotesEngine.extractJSON(from: raw),
-                  let data = json.data(using: .utf8),
-                  let decoded = try? JSONDecoder().decode(AgentReply.self, from: data) else {
-                // A model that ignored the format still usually said something useful.
-                let plain = raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return plain.isEmpty ? "Sorry, I lost my train of thought. Could you ask that again?" : String(plain.prefix(400))
+            do {
+                let raw = try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 700)
+                guard let json = NotesEngine.extractJSON(from: raw),
+                      let data = json.data(using: .utf8),
+                      let decoded = try? JSONDecoder().decode(AgentReply.self, from: data) else {
+                    // A model that ignored the format still usually said something useful.
+                    let plain = raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return plain.isEmpty ? "Sorry, I lost my train of thought. Could you ask that again?" : String(plain.prefix(400))
+                }
+
+                // If it asked to search and we haven't yet, fetch and loop once more.
+                if round == 0, webResults == nil, WebLookup.isEnabled,
+                   let q = decoded.actions?.compactMap({ $0.type == "search" ? ($0.query ?? $0.text) : nil }).first,
+                   !q.trimmingCharacters(in: .whitespaces).isEmpty {
+                    webResults = await WebLookup().summary(for: q) ?? "No useful results were found online."
+                    continue
+                }
+
+                await apply((decoded.actions ?? []).filter { $0.type != "search" }, origin: origin)
+                return decoded.reply
+            } catch MynaModelError.needsForeground {
+                add(.memo, texts: ["Asked: \(question)"], detail: "Open Myna and ask again for an answer.", source: origin.itemSource)
+                return "I need you to open Myna before I can think that one through. I've saved the question."
+            } catch MynaModelError.noModelInstalled {
+                return "I need a brain for that one. Download a model in the Neural Core tab and ask me again."
+            } catch {
+                return "I couldn't work that out: \(error.localizedDescription)"
             }
-            await apply(decoded.actions ?? [], origin: origin)
-            return decoded.reply
-        } catch MynaModelError.needsForeground {
-            add(.memo, texts: ["Asked: \(question)"], detail: "Open Myna and ask again for an answer.", source: origin.itemSource)
-            return "I need you to open Myna before I can think that one through. I've saved the question."
-        } catch MynaModelError.noModelInstalled {
-            return "I need a brain for that one. Download a model in the Neural Core tab and ask me again."
-        } catch {
-            return "I couldn't work that out: \(error.localizedDescription)"
         }
+        return "Sorry, I couldn't work that one out."
     }
 
     private func apply(_ actions: [AgentReply.Action], origin: Origin) async {
