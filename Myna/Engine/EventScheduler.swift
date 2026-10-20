@@ -45,6 +45,14 @@ final class EventScheduler {
         return ekEvent.eventIdentifier
     }
 
+    /// Removes an event Myna added, by its `EKEvent` identifier. Used to undo a
+    /// just-scheduled event from its notification's Cancel button. Best-effort:
+    /// a no-op if access was revoked or the event is already gone.
+    func remove(eventID: String) {
+        guard hasAccess, let event = store.event(withIdentifier: eventID) else { return }
+        try? store.remove(event, span: .thisEvent)
+    }
+
     /// Events on the calendar from `start` for `days` days, soonest first.
     func events(from start: Date, days: Int) -> [EKEvent] {
         guard hasAccess, let end = Calendar.current.date(byAdding: .day, value: days, to: start) else { return [] }

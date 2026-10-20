@@ -58,6 +58,7 @@ final class AppServices {
         beeCloud.attach(modelContext: context)
 
         UNUserNotificationCenter.current().delegate = notificationPresenter
+        ActionNotifier.registerCategory()
     }
 
     /// First launch after onboarding, and every return to the foreground.
@@ -72,12 +73,26 @@ final class AppServices {
     }
 }
 
-/// Shows Myna's reminders as banners even while the app is open.
+/// Shows Myna's reminders as banners even while the app is open, and carries out
+/// the Cancel button on an action notification (from the iPhone or Apple Watch).
 private final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         [.banner, .list, .sound]
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard response.actionIdentifier == ActionNotifier.undoActionID,
+              let undo = ActionUndo(payload: response.notification.request.content.userInfo) else { return }
+        let identifier = response.notification.request.identifier
+        await MainActor.run {
+            AppServices.shared.brain.undo(undo)
+            AppServices.shared.brain.notifier.clearDelivered(identifier)
+        }
     }
 }
