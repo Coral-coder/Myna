@@ -6,12 +6,14 @@ struct SettingsView: View {
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
+    @AppStorage("myna.micEnabled") private var micEnabled = true
     @AppStorage("myna.wakeWord") private var wakeWord = true
     @AppStorage("myna.speakReplies") private var speakReplies = true
     @AppStorage("myna.autoCapture") private var autoCapture = true
     @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
     @AppStorage("myna.userName") private var userName = ""
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
+    @EnvironmentObject private var pilot: ConversationPilot
 
     var body: some View {
         ScrollView {
@@ -50,13 +52,26 @@ struct SettingsView: View {
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
             }
 
-            Toggle(isOn: $alwaysOn) {
+            Toggle(isOn: $micEnabled) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Always on").settingsLabel()
-                    Text("Start listening whenever Myna opens and resume after calls. iOS stops Myna if you swipe it away, so leave it running.").settingsCaption()
+                    Text("Use the iPhone mic").settingsLabel()
+                    Text("Let Myna listen through this iPhone. Turn it off to run on your Bee alone — Myna keeps pulling your Bee conversations and facts in the background, and still answers when you ask. The mic is never opened while Myna is in the background either way.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
+            .onChange(of: micEnabled) { _, on in
+                if !on { pilot.stopListening() }
+            }
+
+            if micEnabled {
+                Toggle(isOn: $alwaysOn) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Always on").settingsLabel()
+                        Text("Start listening whenever Myna opens and resume after calls. iOS pauses the mic while Myna is in the background and it picks back up when you return.").settingsCaption()
+                    }
+                }
+                .tint(MynaTheme.cyan)
+            }
 
             Toggle(isOn: $wakeWord) {
                 VStack(alignment: .leading, spacing: 3) {
