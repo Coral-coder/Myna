@@ -52,6 +52,8 @@ final class ConversationPilot: ObservableObject {
     let listener: SpeechListener
     let scheduler = EventScheduler()
     weak var brain: MynaBrain?
+    /// When set and enabled, finished conversations are transcribed with Whisper.
+    var whisper: WhisperTranscriber?
     private let notesEngine: NotesEngine
     private var modelContext: ModelContext?
     private let contextHub: ContextHub
@@ -68,6 +70,8 @@ final class ConversationPilot: ObservableObject {
             guard let self else { return }
             if self.segmentStartedAt == nil {
                 self.segmentStartedAt = heardAt
+                // Start capturing this conversation's audio for Whisper.
+                if self.whisper?.isEnabled == true { self.listener.beginSegmentCapture() }
             }
             self.segmentLines.append(TranscriptLine(text: text, heardAt: heardAt))
             self.lastSpeechAt = heardAt
@@ -144,14 +148,18 @@ final class ConversationPilot: ObservableObject {
         let lines = segmentLines
         let startedAt = segmentStartedAt ?? .now
         let endedAt = lastSpeechAt == .distantPast ? Date.now : lastSpeechAt
+        let audioURL = listener.takeSegmentAudioURL()
         clearSegment()
 
         let transcript = lines.map(\.text).joined(separator: "\n")
-        guard transcript.count > 40 else { return }
-        compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: "")
+        guard transcript.count > 40 else {
+            if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+            return
+        }
+        compose(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: "", audioPath: audioURL?.path)
     }
 
-    private func compose(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String) {
+    private func compose(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, audioPath: String? = nil) {
         let wasListening = listener.isListening
         phase = .composing
 
@@ -159,8 +167,9 @@ final class ConversationPilot: ObservableObject {
             // Where you are as the conversation ends — captured now, because a
             // queued conversation may be composed hours later somewhere else.
             let place = await contextHub.placeName()
+            defer { if let audioPath { try? FileManager.default.removeItem(atPath: audioPath) } }
             do {
-                try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
+                try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, audioPath: audioPath)
             } catch MynaModelError.needsForeground {
                 enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
             } catch MynaModelError.noModelInstalled {
@@ -178,7 +187,13 @@ final class ConversationPilot: ObservableObject {
         }
     }
 
-    private func composeAndFile(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String) async throws {
+    private func composeAndFile(transcript rawTranscript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String, audioPath: String? = nil) async throws {
+        var transcript = rawTranscript
+        // Prefer Whisper's transcript of the captured audio when it's enabled and
+        // produced something; otherwise keep Apple's live transcript.
+        if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
+            transcript = better
+        }
         let context = await contextHub.noteContext(transcript: transcript, startedAt: startedAt, endedAt: endedAt, place: place)
         let result = try await notesEngine.composeNote(
             transcript: transcript,

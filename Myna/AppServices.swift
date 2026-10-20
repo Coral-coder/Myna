@@ -17,6 +17,7 @@ final class AppServices {
     let bee: BeeManager
     let beeCloud: BeeCloudImporter
     let beeRefresh: BeeBackgroundRefresh
+    let whisper: WhisperTranscriber
     private let notificationPresenter = NotificationPresenter()
 
     /// Start listening on launch so Myna is simply always there.
@@ -57,8 +58,10 @@ final class AppServices {
         bee = BeeManager(listener: listener, pilot: pilot)
         beeCloud = BeeCloudImporter()
         beeRefresh = BeeBackgroundRefresh(importer: beeCloud, pilot: pilot)
+        whisper = WhisperTranscriber()
 
         pilot.brain = brain
+        pilot.whisper = whisper
 
         let context = container.mainContext
         pilot.attach(modelContext: context)
@@ -69,6 +72,8 @@ final class AppServices {
         ActionNotifier.registerCategory()
         // Must register during launch, before the app finishes launching.
         beeRefresh.register()
+        // Warm up Whisper if the user turned it on previously.
+        if whisper.isEnabled { whisper.load() }
     }
 
     /// First launch after onboarding, and every return to the foreground.

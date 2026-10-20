@@ -67,6 +67,36 @@ final class SpeechListener: NSObject, ObservableObject {
         sensitivity = min(max(value, 1), 8)
     }
 
+    // MARK: - Segment audio capture (for Whisper)
+
+    /// While true, each mic buffer is also written to `segmentFile` so Whisper
+    /// can re-transcribe the whole conversation from audio. Read on the audio thread.
+    nonisolated(unsafe) private var captureActive = false
+    nonisolated(unsafe) private var segmentFile: AVAudioFile?
+    /// The live mic format, captured in `start()` so a segment file can be opened.
+    nonisolated(unsafe) private var captureFormat: AVAudioFormat?
+    private var segmentURL: URL?
+
+    /// Start recording the current conversation's audio to a temp file.
+    func beginSegmentCapture() {
+        guard captureFormat != nil, segmentFile == nil else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myna-segment-\(UUID().uuidString).caf")
+        guard let format = captureFormat, let file = try? AVAudioFile(forWriting: url, settings: format.settings) else { return }
+        segmentURL = url
+        segmentFile = file
+        captureActive = true
+    }
+
+    /// Stop recording and hand back the file URL (caller transcribes, then deletes it).
+    func takeSegmentAudioURL() -> URL? {
+        captureActive = false
+        let url = segmentURL
+        segmentFile = nil   // closing the file flushes it to disk
+        segmentURL = nil
+        return url
+    }
+
     override init() {
         super.init()
         let center = NotificationCenter.default
@@ -126,6 +156,7 @@ final class SpeechListener: NSObject, ObservableObject {
                 try? session.setActive(false, options: .notifyOthersOnDeactivation)
                 return
             }
+            captureFormat = format
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                 // While the bracelet is the source, the mic stays off the request.
@@ -133,6 +164,8 @@ final class SpeechListener: NSObject, ObservableObject {
                     // Lift distant, quiet speech so the recognizer can hear it.
                     Self.boost(buffer, gain: self?.sensitivity ?? 1)
                     self?.request?.append(buffer)
+                    // Also capture the audio for Whisper, if a segment is recording.
+                    if self?.captureActive == true { try? self?.segmentFile?.write(from: buffer) }
                 }
                 let level = Self.rms(of: buffer)
                 Task { @MainActor [weak self] in
@@ -172,6 +205,9 @@ final class SpeechListener: NSObject, ObservableObject {
         isPaused = false
         liveTranscript = ""
         audioLevel = 0
+        captureActive = false
+        segmentFile = nil
+        segmentURL = nil
     }
 
     /// Stops transcribing without releasing the microphone — used while Myna talks.
