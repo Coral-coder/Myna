@@ -138,7 +138,17 @@ jobs:
             [ -d "$fw" ] || continue
             name="$(basename "$fw" .framework)"
             exe="$fw/$name"
-            if [ -f "$exe" ] && file "$exe" | grep -q "ar archive"; then
+            [ -f "$exe" ] || continue
+            echo "Inspecting $name.framework: $(file -b "$exe" 2>/dev/null)"
+            # A real dynamic framework's executable is a Mach-O dynamic library
+            # (MH_DYLIB). A static framework's executable is an ar archive /
+            # object file, with no DYLIB filetype — its code is already linked
+            # into the app binary, so embedding it makes App Store validation
+            # reject the build (ITMS-90208). Keep dynamic frameworks, strip the
+            # rest. (otool is reliable where `file`'s wording varies.)
+            if otool -hv "$exe" 2>/dev/null | grep -qw DYLIB; then
+              echo "  -> dynamic framework, keeping it."
+            else
               echo "::notice::Removing statically-linked framework $name.framework (already linked into the app binary)"
               rm -rf "$fw"
             fi
