@@ -139,14 +139,19 @@ jobs:
             name="$(basename "$fw" .framework)"
             exe="$fw/$name"
             [ -f "$exe" ] || continue
-            echo "Inspecting $name.framework: $(file -b "$exe" 2>/dev/null)"
-            # A real dynamic framework's executable is a Mach-O dynamic library
-            # (MH_DYLIB). A static framework's executable is an ar archive /
-            # object file, with no DYLIB filetype — its code is already linked
-            # into the app binary, so embedding it makes App Store validation
-            # reject the build (ITMS-90208). Keep dynamic frameworks, strip the
-            # rest. (otool is reliable where `file`'s wording varies.)
-            if otool -hv "$exe" 2>/dev/null | grep -qw DYLIB; then
+            # KEEP a framework only when we can positively confirm its executable
+            # is a Mach-O DYNAMIC library (those must be embedded, e.g. YbridOpus).
+            # Everything else is a static framework whose code is already linked
+            # into the app binary; embedding it makes App Store validation reject
+            # the build (ITMS-90208), so strip it. Two independent checks so one
+            # tool's wording can't cause a miss: `file` says "dynamically linked
+            # shared library", or `otool -hv` reports the DYLIB filetype.
+            fdesc="$(file -b "$exe" 2>/dev/null || true)"
+            is_dynamic=no
+            if printf '%s' "$fdesc" | grep -q "dynamically linked shared library"; then is_dynamic=yes; fi
+            if otool -hv "$exe" 2>/dev/null | grep -qw DYLIB; then is_dynamic=yes; fi
+            echo "Inspecting $name.framework (dynamic=$is_dynamic): $fdesc"
+            if [ "$is_dynamic" = yes ]; then
               echo "  -> dynamic framework, keeping it."
             else
               echo "::notice::Removing statically-linked framework $name.framework (already linked into the app binary)"
@@ -155,6 +160,13 @@ jobs:
           done
           echo "Frameworks remaining in the app bundle:"
           ls "$FWDIR" 2>/dev/null || echo "(none)"
+          # Hard stop: a static onnxruntime.framework must never ship — it is the
+          # exact bundle App Store validation rejects. If it's still here, the
+          # detection missed and we fail now rather than wasting an upload cycle.
+          if [ -d "$FWDIR/onnxruntime.framework" ]; then
+            echo "::error::onnxruntime.framework is still embedded after stripping — would be rejected (ITMS-90208)."
+            exit 1
+          fi
 
       - name: Upload to TestFlight
         run: |
