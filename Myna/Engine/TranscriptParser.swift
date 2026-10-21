@@ -162,6 +162,40 @@ enum TranscriptParser {
         return title.count >= 3 ? CommandParser.capitalizeFirst(title) : "Event"
     }
 
+    /// Whether a captured "conversation" is really TV / film / podcast / video
+    /// audio playing nearby, from Bee's own summary and tell-tale broadcast
+    /// phrases in the transcript.
+    static func looksLikeMedia(summary: String, transcript: String) -> Bool {
+        let s = summary.lowercased()
+        let summaryCues = [
+            "tv", "television", "tv show", "movie", "episode", "podcast", "youtube",
+            "broadcast", "news report", "newscast", "commercial", "advertisement",
+            "radio", "documentary", "trailer", "audiobook", "netflix", "sitcom",
+            "reality show", "game show",
+        ]
+        let padded = " " + s.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: ",", with: " ") + " "
+        if summaryCues.contains(where: { padded.contains(" \($0) ") }) { return true }
+
+        let t = transcript.lowercased()
+        let broadcastCues = [
+            "stay tuned", "after the break", "we'll be right back", "previously on",
+            "don't forget to subscribe", "like and subscribe", "smash that like",
+            "brought to you by", "this episode", "welcome back to the show",
+            "back after this", "call now", "limited time offer", "terms and conditions apply",
+            "breaking news", "reporting live", "tonight on", "coming up next",
+        ]
+        let hits = broadcastCues.filter { t.contains($0) }.count
+        if hits >= 2 { return true }
+
+        // Many distinct speakers trading short lines is how Bee renders a show.
+        let speakers = Set(transcript.split(separator: "\n").compactMap { line -> Substring? in
+            guard let colon = line.firstIndex(of: ":") else { return nil }
+            let label = line[..<colon]
+            return label.count <= 24 ? label : nil
+        })
+        return speakers.count >= 6 && hits >= 1
+    }
+
     static func hasEventCue(_ text: String) -> Bool {
         let lower = " " + text.lowercased() + " "
         return eventCues.contains { lower.contains($0) }

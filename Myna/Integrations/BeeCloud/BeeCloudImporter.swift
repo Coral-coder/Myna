@@ -159,7 +159,8 @@ final class BeeCloudImporter: ObservableObject {
                 guard !conversation.transcript.isEmpty else { continue }
                 let note = Self.note(from: conversation, sourceRef: sourceRef)
                 modelContext.insert(note)
-                let made = Self.makeSuggestions(from: conversation.transcript, note: note, in: modelContext, known: &knownKeys)
+                let parsed = await Self.findActions(in: conversation, wearer: accountName)
+                let made = Self.makeSuggestions(from: parsed, note: note, in: modelContext, known: &knownKeys)
                 if conversation.end >= recentCutoff {
                     toApply += made.filter(\.autoAdd).map(\.suggestion)
                 }
@@ -186,14 +187,37 @@ final class BeeCloudImporter: ObservableObject {
 
     /// Parse a transcript for actionable items and file the new ones as pending
     /// suggestions. `known` accumulates dedup keys across the whole import pass.
+    /// What to act on in one conversation. TV / film / podcast audio yields
+    /// nothing. With Apple Intelligence, the on-device model reads the whole
+    /// conversation in context and only confident commitments are auto-added.
+    /// Without it, keyword matches go to the Inbox only — never auto-added.
+    private static func findActions(in conversation: BeeCloudAPI.ImportedConversation, wearer: String?) async -> [ParsedSuggestion] {
+        if TranscriptParser.looksLikeMedia(summary: conversation.summary, transcript: conversation.transcript) {
+            return []
+        }
+        if let result = await ConversationExtractor.extract(
+            transcript: conversation.transcript,
+            beeSummary: conversation.summary,
+            wearerName: wearer,
+            conversationDate: conversation.start
+        ) {
+            return result.isMedia ? [] : result.items
+        }
+        return TranscriptParser.parse(conversation.transcript).map { item in
+            var item = item
+            item.autoAdd = false
+            return item
+        }
+    }
+
     private static func makeSuggestions(
-        from transcript: String,
+        from parsedItems: [ParsedSuggestion],
         note: ConversationNote,
         in context: ModelContext,
         known: inout Set<String>
     ) -> [(suggestion: Suggestion, autoAdd: Bool)] {
         var made: [(suggestion: Suggestion, autoAdd: Bool)] = []
-        for parsed in TranscriptParser.parse(transcript) where known.insert(parsed.dedupKey).inserted {
+        for parsed in parsedItems where known.insert(parsed.dedupKey).inserted {
             let suggestion = Suggestion(
                 kind: parsed.kind,
                 text: parsed.text,
