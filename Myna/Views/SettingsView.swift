@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("myna.silenceThreshold") private var silenceThreshold: Double = 90
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
+    @AppStorage(BeeCloudImporter.autoAddKey) private var beeAutoAdd = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
     @AppStorage("myna.micEnabled") private var micEnabled = false
     @AppStorage("myna.wakeWord") private var wakeWord = true
@@ -379,6 +380,15 @@ struct SettingsView: View {
     private var automationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeading(icon: "wand.and.stars", title: "Automation", tint: MynaTheme.magenta)
+            Toggle(isOn: $beeAutoAdd) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Act on Bee conversations")
+                        .settingsLabel()
+                    Text("Appointments go straight onto your calendar, and reminders, to-dos and shopping items onto your lists. Each one sends a notification to your iPhone and Apple Watch with a Cancel button. Anything less certain waits in the Inbox.")
+                        .settingsCaption()
+                }
+            }
+            .tint(MynaTheme.magenta)
             Toggle(isOn: $autoSchedule) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Auto-schedule detected meetings")

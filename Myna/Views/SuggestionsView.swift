@@ -12,8 +12,6 @@ struct SuggestionsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Suggestion.createdAt, order: .reverse) private var all: [Suggestion]
 
-    private let scheduler = EventScheduler()
-
     private var pending: [Suggestion] { all.filter { $0.status == .pending } }
 
     var body: some View {
@@ -58,10 +56,11 @@ struct SuggestionsView: View {
         case .reminder:
             brain.add(.reminder, texts: [s.text], due: s.date, detail: s.detail, source: .conversation, noteID: s.noteID, announce: false)
         case .appointment:
-            let event = DetectedEvent(title: s.text, startDate: s.date, rawWhen: s.text)
-            if (try? scheduler.schedule(event)) == nil {
-                // No calendar access (or no resolved date) — keep it as a dated reminder.
-                brain.add(.reminder, texts: [s.text], due: s.date, detail: s.detail, source: .conversation, noteID: s.noteID, announce: false)
+            let (title, date, detail, noteID) = (s.text, s.date, s.detail, s.noteID)
+            Task {
+                if await !brain.addEvent(title: title, at: date, detail: detail, noteID: noteID) {
+                    brain.add(.reminder, texts: [title], due: date, detail: detail, source: .conversation, noteID: noteID, announce: false)
+                }
             }
         case .contact, .phone, .note:
             let text = s.kind == .phone ? "Call \(s.text)" : s.text

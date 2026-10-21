@@ -65,6 +65,7 @@ final class AppServices {
         neuralVoice = NeuralVoice()
 
         pilot.brain = brain
+        beeCloud.brain = brain
         pilot.whisper = whisper
         brain.voice.neural = neuralVoice
 

@@ -321,6 +321,46 @@ final class MynaBrain: ObservableObject {
         }
     }
 
+    // MARK: - Acting on Bee conversations
+
+    /// Carries out something Myna found in a Bee conversation — calendar event,
+    /// reminder, to-do or shopping item — and notifies you on iPhone and Apple
+    /// Watch with a Cancel button. Returns whether it was handled.
+    @discardableResult
+    func autoApply(_ s: Suggestion) async -> Bool {
+        switch s.kind {
+        case .shopping:
+            add(.shopping, texts: [s.text], source: .conversation, noteID: s.noteID)
+            return true
+        case .todo:
+            add(.todo, texts: [s.text], detail: s.detail, source: .conversation, noteID: s.noteID)
+            return true
+        case .reminder:
+            add(.reminder, texts: [s.text], due: s.date, detail: s.detail, source: .conversation, noteID: s.noteID)
+            return true
+        case .appointment:
+            return await addEvent(title: s.text, at: s.date, detail: s.detail, noteID: s.noteID)
+        case .contact, .phone, .note:
+            return false
+        }
+    }
+
+    /// Puts an event on the calendar and announces it (with Cancel). Without
+    /// calendar access it falls back to a dated reminder, also announced.
+    func addEvent(title: String, at: Date?, detail: String, noteID: UUID? = nil) async -> Bool {
+        guard let at, at > .now else { return false }
+        if !scheduler.hasAccess {
+            _ = await scheduler.requestAccess()
+        }
+        let event = DetectedEvent(title: title, startDate: at, rawWhen: detail, confidence: 0.8)
+        if let eventID = try? scheduler.schedule(event) {
+            notifier.announce(title: "Added to your calendar", body: "\(title) — \(Self.spoken(at))", undo: .event(id: eventID))
+            return true
+        }
+        add(.reminder, texts: [title], due: at, detail: detail, source: .conversation, noteID: noteID)
+        return true
+    }
+
     // MARK: - Calendar
 
     private func schedule(title: String, at: Date?, durationMinutes: Int?, attendees: [String], phrase: String, origin: Origin) async -> String {

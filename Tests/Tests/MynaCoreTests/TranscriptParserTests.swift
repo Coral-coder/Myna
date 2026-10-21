@@ -84,6 +84,47 @@ final class TranscriptParserTests: XCTestCase {
         XCTAssertTrue(items.isEmpty, "\(items)")
     }
 
+    func testEventTitleStripsFillerAndDate() {
+        XCTAssertEqual(
+            TranscriptParser.eventTitle(from: "I have a dentist appointment on Tuesday at 3pm.", removing: "Tuesday at 3pm"),
+            "Dentist appointment"
+        )
+        XCTAssertEqual(
+            TranscriptParser.eventTitle(from: "Alex: we're having dinner with Sam tomorrow", removing: "tomorrow"),
+            "Dinner with Sam"
+        )
+    }
+
+    func testEventTitleFallsBackWhenEmpty() {
+        XCTAssertEqual(TranscriptParser.eventTitle(from: "tomorrow at noon", removing: "tomorrow at noon"), "Event")
+    }
+
+    func testEventCue() {
+        XCTAssertTrue(TranscriptParser.hasEventCue("Dentist appointment Tuesday"))
+        XCTAssertTrue(TranscriptParser.hasEventCue("we have the meeting at 4"))
+        XCTAssertFalse(TranscriptParser.hasEventCue("it rained on Tuesday"))
+    }
+
+    func testStrongLeadInsAutoAdd() {
+        let strong = TranscriptParser.keywordItems("Remind me to renew the passport.")
+        XCTAssertEqual(strong.first?.text, "renew the passport")
+        XCTAssertEqual(strong.first?.autoAdd, true)
+
+        let weak = TranscriptParser.keywordItems("I should clean the garage.")
+        XCTAssertEqual(weak.first?.kind, .todo)
+        XCTAssertEqual(weak.first?.autoAdd, false)
+    }
+
+    func testShoppingAutoAdds() {
+        let items = TranscriptParser.keywordItems("We're out of eggs.")
+        XCTAssertEqual(items.first?.kind, .shopping)
+        XCTAssertEqual(items.first?.autoAdd, true)
+    }
+
+    func testPastTenseVerbIsNotATask() {
+        XCTAssertTrue(TranscriptParser.keywordItems("Called my mom yesterday.").isEmpty)
+    }
+
     func testDedupKeyIsKindAndText() {
         XCTAssertEqual(SuggestionKind.shopping.dedupKey(for: "  Milk "), "shopping|milk")
     }
