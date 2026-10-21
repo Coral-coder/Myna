@@ -34,4 +34,19 @@ final class ContextFilterTests: XCTestCase {
         XCTAssertEqual(parts.joined(separator: "\n"), text)
         XCTAssertTrue(parts.allSatisfy { $0.count <= 120 })
     }
+
+    func testMergeKeepsUncoveredKeywordItems() {
+        let model = [ParsedSuggestion(kind: .appointment, text: "Dentist appointment", detail: "", date: Date(timeIntervalSince1970: 2_000_000_000))]
+        let heuristic = [
+            ParsedSuggestion(kind: .appointment, text: "Dentist", detail: "", date: Date(timeIntervalSince1970: 2_000_000_600)),
+            ParsedSuggestion(kind: .shopping, text: "milk", detail: "", autoAdd: true),
+        ]
+        let merged = TranscriptParser.merge(model: model, heuristic: heuristic)
+        XCTAssertEqual(merged.map(\.text), ["Dentist appointment", "milk"])
+    }
+
+    func testWordsOverlap() {
+        XCTAssertTrue(TranscriptParser.wordsOverlap("Call Mom about Sunday", "call mom"))
+        XCTAssertFalse(TranscriptParser.wordsOverlap("Buy milk", "Renew passport"))
+    }
 }

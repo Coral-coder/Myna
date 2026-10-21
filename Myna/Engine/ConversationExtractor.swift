@@ -13,7 +13,7 @@ import FoundationModels
 /// back to Inbox-only suggestions (never auto-adding without understanding).
 enum ConversationExtractor {
     /// Minimum confidence (0–100) to act without asking.
-    static let autoAddConfidence = 80
+    static let autoAddConfidence = 60
 
     struct Result {
         var isMedia: Bool
@@ -89,7 +89,7 @@ enum ConversationExtractor {
         - calendarEvent: a specific event with a day/time (appointment, meeting, \
         dinner, flight…). reminder: something to be reminded of at a time. todo: a \
         task with no fixed time. shopping: something to buy.
-        - Be conservative. When unsure, give a low confidence. Never invent details.
+        - Plans, appointments, reminders and errands \(who) mentioned doing are what matter most — don't miss them. Never invent details.
         """
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE yyyy-MM-dd HH:mm"
@@ -102,6 +102,7 @@ enum ConversationExtractor {
 
         var merged: [ParsedSuggestion] = []
         var media = false
+        var anySucceeded = false
         for chunk in chunks(of: transcript, size: 3_800).prefix(3) {
             let session = LanguageModelSession(instructions: instructions)
             let options = GenerationOptions(temperature: 0.1)
@@ -111,6 +112,7 @@ enum ConversationExtractor {
                     generating: Extraction.self,
                     options: options
                 )
+                anySucceeded = true
                 let extraction = response.content
                 if extraction.isMediaOrBackground { media = true; continue }
                 merged += extraction.items.compactMap { convert($0, reference: conversationDate) }
@@ -119,6 +121,8 @@ enum ConversationExtractor {
                 continue
             }
         }
+        // Every chunk errored (guardrails etc.) — let the caller fall back.
+        guard anySucceeded else { return nil }
         if media && merged.isEmpty { return Result(isMedia: true, items: []) }
         return Result(isMedia: false, items: TranscriptParser.dedup(merged))
     }

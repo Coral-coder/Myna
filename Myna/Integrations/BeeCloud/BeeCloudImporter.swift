@@ -34,6 +34,9 @@ final class BeeCloudImporter: ObservableObject {
     private static let lastImportKey = "myna.beeCloud.lastImport"
 
     private var modelContext: ModelContext?
+    private static let rescanKey = "myna.beeCloud.rescan.v2"
+    /// What the last import read and did, shown in Backstage.
+    @Published private(set) var lastReport: String?
     /// Acts on confident findings (calendar, reminders, lists) and notifies.
     weak var brain: MynaBrain?
 
@@ -152,6 +155,29 @@ final class BeeCloudImporter: ObservableObject {
             // Only act automatically on recent conversations, so the first
             // import doesn't replay weeks of old plans onto your calendar.
             let recentCutoff = Date.now.addingTimeInterval(-48 * 3600)
+            var usedModel = false
+            var inboxCount = 0
+            var checked = 0
+
+            // One-time second look at the last 48 hours with the current
+            // extraction, so conversations the previous build passed over
+            // still get acted on.
+            if !UserDefaults.standard.bool(forKey: Self.rescanKey) {
+                var descriptor = FetchDescriptor<ConversationNote>(predicate: #Predicate { $0.endedAt >= recentCutoff })
+                descriptor.fetchLimit = 30
+                let recentNotes = ((try? modelContext.fetch(descriptor)) ?? []).filter { $0.sourceRef.hasPrefix("bee:") }
+                for note in recentNotes where !note.transcript.isEmpty {
+                    let found = await Self.findActions(transcript: note.transcript, summary: note.overview,
+                                                       date: note.startedAt, wearer: accountName)
+                    usedModel = usedModel || found.usedModel
+                    let made = Self.makeSuggestions(from: found.items, note: note, in: modelContext, known: &knownKeys)
+                    toApply += made.filter(\.autoAdd).map(\.suggestion)
+                    inboxCount += made.filter { !$0.autoAdd }.count
+                    checked += 1
+                }
+                UserDefaults.standard.set(true, forKey: Self.rescanKey)
+            }
+
             for summary in summaries {
                 let sourceRef = "bee:\(summary.id)"
                 if Self.alreadyImported(sourceRef, in: modelContext) { continue }
@@ -159,21 +185,33 @@ final class BeeCloudImporter: ObservableObject {
                 guard !conversation.transcript.isEmpty else { continue }
                 let note = Self.note(from: conversation, sourceRef: sourceRef)
                 modelContext.insert(note)
-                let parsed = await Self.findActions(in: conversation, wearer: accountName)
-                let made = Self.makeSuggestions(from: parsed, note: note, in: modelContext, known: &knownKeys)
+                let found = await Self.findActions(transcript: conversation.transcript, summary: conversation.summary,
+                                                   date: conversation.start, wearer: accountName)
+                usedModel = usedModel || found.usedModel
+                let made = Self.makeSuggestions(from: found.items, note: note, in: modelContext, known: &knownKeys)
+                inboxCount += made.filter { !$0.autoAdd }.count
                 if conversation.end >= recentCutoff {
                     toApply += made.filter(\.autoAdd).map(\.suggestion)
                 }
                 added += 1
+                checked += 1
             }
             try? modelContext.save()
+            var applied = 0
             if autoAddEnabled, let brain, !toApply.isEmpty {
                 for suggestion in toApply {
                     if await brain.autoApply(suggestion) {
                         suggestion.status = .accepted
+                        applied += 1
                     }
                 }
                 try? modelContext.save()
+            } else if !autoAddEnabled {
+                inboxCount += toApply.count
+            }
+            if checked > 0 {
+                let ai = usedModel ? "Apple Intelligence" : "keyword matching"
+                lastReport = "Read \(checked) conversation\(checked == 1 ? "" : "s") with \(ai): added \(applied), \(inboxCount) waiting in the Inbox."
             }
             lastImport = .now
             UserDefaults.standard.set(lastImport, forKey: Self.lastImportKey)
@@ -185,29 +223,23 @@ final class BeeCloudImporter: ObservableObject {
         }
     }
 
-    /// Parse a transcript for actionable items and file the new ones as pending
-    /// suggestions. `known` accumulates dedup keys across the whole import pass.
     /// What to act on in one conversation. TV / film / podcast audio yields
-    /// nothing. With Apple Intelligence, the on-device model reads the whole
-    /// conversation in context and only confident commitments are auto-added.
-    /// Without it, keyword matches go to the Inbox only — never auto-added.
-    private static func findActions(in conversation: BeeCloudAPI.ImportedConversation, wearer: String?) async -> [ParsedSuggestion] {
-        if TranscriptParser.looksLikeMedia(summary: conversation.summary, transcript: conversation.transcript) {
-            return []
+    /// nothing. Otherwise the keyword parser always runs (calendar events with
+    /// a date, "remind me to…", shopping…), and when Apple Intelligence is
+    /// available its in-context reading is merged on top — catching what the
+    /// keywords miss and vetoing media the keywords can't recognise.
+    private static func findActions(transcript: String, summary: String, date: Date, wearer: String?) async -> (items: [ParsedSuggestion], usedModel: Bool) {
+        if TranscriptParser.looksLikeMedia(summary: summary, transcript: transcript) {
+            return ([], false)
         }
-        if let result = await ConversationExtractor.extract(
-            transcript: conversation.transcript,
-            beeSummary: conversation.summary,
-            wearerName: wearer,
-            conversationDate: conversation.start
-        ) {
-            return result.isMedia ? [] : result.items
+        let heuristic = TranscriptParser.parse(transcript)
+        guard let result = await ConversationExtractor.extract(
+            transcript: transcript, beeSummary: summary, wearerName: wearer, conversationDate: date
+        ) else {
+            return (heuristic, false)
         }
-        return TranscriptParser.parse(conversation.transcript).map { item in
-            var item = item
-            item.autoAdd = false
-            return item
-        }
+        if result.isMedia { return ([], true) }
+        return (TranscriptParser.merge(model: result.items, heuristic: heuristic), true)
     }
 
     private static func makeSuggestions(

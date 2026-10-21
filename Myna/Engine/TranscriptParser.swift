@@ -41,6 +41,35 @@ enum TranscriptParser {
         return dedup(items + detected)
     }
 
+    /// Combines the on-device model's findings with the keyword parser's: the
+    /// model's items win, and a keyword item is kept only when the model didn't
+    /// already cover it (same event time, or overlapping wording).
+    static func merge(model: [ParsedSuggestion], heuristic: [ParsedSuggestion]) -> [ParsedSuggestion] {
+        var out = model
+        for h in heuristic {
+            let covered = model.contains { m in
+                if let a = m.date, let b = h.date, abs(a.timeIntervalSince(b)) < 30 * 60,
+                   [.appointment, .reminder].contains(m.kind), [.appointment, .reminder].contains(h.kind) {
+                    return true
+                }
+                return wordsOverlap(m.text, h.text)
+            }
+            if !covered { out.append(h) }
+        }
+        return dedup(out)
+    }
+
+    static func wordsOverlap(_ a: String, _ b: String) -> Bool {
+        let stop: Set<String> = ["the", "a", "an", "to", "my", "for", "with", "on", "at", "and", "of"]
+        func words(_ s: String) -> Set<String> {
+            Set(s.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)).subtracting(stop)
+        }
+        let wa = words(a), wb = words(b)
+        guard !wa.isEmpty, !wb.isEmpty else { return false }
+        let shared = wa.intersection(wb).count
+        return Double(shared) / Double(min(wa.count, wb.count)) >= 0.5
+    }
+
     static func dedup(_ items: [ParsedSuggestion]) -> [ParsedSuggestion] {
         var seen = Set<String>()
         var out: [ParsedSuggestion] = []
