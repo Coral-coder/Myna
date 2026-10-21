@@ -163,6 +163,22 @@ struct BeeCloudCard: View {
 
     @ViewBuilder
     private var statusLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            importStatus
+            if let report = importer.lastReport {
+                Text(report).cloudCaption()
+            }
+            if let reason = AppleIntelligenceEngine.unavailableReason {
+                Text("Apple Intelligence off — using keyword matching. \(reason)")
+                    .font(.system(size: 12, design: .rounded)).foregroundStyle(MynaTheme.gold)
+            } else {
+                Text("Apple Intelligence on — conversations are read in context.").cloudCaption()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var importStatus: some View {
         switch importer.status {
         case .done(let added):
             Text(added == 0 ? "Up to date — nothing new." : "Imported \(added) conversation\(added == 1 ? "" : "s").")
