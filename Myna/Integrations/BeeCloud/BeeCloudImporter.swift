@@ -34,6 +34,15 @@ final class BeeCloudImporter: ObservableObject {
     private static let lastImportKey = "myna.beeCloud.lastImport"
 
     private var modelContext: ModelContext?
+    /// Acts on confident findings (calendar, reminders, lists) and notifies.
+    weak var brain: MynaBrain?
+
+    static let autoAddKey = "myna.beeCloud.autoAdd"
+    /// Add confident finds automatically (with a Cancel-able notification on
+    /// iPhone / Apple Watch) instead of waiting in the Inbox. On by default.
+    var autoAddEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.autoAddKey) as? Bool ?? true
+    }
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
@@ -139,6 +148,10 @@ final class BeeCloudImporter: ObservableObject {
             // Suggestions we've already offered (any status) — so we never
             // re-surface one you dismissed, and never duplicate across notes.
             var knownKeys = Self.existingSuggestionKeys(in: modelContext)
+            var toApply: [Suggestion] = []
+            // Only act automatically on recent conversations, so the first
+            // import doesn't replay weeks of old plans onto your calendar.
+            let recentCutoff = Date.now.addingTimeInterval(-48 * 3600)
             for summary in summaries {
                 let sourceRef = "bee:\(summary.id)"
                 if Self.alreadyImported(sourceRef, in: modelContext) { continue }
@@ -146,10 +159,21 @@ final class BeeCloudImporter: ObservableObject {
                 guard !conversation.transcript.isEmpty else { continue }
                 let note = Self.note(from: conversation, sourceRef: sourceRef)
                 modelContext.insert(note)
-                Self.makeSuggestions(from: conversation.transcript, note: note, in: modelContext, known: &knownKeys)
+                let made = Self.makeSuggestions(from: conversation.transcript, note: note, in: modelContext, known: &knownKeys)
+                if conversation.end >= recentCutoff {
+                    toApply += made.filter(\.autoAdd).map(\.suggestion)
+                }
                 added += 1
             }
             try? modelContext.save()
+            if autoAddEnabled, let brain, !toApply.isEmpty {
+                for suggestion in toApply {
+                    if await brain.autoApply(suggestion) {
+                        suggestion.status = .accepted
+                    }
+                }
+                try? modelContext.save()
+            }
             lastImport = .now
             UserDefaults.standard.set(lastImport, forKey: Self.lastImportKey)
             status = .done(added: added)
@@ -167,17 +191,21 @@ final class BeeCloudImporter: ObservableObject {
         note: ConversationNote,
         in context: ModelContext,
         known: inout Set<String>
-    ) {
+    ) -> [(suggestion: Suggestion, autoAdd: Bool)] {
+        var made: [(suggestion: Suggestion, autoAdd: Bool)] = []
         for parsed in TranscriptParser.parse(transcript) where known.insert(parsed.dedupKey).inserted {
-            context.insert(Suggestion(
+            let suggestion = Suggestion(
                 kind: parsed.kind,
                 text: parsed.text,
                 detail: parsed.detail,
                 date: parsed.date,
                 noteID: note.id,
                 sourceTitle: note.title
-            ))
+            )
+            context.insert(suggestion)
+            made.append((suggestion, parsed.autoAdd))
         }
+        return made
     }
 
     private static func existingSuggestionKeys(in context: ModelContext) -> Set<String> {
