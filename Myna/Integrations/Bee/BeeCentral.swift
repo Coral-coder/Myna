@@ -15,6 +15,9 @@ protocol BeeCentralDelegate: AnyObject {
     func beeCentralDidConnect(_ central: BeeCentral)
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?)
     func beeCentralDidReady(_ central: BeeCentral)
+    /// A control write was refused until the link is encrypted, so iOS is
+    /// showing the pairing prompt. Lets the manager tell the user and wait.
+    func beeCentralDidBeginPairing(_ central: BeeCentral)
     func beeCentral(_ central: BeeCentral, didReceiveControl data: Data)
     func beeCentral(_ central: BeeCentral, didReceiveAudio data: Data)
 }
@@ -40,6 +43,18 @@ final class BeeCentral: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var controlCharacteristic: CBCharacteristic?
     private var audioCharacteristic: CBCharacteristic?
+
+    // Control commands go out one at a time with response: the bracelet only
+    // answers a bonded central, and a with-response write is what makes iOS
+    // put up the pairing prompt and encrypt the link. We serialize because
+    // CoreBluetooth keeps only one with-response write in flight, and the
+    // handshake sends commands in bursts.
+    private var writeQueue: [Data] = []
+    private var writeInFlight = false
+    private var writeRetries = 0
+    private var didAnnouncePairing = false
+    /// ~24s of retries so there's time to accept the iOS pairing prompt.
+    private static let maxWriteRetries = 16
 
     // Type-level so the nonisolated CoreBluetooth delegate callbacks can read them.
     private static let serviceUUID = CBUUID(string: BeeProtocol.serviceUUID)
@@ -83,10 +98,25 @@ final class BeeCentral: NSObject, ObservableObject {
         if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
     }
 
-    /// Writes a framed control command (no response).
+    /// Queues a framed control command. Each is written with response, one at a
+    /// time, so the bracelet acknowledges it — and so the first command triggers
+    /// iOS pairing on the encrypted link the bracelet requires.
     func writeControl(_ data: Data) {
-        guard let peripheral, let controlCharacteristic else { return }
-        peripheral.writeValue(data, for: controlCharacteristic, type: .withoutResponse)
+        writeQueue.append(data)
+        pumpWrites()
+    }
+
+    private func pumpWrites() {
+        guard !writeInFlight, let peripheral, let controlCharacteristic, !writeQueue.isEmpty else { return }
+        writeInFlight = true
+        peripheral.writeValue(writeQueue[0], for: controlCharacteristic, type: .withResponse)
+    }
+
+    private func clearWriteQueue() {
+        writeQueue.removeAll()
+        writeInFlight = false
+        writeRetries = 0
+        didAnnouncePairing = false
     }
 
     // MARK: - Reconnect
@@ -167,6 +197,7 @@ extension BeeCentral: CBCentralManagerDelegate {
         Task { @MainActor in
             controlCharacteristic = nil
             audioCharacteristic = nil
+            clearWriteQueue()
             phase = .idle
             delegate?.beeCentral(self, didDisconnectWithError: error)
             // Try to come back; iOS wakes us when a connect completes in the background.
@@ -206,6 +237,32 @@ extension BeeCentral: CBPeripheralDelegate {
                 phase = .ready
                 delegate?.beeCentralDidReady(self)
             }
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == Self.controlUUID else { return }
+        Task { @MainActor in
+            writeInFlight = false
+            if error != nil {
+                // Mid-handshake this almost always means the link isn't encrypted
+                // yet and iOS is prompting to pair. Keep the command queued and
+                // retry while the user accepts; give up after a bounded wait.
+                if !didAnnouncePairing {
+                    didAnnouncePairing = true
+                    delegate?.beeCentralDidBeginPairing(self)
+                }
+                writeRetries += 1
+                guard writeRetries <= Self.maxWriteRetries else { clearWriteQueue(); return }
+                try? await Task.sleep(for: .milliseconds(1500))
+                pumpWrites()
+                return
+            }
+            // Acknowledged: the link is up. Advance to the next queued command.
+            writeRetries = 0
+            didAnnouncePairing = false
+            if !writeQueue.isEmpty { writeQueue.removeFirst() }
+            pumpWrites()
         }
     }
 
