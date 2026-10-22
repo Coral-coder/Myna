@@ -17,6 +17,7 @@ final class AppServices {
     let bee: BeeManager
     let beeCloud: BeeCloudImporter
     let beeRefresh: BeeBackgroundRefresh
+    let waker: BackgroundWaker
     let whisper: WhisperTranscriber
     let neuralVoice: NeuralVoice
     private let notificationPresenter = NotificationPresenter()
@@ -61,6 +62,7 @@ final class AppServices {
         bee = BeeManager(listener: listener, pilot: pilot)
         beeCloud = BeeCloudImporter()
         beeRefresh = BeeBackgroundRefresh(importer: beeCloud, pilot: pilot)
+        waker = BackgroundWaker(importer: beeCloud, refresh: beeRefresh)
         whisper = WhisperTranscriber()
         neuralVoice = NeuralVoice()
 
@@ -78,6 +80,8 @@ final class AppServices {
         ActionNotifier.registerCategory()
         // Must register during launch, before the app finishes launching.
         beeRefresh.register()
+        // Location-driven wake-ups so Bee is checked while Myna is closed.
+        waker.apply()
         // Warm up Whisper if the user turned it on previously.
         if whisper.isEnabled { whisper.load() }
     }
@@ -86,6 +90,8 @@ final class AppServices {
     func becameActive() {
         modelManager.refreshInstalledStates()
         beeCloud.importIfEnabled()
+        beeRefresh.schedule()
+        waker.apply()
         if alwaysOn, micEnabled, UserDefaults.standard.bool(forKey: "myna.onboarded"), SpeechListener.hasPermissions,
            pilot.phase == .idle, !listener.isListening {
             pilot.startListening()

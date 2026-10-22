@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
     @AppStorage("myna.autoSchedule") private var autoSchedule = true
     @AppStorage(BeeCloudImporter.autoAddKey) private var beeAutoAdd = true
+    @AppStorage(BackgroundWaker.enabledKey) private var backgroundWake = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
     @AppStorage("myna.micEnabled") private var micEnabled = false
     @AppStorage("myna.wakeWord") private var wakeWord = true
@@ -389,6 +390,16 @@ struct SettingsView: View {
                 }
             }
             .tint(MynaTheme.magenta)
+            Toggle(isOn: $backgroundWake) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Check Bee in the background")
+                        .settingsLabel()
+                    Text(AppServices.shared.waker.statusText)
+                        .settingsCaption()
+                }
+            }
+            .tint(MynaTheme.magenta)
+            .onChange(of: backgroundWake) { _, _ in AppServices.shared.waker.apply() }
             Toggle(isOn: $autoSchedule) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Auto-schedule detected meetings")

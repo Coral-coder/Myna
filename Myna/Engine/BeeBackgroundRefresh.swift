@@ -3,14 +3,18 @@ import Foundation
 
 /// Keeps Myna working while it's in your pocket, no microphone required.
 ///
-/// iOS wakes the app briefly in the background; we use that window to pull from
-/// the Bee backend — account, learned facts, and any new conversations, filed as
-/// notes — then schedule the next wake-up. This is how "the AI runs in the
-/// background off Bee" without the phone ever opening its own mic.
+/// Two kinds of background time from iOS, both used to pull new Bee
+/// conversations, act on them and notify you:
+/// - an app-refresh task (short, frequent as iOS allows), and
+/// - a processing task (longer; iOS runs it when the phone is idle, e.g. on
+///   the charger), which gives Apple Intelligence room to read conversations.
+/// `BackgroundWaker` adds location-driven wake-ups on top, since iOS can be
+/// stingy with app refresh for apps you rarely open.
 @MainActor
 final class BeeBackgroundRefresh {
-    /// Also listed under `BGTaskSchedulerPermittedIdentifiers` in Info.plist.
+    /// Both listed under `BGTaskSchedulerPermittedIdentifiers` in Info.plist.
     static let taskID = "com.lightwave.myna.bee-refresh"
+    static let processingID = "com.lightwave.myna.bee-process"
 
     /// Don't ask iOS to wake us more often than this; it decides the real cadence.
     private static let minInterval: TimeInterval = 15 * 60
@@ -23,27 +27,31 @@ final class BeeBackgroundRefresh {
         self.pilot = pilot
     }
 
-    /// Register the task handler. Call once, during launch.
+    /// Register the task handlers. Call once, during launch.
     func register() {
-        _ = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskID, using: nil) { [weak self] task in
-            guard let refresh = task as? BGAppRefreshTask else {
-                task.setTaskCompleted(success: false)
-                return
+        for id in [Self.taskID, Self.processingID] {
+            _ = BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: nil) { [weak self] task in
+                // The scheduler may call this off the main thread; hop on.
+                Task { @MainActor in self?.handle(task) }
             }
-            // The scheduler may call this off the main thread; hop on.
-            Task { @MainActor in self?.handle(refresh) }
         }
     }
 
     /// Ask iOS to wake Myna again later. Harmless if background refresh is off
     /// or we're on a simulator — the submit simply fails and we move on.
     func schedule() {
-        let request = BGAppRefreshTaskRequest(identifier: Self.taskID)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: Self.minInterval)
-        try? BGTaskScheduler.shared.submit(request)
+        let refresh = BGAppRefreshTaskRequest(identifier: Self.taskID)
+        refresh.earliestBeginDate = Date(timeIntervalSinceNow: Self.minInterval)
+        try? BGTaskScheduler.shared.submit(refresh)
+
+        let processing = BGProcessingTaskRequest(identifier: Self.processingID)
+        processing.requiresNetworkConnectivity = true
+        processing.requiresExternalPower = false
+        processing.earliestBeginDate = Date(timeIntervalSinceNow: Self.minInterval)
+        try? BGTaskScheduler.shared.submit(processing)
     }
 
-    private func handle(_ task: BGAppRefreshTask) {
+    private func handle(_ task: BGTask) {
         schedule() // chain the next wake-up before doing the work
 
         let work = Task { @MainActor in
