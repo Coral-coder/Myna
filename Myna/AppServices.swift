@@ -68,6 +68,11 @@ final class AppServices {
 
         pilot.brain = brain
         beeCloud.brain = brain
+        // Extraction runs on the user's downloaded model (a bigger MLX model when
+        // installed and on screen, Apple Intelligence otherwise). Foreground only.
+        beeCloud.generate = { [modelManager] instructions, prompt in
+            try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 1200)
+        }
         pilot.whisper = whisper
         brain.voice.neural = neuralVoice
 
