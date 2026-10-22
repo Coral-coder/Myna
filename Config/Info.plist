@@ -10,6 +10,8 @@
 	<string>Myna can automatically schedule meetings and events it hears you agree to in conversation, and tell you what&apos;s on your calendar when you ask.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Myna mirrors your to-dos, reminders and shopping list into Apple Reminders so they show up on your Watch and other devices.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Myna uses coarse movement to wake up in the background and check your Bee for new conversations, so it can add your appointments and reminders without you opening the app. Your location isn't stored or shared.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>When you turn on Places, Myna notes where each conversation happened, using places you&apos;ve named like Home or Work. Your location stays on this iPhone unless you also turn on naming places with Apple Maps.</string>
 	<key>NSContactsUsageDescription</key>
@@ -27,10 +29,12 @@
 		<string>audio</string>
 		<string>bluetooth-central</string>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.lightwave.myna.bee-refresh</string>
+		<string>com.lightwave.myna.bee-process</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

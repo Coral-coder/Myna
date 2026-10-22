@@ -34,14 +34,14 @@ struct BeeCloudCard: View {
                     Task { await importer.importRecent() }
                 } label: {
                     HStack(spacing: 8) {
-                        if importer.status == .importing { ProgressView().controlSize(.small).tint(MynaTheme.magenta) }
-                        Text(importer.status == .importing ? "Importing…" : "Import now")
+                        if importer.isBusy { ProgressView().controlSize(.small).tint(MynaTheme.magenta) }
+                        Text(importer.isBusy ? "Importing…" : "Import now")
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(MynaTheme.magenta)
-                .disabled(importer.status == .importing)
+                .disabled(importer.isBusy)
 
                 statusLine
             }

@@ -34,6 +34,13 @@ final class BeeCloudImporter: ObservableObject {
     private static let lastImportKey = "myna.beeCloud.lastImport"
 
     private var modelContext: ModelContext?
+    /// When the current import began. An import iOS suspended mid-way would
+    /// otherwise leave `status` stuck on `.importing` and block every later run.
+    private var importStartedAt: Date?
+    var isBusy: Bool {
+        guard status == .importing, let started = importStartedAt else { return false }
+        return Date.now.timeIntervalSince(started) < 180
+    }
     private static let rescanKey = "myna.beeCloud.rescan.v2"
     /// What the last import read and did, shown in Backstage.
     @Published private(set) var lastReport: String?
@@ -121,7 +128,7 @@ final class BeeCloudImporter: ObservableObject {
 
     /// Called on foreground when auto-import is on.
     func importIfEnabled() {
-        guard isEnabled, status != .importing else { return }
+        guard isEnabled, !isBusy else { return }
         Task {
             await refreshAccount()
             await importRecent()
@@ -131,7 +138,7 @@ final class BeeCloudImporter: ObservableObject {
     /// Awaitable refresh for the background task — pulls account, facts and new
     /// conversations, then returns so the task can report completion to iOS.
     func backgroundRefresh() async {
-        guard isEnabled, status != .importing else { return }
+        guard isEnabled, !isBusy else { return }
         await refreshAccount()
         await importRecent()
     }
@@ -144,6 +151,7 @@ final class BeeCloudImporter: ObservableObject {
             return 0
         }
         status = .importing
+        importStartedAt = .now
         let api = BeeCloudAPI(token: token)
         do {
             let summaries = try await api.recentConversations(limit: limit)
