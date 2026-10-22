@@ -49,4 +49,44 @@ final class ContextFilterTests: XCTestCase {
         XCTAssertTrue(TranscriptParser.wordsOverlap("Call Mom about Sunday", "call mom"))
         XCTAssertFalse(TranscriptParser.wordsOverlap("Buy milk", "Renew passport"))
     }
+
+    // MARK: - Model JSON extraction
+
+    func testParseJSONExtractsItemsWithConfidenceAndEvidence() {
+        let raw = """
+        Sure, here you go:
+        {"isMedia": false, "items": [
+          {"kind": "shopping", "title": "Milk", "dateTime": "", "confidence": 90, "evidence": "we are out of milk"},
+          {"kind": "todo", "title": "Call the dentist", "dateTime": "", "confidence": 40, "evidence": "I should call the dentist sometime"}
+        ]}
+        trailing text
+        """
+        let r = ConversationExtractor.parseJSON(raw, reference: Date())
+        XCTAssertNotNil(r)
+        XCTAssertFalse(r!.isMedia)
+        XCTAssertEqual(r!.items.map(\.text), ["Milk", "Call the dentist"])
+        XCTAssertEqual(r!.items[0].autoAdd, true)          // confident + quoted
+        XCTAssertEqual(r!.items[1].autoAdd, false)         // low confidence
+    }
+
+    func testParseJSONMediaReturnsNoAutoAdd() {
+        let r = ConversationExtractor.parseJSON(#"{"isMedia": true, "items": []}"#, reference: Date())
+        XCTAssertEqual(r?.isMedia, true)
+        XCTAssertEqual(r?.items.count, 0)
+    }
+
+    func testParseJSONRejectsItemWithoutEvidence() {
+        let raw = #"{"isMedia": false, "items": [{"kind":"todo","title":"Do a thing","dateTime":"","confidence":95,"evidence":""}]}"#
+        let r = ConversationExtractor.parseJSON(raw, reference: Date())
+        XCTAssertEqual(r?.items.first?.autoAdd, false)     // no quote => not auto-added
+    }
+
+    func testFirstJSONObjectHandlesBracesInStrings() {
+        let s = "noise {\"a\": \"has } brace\", \"b\": 1} more"
+        XCTAssertEqual(ConversationExtractor.firstJSONObject(in: s), "{\"a\": \"has } brace\", \"b\": 1}")
+    }
+
+    func testParseJSONGarbageIsNil() {
+        XCTAssertNil(ConversationExtractor.parseJSON("not json at all", reference: Date()))
+    }
 }

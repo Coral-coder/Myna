@@ -12,8 +12,15 @@ import FoundationModels
 /// Returns nil when Apple Intelligence isn't available, so the caller can fall
 /// back to Inbox-only suggestions (never auto-adding without understanding).
 enum ConversationExtractor {
-    /// Minimum confidence (0–100) to act without asking.
-    static let autoAddConfidence = 60
+    /// Minimum confidence (0–100) to act without asking. Only a model that
+    /// genuinely understood the exchange clears this; junk sits lower.
+    static let autoAddConfidence = 70
+
+    /// Generates text from `prompt` under `instructions`. The app injects one
+    /// backed by the user's downloaded model (a bigger MLX model when installed
+    /// and on screen, Apple Intelligence otherwise). Kept as a closure so this
+    /// file — and its unit tests — don't depend on the model layer.
+    typealias Generate = (_ instructions: String, _ prompt: String) async throws -> String
 
     struct Result {
         var isMedia: Bool
@@ -24,14 +31,136 @@ enum ConversationExtractor {
         transcript: String,
         beeSummary: String,
         wearerName: String?,
-        conversationDate: Date
+        conversationDate: Date,
+        generate: Generate? = nil
     ) async -> Result? {
+        // Preferred path: the user's chosen model reads it and returns JSON.
+        if let generate {
+            return await runJSON(transcript: transcript, beeSummary: beeSummary,
+                                 wearerName: wearerName, conversationDate: conversationDate, generate: generate)
+        }
         #if canImport(FoundationModels) && os(iOS)
         if #available(iOS 26.0, *), AppleIntelligenceEngine.isAvailable {
             return await run(transcript: transcript, beeSummary: beeSummary,
                              wearerName: wearerName, conversationDate: conversationDate)
         }
         #endif
+        return nil
+    }
+
+    // MARK: - Model path (any backend, via JSON)
+
+    /// The instructions every backend gets. Demands evidence and wearer intent,
+    /// which is what stops the junk.
+    static func instructions(for wearerName: String?) -> String {
+        let who = (wearerName?.isEmpty == false) ? wearerName! : "the wearer"
+        return """
+        You help \(who), who wears a Bee recording bracelet that captures audio of \
+        their day. You read a transcript and extract ONLY concrete action items \
+        that \(who) is responsible for.
+
+        Return STRICT JSON, nothing else, in exactly this shape:
+        {"isMedia": false, "items": [{"kind": "...", "title": "...", "dateTime": "...", "confidence": 0, "evidence": "..."}]}
+
+        - isMedia: true if the audio is a TV show, movie, podcast, video, radio or \
+        other media/background playing nearby rather than \(who) in a real \
+        conversation. If true, items MUST be empty.
+        - Include an item ONLY if \(who) personally committed to it, agreed to it, \
+        asked to be reminded of it, or was directly asked to do it. A plan everyone \
+        settled on (a dinner, meeting, appointment with a time) counts.
+        - EXCLUDE: things that already happened; hypotheticals ("we could", "maybe \
+        someday", "we should probably"); jokes, stories, quotes; opinions and \
+        complaints; other people's tasks; anything vague with no real commitment. \
+        When in doubt, leave it out.
+        - kind is one of: "calendarEvent" (has a day and time), "reminder" (dated \
+        nudge), "todo" (task, no fixed time), "shopping" (something to buy).
+        - title: short and plain, e.g. "Dentist appointment", "Call Mom about Sunday", \
+        "Milk". No filler words.
+        - dateTime: "yyyy-MM-dd HH:mm" in local time resolved against the \
+        conversation date; use 09:00 if only a day was named; "" if no time at all.
+        - confidence: 0-100, how sure you are \(who) truly committed to this.
+        - evidence: the exact words from the transcript that justify the item. \
+        Never invent an item you cannot quote.
+        """
+    }
+
+    static func header(beeSummary: String, conversationDate: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE yyyy-MM-dd HH:mm"
+        return """
+        Conversation date: \(f.string(from: conversationDate))
+        Bee's summary: \(beeSummary.isEmpty ? "(none)" : beeSummary)
+
+        Transcript:
+        """
+    }
+
+    private static func runJSON(transcript: String, beeSummary: String, wearerName: String?, conversationDate: Date, generate: Generate) async -> Result? {
+        let instr = instructions(for: wearerName)
+        let head = header(beeSummary: beeSummary, conversationDate: conversationDate)
+        var merged: [ParsedSuggestion] = []
+        var media = false
+        var anySucceeded = false
+        for chunk in chunks(of: transcript, size: 4_500).prefix(4) {
+            guard let text = try? await generate(instr, "\(head)\n\(chunk)") else { continue }
+            guard let parsed = parseJSON(text, reference: conversationDate) else { continue }
+            anySucceeded = true
+            if parsed.isMedia { media = true; continue }
+            merged += parsed.items
+        }
+        guard anySucceeded else { return nil }
+        if media && merged.isEmpty { return Result(isMedia: true, items: []) }
+        return Result(isMedia: false, items: TranscriptParser.dedup(merged))
+    }
+
+    /// Tolerant parse of the model's JSON (it may wrap it in prose or fences).
+    static func parseJSON(_ raw: String, reference: Date) -> (isMedia: Bool, items: [ParsedSuggestion])? {
+        guard let data = firstJSONObject(in: raw)?.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let isMedia = (obj["isMedia"] as? Bool) ?? false
+        let rawItems = (obj["items"] as? [[String: Any]]) ?? []
+        var out: [ParsedSuggestion] = []
+        for it in rawItems {
+            guard let title = (it["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), title.count >= 2 else { continue }
+            let date = parseDate((it["dateTime"] as? String) ?? "")
+            let kindRaw = (it["kind"] as? String ?? "todo").lowercased()
+            var kind: SuggestionKind
+            switch kindRaw {
+            case "calendarevent", "event", "appointment": kind = date == nil ? .todo : .appointment
+            case "reminder": kind = .reminder
+            case "shopping": kind = .shopping
+            default: kind = date == nil ? .todo : .reminder
+            }
+            if let date, date < Date.now, kind == .appointment || kind == .reminder { continue }
+            let confidence = (it["confidence"] as? Int) ?? Int((it["confidence"] as? Double) ?? 0)
+            let evidence = (it["evidence"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var parsed = ParsedSuggestion(kind: kind, text: title, detail: evidence, date: date)
+            // Auto-add only when the model is confident AND can quote its evidence.
+            parsed.autoAdd = confidence >= autoAddConfidence && !evidence.isEmpty
+            out.append(parsed)
+        }
+        return (isMedia, out)
+    }
+
+    /// The first balanced {...} block in `s`, or nil.
+    static func firstJSONObject(in s: String) -> String? {
+        guard let start = s.firstIndex(of: "{") else { return nil }
+        var depth = 0, inString = false, escaped = false
+        var idx = start
+        while idx < s.endIndex {
+            let c = s[idx]
+            if inString {
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "\"" { inString = false }
+            } else if c == "\"" { inString = true }
+            else if c == "{" { depth += 1 }
+            else if c == "}" {
+                depth -= 1
+                if depth == 0 { return String(s[start...idx]) }
+            }
+            idx = s.index(after: idx)
+        }
         return nil
     }
 
