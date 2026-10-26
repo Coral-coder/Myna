@@ -31,6 +31,7 @@ enum BeeCommand: UInt16 {
     case setEncryptionKey = 0xC018
     case getSessionNonce = 0xC019
     case getSecureIds = 0xC01B
+    case getSerial = 0xC01D
     case setDeviceState = 0xC006
 
     /// `[id low, id high, payload...]`.
@@ -117,7 +118,8 @@ enum BeeResponse: Equatable {
     case encryptionKey(BeeKeyResult)                    // 0xC018
     case txLevel(Int)                                   // 0xC002
     case txPower(Int)                                   // 0xC001
-    case setDeviceState(ok: Bool)                       // 0xC006
+    case setDeviceState(state: BeeDeviceState)          // 0xC006 (also arrives unsolicited on VAD)
+    case serial(String)                                 // 0xC01D
 }
 
 /// A non-OK reply status (0x8001–0x8003).
@@ -253,8 +255,9 @@ enum BeeProtocol {
             // OK-wrapped means the key was installed; "already set" arrives as 0x8004.
             return .response(.encryptionKey(.installed))
         case .setDeviceState:
-            guard let b = bytes.first else { return .response(.setDeviceState(ok: true)) }
-            return .response(.setDeviceState(ok: b == 0))
+            return .response(.setDeviceState(state: BeeDeviceState(raw: bytes.first ?? 0xFF)))
+        case .getSerial:
+            return .response(.serial(String(decoding: bytes, as: UTF8.self)))
         case .getTxLevel:
             guard let b = bytes.first else { return .malformed }
             return .response(.txLevel(Int(b)))

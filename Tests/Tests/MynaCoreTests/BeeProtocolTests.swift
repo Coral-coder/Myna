@@ -129,6 +129,19 @@ final class BeeResponseTests: XCTestCase {
         XCTAssertEqual([UInt8](BeeCommand.setDeviceState.frame(payload: [0x01])), [0x06, 0xC0, 0x01])
     }
 
+    func testSetDeviceStateReplyCarriesState() {
+        XCTAssertEqual(BeeProtocol.parseControlMessage(ok(0x06, [0x01])),
+                       .response(.setDeviceState(state: .recording)))
+        XCTAssertEqual(BeeProtocol.parseControlMessage(ok(0x06, [0x00])),
+                       .response(.setDeviceState(state: .mute)))
+    }
+
+    func testSerialIsAscii() {
+        let ascii: [UInt8] = Array("G0G5TE0".utf8)
+        XCTAssertEqual(BeeProtocol.parseControlMessage(ok(0x1D, ascii)),
+                       .response(.serial("G0G5TE0")))
+    }
+
     func testUnknownIdIsUnhandled() {
         XCTAssertEqual(BeeProtocol.parseControlMessage(ok(0x99, [0x01])),
                        .unhandled(id: 0xC099, payload: Data([0x01])))
