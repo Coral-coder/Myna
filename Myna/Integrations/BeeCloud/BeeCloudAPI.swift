@@ -35,11 +35,13 @@ struct BeeCloudAPI {
     enum Failure: LocalizedError {
         case http(Int)
         case malformed
+        case route(host: String, code: Int)
         var errorDescription: String? {
             switch self {
             case .http(401), .http(403): return "Bee didn't accept that token. Check it in Backstage."
             case .http(let code): return "Bee returned HTTP \(code)."
             case .malformed: return "Bee sent something Myna couldn't read."
+            case .route(let host, let code): return "Bee key endpoint on \(host) returned HTTP \(code)."
             }
         }
     }
@@ -107,7 +109,7 @@ struct BeeCloudAPI {
     /// (or the whole blob when it's exactly 16 bytes). This is the one call that
     /// touches Bee's server — the audio itself still never leaves the phone.
     func secureKeyToken(deviceIDHex: String) async throws -> Data {
-        let (data, contentType) = try await postRaw("/ble/secure-key", json: ["device_id": deviceIDHex])
+        let (data, contentType) = try await postRaw("/ble/secure-key", json: ["device_id": deviceIDHex], host: Self.baseURL.host ?? "?")
         if contentType.contains("application/octet-stream") { return data }
         // Otherwise a JSON { "token": "<hex pairs or base64>" }.
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -149,7 +151,7 @@ struct BeeCloudAPI {
 
     /// POST returning the raw body and its content-type (for the key blob,
     /// which may be octet-stream or JSON).
-    private func postRaw(_ path: String, json: [String: Any]) async throws -> (Data, String) {
+    private func postRaw(_ path: String, json: [String: Any], host: String = "") async throws -> (Data, String) {
         guard let url = Self.endpoint(path) else { throw Failure.malformed }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -159,7 +161,9 @@ struct BeeCloudAPI {
         let (data, response) = try await session.data(for: request)
         let http = response as? HTTPURLResponse
         let code = http?.statusCode ?? 0
-        guard (200..<300).contains(code) else { throw Failure.http(code) }
+        guard (200..<300).contains(code) else {
+            throw host.isEmpty ? Failure.http(code) : Failure.route(host: host, code: code)
+        }
         let contentType = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         return (data, contentType)
     }
