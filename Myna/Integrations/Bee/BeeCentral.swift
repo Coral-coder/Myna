@@ -52,6 +52,8 @@ final class BeeCentral: NSObject, ObservableObject {
     private static let knownPeripheralKey = "myna.bee.peripheralID"
 
     var isReady: Bool { phase == .ready }
+    /// Low-level problems worth showing in the device log.
+    var onDiagnostic: ((String) -> Void)?
 
     /// Create the manager. Call once CoreBluetooth use is actually wanted, so
     /// the system permission prompt doesn't appear before the user opts in.
@@ -83,10 +85,20 @@ final class BeeCentral: NSObject, ObservableObject {
         if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
     }
 
-    /// Writes a framed control command (no response).
+    /// Writes a framed control command. Bee's app uses a normal (acknowledged)
+    /// write; a write-without-response to a characteristic that doesn't
+    /// support it is silently dropped by iOS.
     func writeControl(_ data: Data) {
         guard let peripheral, let controlCharacteristic else { return }
-        peripheral.writeValue(data, for: controlCharacteristic, type: .withoutResponse)
+        let type: CBCharacteristicWriteType = controlCharacteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(data, for: controlCharacteristic, type: type)
+    }
+
+    /// Subscribe to audio. Bee does this only after the key and session nonce
+    /// are in place, so the first packets are already decryptable.
+    func startAudioNotifications() {
+        guard let peripheral, let audioCharacteristic, !audioCharacteristic.isNotifying else { return }
+        peripheral.setNotifyValue(true, for: audioCharacteristic)
     }
 
     // MARK: - Reconnect
@@ -196,16 +208,34 @@ extension BeeCentral: CBPeripheralDelegate {
                     controlCharacteristic = characteristic
                     peripheral.setNotifyValue(true, for: characteristic)
                 case Self.audioUUID:
+                    // Subscribed later, once the handshake is done.
                     audioCharacteristic = characteristic
-                    peripheral.setNotifyValue(true, for: characteristic)
                 default:
                     break
                 }
             }
-            if controlCharacteristic != nil && audioCharacteristic != nil {
-                phase = .ready
-                delegate?.beeCentralDidReady(self)
-            }
+            // Not ready yet: wait until the bracelet confirms control
+            // notifications are on (below). Writing the first command before
+            // that lost its reply — the bracelet answered into the void.
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard let error else { return }
+        let message = error.localizedDescription
+        Task { @MainActor in onDiagnostic?("Write failed: \(message)") }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        let isControl = characteristic.uuid == Self.controlUUID
+        let notifying = characteristic.isNotifying
+        let failure = error?.localizedDescription
+        Task { @MainActor in
+            if let failure { onDiagnostic?("Notifications failed: \(failure)") }
+            guard isControl, notifying, phase != .ready,
+                  controlCharacteristic != nil, audioCharacteristic != nil else { return }
+            phase = .ready
+            delegate?.beeCentralDidReady(self)
         }
     }
 

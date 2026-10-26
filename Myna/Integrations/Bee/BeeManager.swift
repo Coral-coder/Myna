@@ -61,6 +61,7 @@ final class BeeManager: ObservableObject {
         self.listener = listener
         self.pilot = pilot
         central.delegate = self
+        central.onDiagnostic = { [weak self] line in self?.log(line) }
         if isEnabled { start() }
     }
 
@@ -112,7 +113,7 @@ final class BeeManager: ObservableObject {
     func setBrightness(_ value: Int) {
         guard isReadyForControl else { return }
         let byte = UInt8(max(0, min(255, value)))
-        central.writeControl(BeeProtocol.frame(Self.setBrightnessCommand, payload: [byte]))
+        central.writeControl(BeeProtocol.frame(Self.setBrightnessCommand, payload: [0x01, byte]))
         central.writeControl(BeeCommand.getBrightness.frame(payload: [0x01]))
     }
 
@@ -131,6 +132,13 @@ final class BeeManager: ObservableObject {
         guard isReadyForControl else { return }
         central.writeControl(BeeCommand.setTxPower.frame(payload: [UInt8(max(0, min(255, value)))]))
         central.writeControl(BeeCommand.getTxLevel.frame())
+    }
+
+    /// Unmute (start recording) or mute the bracelet — SetDeviceState 0xC006,
+    /// 1 = recording, 0 = mute, as Bee's app sends it.
+    func setRecording(_ on: Bool) {
+        guard isReadyForControl else { return }
+        central.writeControl(BeeCommand.setDeviceState.frame(payload: [on ? 0x01 : 0x00]))
     }
 
     /// Re-read everything the bracelet reports.
@@ -178,8 +186,27 @@ final class BeeManager: ObservableObject {
         handshakeToken += 1
         diagnostics.removeAll()
         log("Connected. Requesting secure IDs (0xC01B)…")
+        // Same opening burst as Bee's app (onControlStarted).
+        central.writeControl(BeeCommand.getDeviceID.frame())
         central.writeControl(BeeCommand.getSecureIds.frame())
+        central.writeControl(BeeCommand.getDeviceState.frame())
+        central.writeControl(BeeCommand.getFirmwareVersion.frame())
+        central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
         scheduleHandshakeTimeout(handshakeToken)
+        scheduleSecureIdsRetry(handshakeToken, attempt: 1)
+    }
+
+    /// Belt and braces: if the secure IDs don't come back, ask again every 3s.
+    private func scheduleSecureIdsRetry(_ token: Int, attempt: Int) {
+        guard attempt <= 3 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.handshakeToken == token, case .provisioning = self.pairing,
+                  self.secureIdsToken != token, self.central.isReady else { return }
+            self.log("No secure IDs yet — asking again (\(attempt + 1))…")
+            self.central.writeControl(BeeCommand.getSecureIds.frame())
+            self.scheduleSecureIdsRetry(token, attempt: attempt + 1)
+        }
     }
 
     /// If the handshake is still provisioning after a while, stop waiting and
@@ -204,7 +231,13 @@ final class BeeManager: ObservableObject {
     /// Copyable device log for sharing.
     var diagnosticsText: String { diagnostics.joined(separator: "\n") }
 
+    /// The handshake that last received secure IDs (stops the retries).
+    private var secureIdsToken = -1
+    /// Whether the key being installed was already stored from an earlier pairing.
+    private var keyWasHeldBefore = false
+
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
+        secureIdsToken = handshakeToken
         self.deviceID = deviceID
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
@@ -226,6 +259,7 @@ final class BeeManager: ObservableObject {
         }
 
         // Unsealed: generate (or reuse) our own key and install it.
+        keyWasHeldBefore = heldKey != nil
         do {
             let ourKey = try BeeKeyVault.loadOrCreateKey(deviceID: deviceID)
             key = ourKey
@@ -239,9 +273,19 @@ final class BeeManager: ObservableObject {
 
     private func handleKeyResult(_ result: BeeKeyResult) {
         switch result {
-        case .installed, .alreadySet:
-            log("Key accepted (\(result == .installed ? "INSTALLED" : "ALREADY_SET")). Requesting session nonce (0xC019)…")
+        case .installed:
+            log("Key installed. Requesting session nonce (0xC019)…")
             central.writeControl(BeeCommand.getSessionNonce.frame())
+        case .alreadySet:
+            // The bracelet kept a key it already had. It's only ours if we
+            // installed it on an earlier connection.
+            if keyWasHeldBefore {
+                log("Key already set (ours). Requesting session nonce (0xC019)…")
+                central.writeControl(BeeCommand.getSessionNonce.frame())
+            } else {
+                log("Bracelet already has a different key → factory reset needed.")
+                pairing = .needsFactoryReset
+            }
         case .unknown(let code):
             log("Key reply code \(code) (unrecognized).")
             pairing = .error("The bracelet rejected the key (code \(code)).")
@@ -250,7 +294,10 @@ final class BeeManager: ObservableObject {
 
     private func handleNonce(_ value: Data) {
         nonce = value
-        log("Session nonce received (\(value.count) bytes). Reading device state…")
+        decoder = codec.map { BeeAudioDecoder(codec: $0) }
+        log("Session nonce received (\(value.count) bytes). Starting audio…")
+        // Bee subscribes to audio only once the key and nonce are in place.
+        central.startAudioNotifications()
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
         central.writeControl(BeeCommand.getFirmwareVersion.frame())
@@ -260,6 +307,9 @@ final class BeeManager: ObservableObject {
     }
 
     private func handleDeviceState(state: BeeDeviceState, codec: BeeCodec) {
+        if deviceState != state || self.codec != codec {
+            log("Bracelet \(state.description), codec \(codec.description).")
+        }
         deviceState = state
         if self.codec != codec {
             self.codec = codec
@@ -285,11 +335,13 @@ final class BeeManager: ObservableObject {
               let packet = BeeAudioFraming.parse(data),
               let nonce, let decryptor, let decoder else { return }
         guard let plaintext = try? decryptor.decrypt(packet: packet, nonce: nonce),
-              !plaintext.isEmpty,
-              let pcm = decoder.decode(plaintext) else { return }
-        packetsDecoded += 1
+              !plaintext.isEmpty else { return }
+        let buffers = decoder.decodeStream(plaintext)
+        guard !buffers.isEmpty else { return }
+        if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz).") }
+        packetsDecoded += buffers.count
         if !feedingSpeech { beginSpeechFeed() }
-        listener?.feedExternalAudio(pcm)
+        for pcm in buffers { listener?.feedExternalAudio(pcm) }
     }
 
     private func beginSpeechFeed() {
@@ -361,11 +413,16 @@ extension BeeManager: BeeCentralDelegate {
             handleEvent(event)
         case .response(let response):
             handleResponse(response)
+        case .failure(let failure):
+            log("Bracelet replied \(failure) ← \(BeeProtocol.hex([UInt8](data)))")
+            if case .provisioning = pairing, failure != .unknownCommand {
+                pairing = .error("The bracelet refused a setup step (\(failure)). Send me the device log.")
+            }
         case .unhandled(let id, let payload):
             // A well-formed message Myna doesn't model. During provisioning this
             // is probably the real key-set reply in a shape this build didn't
             // expect — log the raw bytes so we can learn the device's scheme.
-            log("Unhandled 0x\(String(format: "%04X", id)) ← \(BeeProtocol.hex([UInt8](data)))")
+            log("Unhandled 0x\(String(format: "%04X", id)) ← \(BeeProtocol.hex([UInt8](payload)))")
         case .malformed:
             log("Malformed ← \(BeeProtocol.hex([UInt8](data)))")
         }
@@ -398,6 +455,9 @@ extension BeeManager: BeeCentralDelegate {
             txPower = value
         case .deviceID:
             break
+        case .setDeviceState(let ok):
+            log(ok ? "Recording state set." : "Bracelet refused the recording state change.")
+            central.writeControl(BeeCommand.getDeviceState.frame())
         }
     }
 }

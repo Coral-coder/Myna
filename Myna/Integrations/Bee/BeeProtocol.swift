@@ -4,10 +4,15 @@ import Foundation
 // responses and unsolicited events. Pure byte work with no CoreBluetooth, so
 // it is unit-tested on its own.
 //
-// Framing: every control request is a 2-byte little-endian command id followed
-// by its payload. Every message the control characteristic sends back — a reply
-// to a command, or an unsolicited event — likewise begins with a 2-byte
-// little-endian id, then its payload.
+// Framing (matches Bee's own app, BeeRequest / BeeNotification):
+// - Request: 2-byte little-endian command id (0xC0xx), then its payload.
+// - Reply: 2-byte little-endian status, then (for OK) the echoed command id and
+//   that command's payload:
+//     0x8000 OK            → [cmd lo][cmd hi][payload]
+//     0x8001 error, 0x8002 invalid parameter, 0x8003 unknown command
+//     0x8004 SetEncryptionKey: a key is already set
+// - Unsolicited events: 0xA001 double press, 0xA002 hold, 0xA003 device
+//   state, 0xA004 battery, 0xA005 charging.
 
 // MARK: - Commands
 
@@ -26,6 +31,7 @@ enum BeeCommand: UInt16 {
     case setEncryptionKey = 0xC018
     case getSessionNonce = 0xC019
     case getSecureIds = 0xC01B
+    case setDeviceState = 0xC006
 
     /// `[id low, id high, payload...]`.
     func frame(payload: [UInt8] = []) -> Data {
@@ -89,13 +95,13 @@ enum BeeKeyResult: Equatable {
 
 // MARK: - Parsed messages
 
-/// An unsolicited event from the control characteristic (0x8000–0x8004).
+/// An unsolicited event from the control characteristic (0xA001–0xA005).
 enum BeeEvent: Equatable {
-    case batteryLevel(Int)            // 0x8000
-    case buttonDoublePress            // 0x8001
-    case buttonHold(pressed: Bool)    // 0x8002
-    case charging(Bool)               // 0x8003
-    case deviceState(state: BeeDeviceState, codec: BeeCodec) // 0x8004
+    case buttonDoublePress            // 0xA001
+    case buttonHold(pressed: Bool)    // 0xA002
+    case deviceState(state: BeeDeviceState, codec: BeeCodec) // 0xA003
+    case batteryLevel(Int)            // 0xA004
+    case charging(Bool)               // 0xA005
 }
 
 /// A reply to a command, keyed by the id we sent.
@@ -111,12 +117,21 @@ enum BeeResponse: Equatable {
     case encryptionKey(BeeKeyResult)                    // 0xC018
     case txLevel(Int)                                   // 0xC002
     case txPower(Int)                                   // 0xC001
+    case setDeviceState(ok: Bool)                       // 0xC006
+}
+
+/// A non-OK reply status (0x8001–0x8003).
+enum BeeFailure: Equatable {
+    case error          // 0x8001
+    case invalidParam   // 0x8002
+    case unknownCommand // 0x8003
 }
 
 /// What a message off the control characteristic turned out to be.
 enum BeeControlMessage: Equatable {
     case event(BeeEvent)
     case response(BeeResponse)
+    case failure(BeeFailure)
     /// A well-formed message we don't model (or a confirmed-on-device command).
     case unhandled(id: UInt16, payload: Data)
     case malformed
@@ -154,13 +169,26 @@ enum BeeProtocol {
     static func parseControlMessage(_ data: Data) -> BeeControlMessage {
         guard let id = messageID(data) else { return .malformed }
         let payload = Data(data.dropFirst(2))
-        // Events are 0x80xx, command responses are 0xC0xx — both have the high
-        // bit set, so route by the high byte, not by >= 0x8000.
-        switch id >> 8 {
-        case 0x80:
-            return parseEvent(id: id, payload: payload)
+        switch id {
+        case 0x8000:
+            // OK: the echoed command id, then that command's reply.
+            guard let command = messageID(payload) else { return .malformed }
+            return parseResponse(id: command, payload: Data(payload.dropFirst(2)))
+        case 0x8001: return .failure(.error)
+        case 0x8002: return .failure(.invalidParam)
+        case 0x8003: return .failure(.unknownCommand)
+        case 0x8004: return .response(.encryptionKey(.alreadySet))
         default:
+            break
+        }
+        switch id >> 8 {
+        case 0xA0:
+            return parseEvent(id: id, payload: payload)
+        case 0xC0:
+            // Not seen from current firmware, but harmless: a bare reply.
             return parseResponse(id: id, payload: payload)
+        default:
+            return .unhandled(id: id, payload: payload)
         }
     }
 
@@ -169,20 +197,20 @@ enum BeeProtocol {
     private static func parseEvent(id: UInt16, payload: Data) -> BeeControlMessage {
         let bytes = [UInt8](payload)
         switch id {
-        case 0x8000:
-            guard let level = bytes.first else { return .malformed }
-            return .event(.batteryLevel(Int(level)))
-        case 0x8001:
+        case 0xA001:
             return .event(.buttonDoublePress)
-        case 0x8002:
+        case 0xA002:
             guard let b = bytes.first else { return .malformed }
             return .event(.buttonHold(pressed: b == 1))
-        case 0x8003:
-            guard let b = bytes.first else { return .malformed }
-            return .event(.charging(b != 0))
-        case 0x8004:
+        case 0xA003:
             guard bytes.count >= 2 else { return .malformed }
             return .event(.deviceState(state: BeeDeviceState(raw: bytes[0]), codec: BeeCodec(raw: bytes[1])))
+        case 0xA004:
+            guard !bytes.isEmpty else { return .malformed }
+            return .event(.batteryLevel(batteryPercent(bytes)))
+        case 0xA005:
+            guard let b = bytes.first else { return .malformed }
+            return .event(.charging(b != 0))
         default:
             return .unhandled(id: id, payload: payload)
         }
@@ -222,7 +250,11 @@ enum BeeProtocol {
             guard bytes.count >= nonceLength else { return .malformed }
             return .response(.sessionNonce(Data(bytes.prefix(nonceLength))))
         case .setEncryptionKey:
-            return .response(.encryptionKey(keyResult(bytes)))
+            // OK-wrapped means the key was installed; "already set" arrives as 0x8004.
+            return .response(.encryptionKey(.installed))
+        case .setDeviceState:
+            guard let b = bytes.first else { return .response(.setDeviceState(ok: true)) }
+            return .response(.setDeviceState(ok: b == 0))
         case .getTxLevel:
             guard let b = bytes.first else { return .malformed }
             return .response(.txLevel(Int(b)))
@@ -234,15 +266,18 @@ enum BeeProtocol {
         }
     }
 
-    /// SetEncryptionKey reply. The exact code bytes are confirmed on the
-    /// device; an empty payload is treated as a bare success (installed).
-    private static func keyResult(_ bytes: [UInt8]) -> BeeKeyResult {
-        guard let code = bytes.first else { return .installed }
-        switch code {
-        case 0: return .installed
-        case 1: return .alreadySet
-        default: return .unknown(code)
+    /// Battery event. Bee reads one percent byte; some firmware sends a 16-bit
+    /// little-endian cell voltage in millivolts instead (e.g. d1 0f = 4049 mV),
+    /// which is mapped onto a Li-ion 3.3–4.2 V curve.
+    static func batteryPercent(_ bytes: [UInt8]) -> Int {
+        guard let first = bytes.first else { return 0 }
+        if bytes.count >= 2 {
+            let millivolts = Int(bytes[0]) | Int(bytes[1]) << 8
+            if (2800...4500).contains(millivolts) {
+                return min(100, max(0, (millivolts - 3300) * 100 / 900))
+            }
         }
+        return min(100, Int(first))
     }
 
     static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {

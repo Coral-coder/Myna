@@ -36,6 +36,14 @@ struct BraceletCard: View {
                     detailRow(icon: "number", text: "Device \(bee.deviceID.prefix(8))")
                 }
                 pairingDetail
+                if bee.isReadyForControl, bee.deviceState == .mute {
+                    VStack(alignment: .leading, spacing: 8) {
+                        detailRow(icon: "mic.slash.fill", text: "The bracelet is muted, so it isn't sending audio.", tint: MynaTheme.gold)
+                        Button("Unmute bracelet") { bee.setRecording(true) }
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .tint(MynaTheme.cyan)
+                    }
+                }
                 if bee.isReadyForControl { controlsSection }
                 if !bee.diagnostics.isEmpty { deviceLog }
             }

@@ -37,3 +37,64 @@ enum BeeAudioFraming {
         return block
     }
 }
+
+/// Reassembles the bracelet's AAC stream. After decryption each packet is a
+/// slice of a continuous ADTS byte stream — a frame can span packets — so
+/// bytes are buffered and only complete frames come out (same scan as Bee's
+/// AudioMessageDecoder: sync 0xFFF, 13-bit frame length, first 3 frames
+/// dropped while the encoder warms up).
+struct BeeADTSAssembler {
+    struct Frame: Equatable {
+        /// Raw AAC access unit, ADTS header removed.
+        let payload: Data
+        let sampleRate: Double
+        let channels: UInt32
+    }
+
+    private var buffer: [UInt8] = []
+    private var warmup: Int
+
+    init(warmup: Int = 3) {
+        self.warmup = warmup
+    }
+
+    static let sampleRates: [Double] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+
+    mutating func append(_ data: Data) -> [Frame] {
+        buffer.append(contentsOf: data)
+        var frames: [Frame] = []
+        var i = 0
+        while i + 7 <= buffer.count {
+            guard buffer[i] == 0xFF, buffer[i + 1] & 0xF0 == 0xF0 else {
+                i += 1
+                continue
+            }
+            let length = (Int(buffer[i + 3] & 0x03) << 11) | (Int(buffer[i + 4]) << 3) | (Int(buffer[i + 5]) >> 5)
+            guard length > 7 else { i += 1; continue }
+            guard i + length <= buffer.count else { break }
+            let protectionAbsent = buffer[i + 1] & 0x01 == 1
+            let headerLength = protectionAbsent ? 7 : 9
+            let rateIndex = Int((buffer[i + 2] >> 2) & 0x0F)
+            let channels = (UInt32(buffer[i + 2] & 0x01) << 2) | UInt32(buffer[i + 3] >> 6)
+            if warmup > 0 {
+                warmup -= 1
+            } else if length > headerLength, rateIndex < Self.sampleRates.count {
+                frames.append(Frame(
+                    payload: Data(buffer[(i + headerLength)..<(i + length)]),
+                    sampleRate: Self.sampleRates[rateIndex],
+                    channels: max(1, channels)
+                ))
+            }
+            i += length
+        }
+        if i > 0 { buffer.removeFirst(min(i, buffer.count)) }
+        // Never let a corrupt stream grow without bound.
+        if buffer.count > 16_384 { buffer.removeAll() }
+        return frames
+    }
+
+    mutating func reset() {
+        buffer.removeAll()
+        warmup = 3
+    }
+}
