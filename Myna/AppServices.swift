@@ -7,6 +7,8 @@ import UserNotifications
 @MainActor
 final class AppServices {
     static let shared = AppServices()
+    /// Set once `shared` has finished initialising (read by the crash heartbeat).
+    private(set) static var sharedIfReady: AppServices?
 
     let container: ModelContainer
     let modelManager: ModelManager
@@ -27,12 +29,10 @@ final class AppServices {
         UserDefaults.standard.object(forKey: "myna.alwaysOn") as? Bool ?? true
     }
 
-    /// Whether Myna may use the iPhone microphone at all. Myna is now a Bee
-    /// companion — it imports your Bee conversations and turns them into
-    /// suggestions — so the mic is OFF by default and nothing is ever recorded
-    /// on this phone unless you deliberately turn it back on in Backstage.
+    /// Whether Myna may use the iPhone microphone. On by default: Myna records
+    /// and transcribes on this phone, in the background too.
     var micEnabled: Bool {
-        UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? false
+        UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
     }
 
     /// Wake word setting key, and how its text becomes a word list.
@@ -47,6 +47,8 @@ final class AppServices {
     }
 
     private init() {
+        CrashReporter.shared.start()
+        Self.restoreOnDeviceListening()
         do {
             container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self)
         } catch {
@@ -89,6 +91,18 @@ final class AppServices {
         waker.apply()
         // Warm up Whisper if the user turned it on previously.
         if whisper.isEnabled { whisper.load() }
+        Self.sharedIfReady = self
+    }
+
+    /// One-time: the Bee-companion builds turned the mic and Whisper off. Turn
+    /// them back on — on-device recording is Myna's job again.
+    private static func restoreOnDeviceListening() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "myna.listeningRestored.v1") else { return }
+        defaults.set(true, forKey: "myna.micEnabled")
+        defaults.set(true, forKey: "myna.alwaysOn")
+        defaults.set(true, forKey: WhisperTranscriber.enabledKey)
+        defaults.set(true, forKey: "myna.listeningRestored.v1")
     }
 
     /// First launch after onboarding, and every return to the foreground.
@@ -104,9 +118,12 @@ final class AppServices {
         pilot.drainQueue()
     }
 
-    /// Entered the background: ask iOS to wake us later to pull from Bee.
+    /// Entered the background: keep recording (background audio mode), drop
+    /// the big MLX model from memory so iOS doesn't kill Myna to reclaim it.
     func enteredBackground() {
         beeRefresh.schedule()
+        modelManager.releaseForBackground()
+        CrashReporter.log("background — listening=\(listener.isListening) memory=\(CrashReporter.memoryFootprintMB())MB")
     }
 }
 

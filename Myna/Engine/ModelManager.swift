@@ -209,11 +209,26 @@ final class ModelManager: ObservableObject {
             throw MynaModelError.needsForeground
         }
         let container = try await ensureContainer()
+        generating += 1
+        defer { generating -= 1 }
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0.3, topP: 0.9)
         let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
         // Qwen 3's chat template honours a /no_think switch; skip the musing.
         let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
         return try await session.respond(to: finalPrompt)
+    }
+
+    /// MLX generations in flight; the model is only released when idle.
+    private var generating = 0
+
+    /// Free the loaded MLX model (often 1–3 GB) when Myna goes to the
+    /// background. Background apps get a much smaller memory limit, and keeping
+    /// it resident while recording got Myna killed. It reloads on next use.
+    func releaseForBackground() {
+        guard generating == 0, container != nil else { return }
+        container = nil
+        loadedModelID = nil
+        refreshInstalledStates()
     }
 
     private var hasMLXModelInstalled: Bool {
