@@ -17,6 +17,7 @@ struct LiveDebugCard: View {
             row("Pilot", String(describing: pilot.phase))
             if bee.isEnabled {
                 row("Bracelet", braceletLine)
+                row("Audio notifications", "\(bee.rawAudioCount)")
                 row("Audio packets", "\(bee.packetsDecoded)\(bee.audioActive ? " · flowing" : "")")
             }
             row("Recognition ticks", "\(listener.recognitionTicks)")

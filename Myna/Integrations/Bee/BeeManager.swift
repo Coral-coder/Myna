@@ -37,6 +37,10 @@ final class BeeManager: ObservableObject {
     /// True while audio frames are actively arriving from the bracelet.
     @Published private(set) var audioActive = false
     @Published private(set) var lastAudioAt: Date?
+    /// Raw audio notifications received from the bracelet, before any decode.
+    /// Distinguishes "no audio arriving" from "arriving but not decoding".
+    @Published private(set) var rawAudioCount = 0
+    private var audioDropReasonLogged = false
     @Published private(set) var brightness: Int?
     @Published private(set) var bitrate: Int?
     @Published private(set) var txPower: Int?
@@ -422,13 +426,21 @@ final class BeeManager: ObservableObject {
     // MARK: - Audio
 
     private func handleAudio(_ data: Data) {
-        guard case .streaming = pairing,
-              let packet = BeeAudioFraming.parse(data),
-              let nonce, let decryptor, let decoder else { return }
-        guard let plaintext = try? decryptor.decrypt(packet: packet, nonce: nonce),
-              !plaintext.isEmpty else { return }
+        func dropOnce(_ why: String) {
+            guard !audioDropReasonLogged else { return }
+            audioDropReasonLogged = true
+            log("Audio not decoding — \(why).")
+        }
+        guard case .streaming = pairing else { return dropOnce("pairing is \(pairing)") }
+        guard let packet = BeeAudioFraming.parse(data) else { return dropOnce("packet < 4 bytes (\(data.count))") }
+        guard let nonce else { return dropOnce("no session nonce yet") }
+        guard let decryptor else { return dropOnce("no decryptor (key missing)") }
+        guard let decoder else { return dropOnce("no decoder (codec unknown)") }
+        guard let plaintext = try? decryptor.decrypt(packet: packet, nonce: nonce), !plaintext.isEmpty else {
+            return dropOnce("decrypt failed (wrong key?)")
+        }
         let buffers = decoder.decodeStream(plaintext)
-        guard !buffers.isEmpty else { return }
+        guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }
         if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz).") }
         packetsDecoded += buffers.count
         audioActive = true
@@ -497,6 +509,7 @@ extension BeeManager: BeeCentralDelegate {
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
         endSpeechFeed()
         autoRecordTried = false
+        audioDropReasonLogged = false
         reset()
         if isEnabled { pairing = .scanning }
     }
@@ -524,6 +537,8 @@ extension BeeManager: BeeCentralDelegate {
     }
 
     func beeCentral(_ central: BeeCentral, didReceiveAudio data: Data) {
+        rawAudioCount += 1
+        if rawAudioCount == 1 { log("First audio notification (\(data.count) bytes).") }
         handleAudio(data)
     }
 
