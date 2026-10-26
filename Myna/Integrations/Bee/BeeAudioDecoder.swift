@@ -88,41 +88,43 @@ final class BeeAudioDecoder {
     // MARK: - AAC
 
     private func setupAAC() {
+        // mFormatFlags MUST declare AAC-LC — with 0, AVAudioConverter refuses to
+        // initialise ("Couldn't start the AAC decoder"). With the object type
+        // set, the decoder reads everything it needs from the ASBD, so no magic
+        // cookie is required (and a wrong one would break init).
+        let channelCount = max(1, channels)
         var asbd = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatMPEG4AAC,
-            mFormatFlags: 0,
+            mFormatFlags: AudioFormatFlags(MPEG4ObjectID.AAC_LC.rawValue),
             mBytesPerPacket: 0,
             mFramesPerPacket: framesPerPacket,
             mBytesPerFrame: 0,
-            mChannelsPerFrame: channels,
+            mChannelsPerFrame: channelCount,
             mBitsPerChannel: 0,
             mReserved: 0
         )
-        if let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) {
-            outputFormat = mono
-        }
         guard let input = AVAudioFormat(streamDescription: &asbd) else {
-            unavailableReason = "Couldn't start the AAC decoder."
+            unavailableReason = "Couldn't build the AAC input format."
             return
         }
-        // AudioSpecificConfig for AAC-LC so the decoder doesn't have to guess.
-        if let index = BeeADTSAssembler.sampleRates.firstIndex(of: sampleRate) {
-            let objectType: UInt16 = 2
-            let config = (objectType << 11) | (UInt16(index) << 7) | (UInt16(channels & 0x0F) << 3)
-            input.magicCookie = Data([UInt8(config >> 8), UInt8(config & 0xFF)])
+        guard let pcm = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: channelCount, interleaved: false) else {
+            unavailableReason = "Couldn't build the PCM output format."
+            return
         }
-        guard let converter = AVAudioConverter(from: input, to: outputFormat) else {
-            unavailableReason = "Couldn't start the AAC decoder."
+        outputFormat = pcm
+        guard let converter = AVAudioConverter(from: input, to: pcm) else {
+            unavailableReason = "iOS wouldn't start the AAC decoder (\(Int(sampleRate)) Hz, \(channelCount) ch)."
             return
         }
         self.inputFormat = input
         self.converter = converter
+        unavailableReason = nil
     }
 
     private func decodeAAC(_ frame: Data) -> AVAudioPCMBuffer? {
         guard let converter, let inputFormat,
-              let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: framesPerPacket) else { return nil }
+              let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: framesPerPacket * 2) else { return nil }
 
         let compressed = AVAudioCompressedBuffer(
             format: inputFormat,
