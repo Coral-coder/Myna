@@ -397,6 +397,12 @@ final class BeeManager: ObservableObject {
         nonce = value
         decoder = codec.map { BeeAudioDecoder(codec: $0) }
         log("Session nonce received (\(value.count) bytes). Starting audio…")
+        // Audio can arrive the instant we subscribe, so go to streaming now
+        // rather than waiting for the next device-state reply (that race was
+        // dropping the first burst of audio as "pairing is provisioning").
+        if key != nil, decoder?.unavailableReason == nil, decoder != nil {
+            pairing = .streaming
+        }
         // Bee subscribes to audio only once the key and nonce are in place.
         central.startAudioNotifications()
         scheduleAudioWatchdog(handshakeToken)
@@ -463,7 +469,6 @@ final class BeeManager: ObservableObject {
             audioDropReasonLogged = true
             log("Audio not decoding — \(why).")
         }
-        guard case .streaming = pairing else { return dropOnce("pairing is \(pairing)") }
         guard let packet = BeeAudioFraming.parse(data) else { return dropOnce("packet < 4 bytes (\(data.count))") }
         guard let nonce else { return dropOnce("no session nonce yet") }
         guard let decryptor else { return dropOnce("no decryptor (key missing)") }
@@ -473,7 +478,7 @@ final class BeeManager: ObservableObject {
         }
         let buffers = decoder.decodeStream(plaintext)
         guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }
-        if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz).") }
+        if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz)."); audioDropReasonLogged = false }
         packetsDecoded += buffers.count
         audioActive = true
         lastAudioAt = .now
