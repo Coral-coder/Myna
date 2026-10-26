@@ -239,10 +239,12 @@ extension BeeCentral: CBPeripheralDelegate {
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         let isControl = characteristic.uuid == Self.controlUUID
+        let isAudio = characteristic.uuid == Self.audioUUID
         let notifying = characteristic.isNotifying
         let failure = error?.localizedDescription
         Task { @MainActor in
             if let failure { onDiagnostic?("Notifications failed: \(failure)") }
+            if isAudio { onDiagnostic?("Audio notifications \(notifying ? "ON" : "off")") }
             guard isControl, notifying, phase != .ready,
                   controlCharacteristic != nil, audioCharacteristic != nil else { return }
             phase = .ready
