@@ -34,6 +34,9 @@ final class BeeManager: ObservableObject {
     @Published private(set) var deviceState: BeeDeviceState?
     @Published private(set) var codec: BeeCodec?
     @Published private(set) var packetsDecoded = 0
+    /// True while audio frames are actively arriving from the bracelet.
+    @Published private(set) var audioActive = false
+    @Published private(set) var lastAudioAt: Date?
     @Published private(set) var brightness: Int?
     @Published private(set) var bitrate: Int?
     @Published private(set) var txPower: Int?
@@ -415,6 +418,8 @@ final class BeeManager: ObservableObject {
         guard !buffers.isEmpty else { return }
         if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz).") }
         packetsDecoded += buffers.count
+        audioActive = true
+        lastAudioAt = .now
         if !feedingSpeech { beginSpeechFeed() }
         for pcm in buffers { listener?.feedExternalAudio(pcm) }
     }
@@ -427,6 +432,7 @@ final class BeeManager: ObservableObject {
     }
 
     private func endSpeechFeed() {
+        audioActive = false
         guard feedingSpeech else { return }
         feedingSpeech = false
         listener?.endExternalSource()

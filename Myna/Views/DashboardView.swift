@@ -7,6 +7,7 @@ struct DashboardView: View {
     @EnvironmentObject private var listener: SpeechListener
     @EnvironmentObject private var modelManager: ModelManager
     @EnvironmentObject private var brain: MynaBrain
+    @EnvironmentObject private var bee: BeeManager
 
     @Query private var allNotes: [ConversationNote]
     @State private var question = ""
@@ -37,7 +38,7 @@ struct DashboardView: View {
 
                 assistantCard
 
-                if pilot.phase == .listening || pilot.phase == .composing {
+                if pilot.phase == .listening || pilot.phase == .composing || listener.usingExternalSource {
                     liveTranscriptCard
                 }
 
@@ -119,6 +120,13 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var statusChips: some View {
+        if bee.pairing == .streaming {
+            GlowChip(
+                text: bee.audioActive ? "Bracelet live · \(bee.packetsDecoded) packets" : "Bracelet connected",
+                icon: "wave.3.right",
+                tint: MynaTheme.cyan
+            )
+        }
         if pilot.queuedCount > 0 {
             GlowChip(
                 text: "\(pilot.queuedCount) waiting to compose",
