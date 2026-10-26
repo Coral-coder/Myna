@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import WhisperKit
 
@@ -39,7 +40,16 @@ final class WhisperTranscriber: ObservableObject {
         let model = modelName
         loadTask = Task { [weak self] in
             do {
-                let kit = try await WhisperKit(WhisperKitConfig(model: model))
+                // CPU + Neural Engine only: iOS forbids GPU work from the
+                // background, and WhisperKit's default GPU mel stage would fail
+                // (or take Myna down) while the phone is locked.
+                let compute = ModelComputeOptions(
+                    melCompute: .cpuOnly,
+                    audioEncoderCompute: .cpuAndNeuralEngine,
+                    textDecoderCompute: .cpuAndNeuralEngine,
+                    prefillCompute: .cpuOnly
+                )
+                let kit = try await WhisperKit(WhisperKitConfig(model: model, computeOptions: compute))
                 await MainActor.run {
                     self?.pipe = kit
                     self?.state = .ready
@@ -55,6 +65,20 @@ final class WhisperTranscriber: ObservableObject {
     /// mono itself). Returns nil if Whisper isn't ready or produced nothing, so
     /// the caller can fall back to Apple's transcript.
     func transcribe(path: String) async -> String? {
+        // One at a time: two 20-minute files decoding at once doubled memory.
+        let previous = queueTail
+        let job = Task { @MainActor [weak self] () -> String? in
+            await previous?.value
+            return await self?.runTranscription(path: path)
+        }
+        queueTail = Task { _ = await job.value }
+        return await job.value
+    }
+
+    private var queueTail: Task<Void, Never>?
+
+    private func runTranscription(path: String) async -> String? {
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
         if pipe == nil {
             load()
             await loadTask?.value
@@ -66,6 +90,7 @@ final class WhisperTranscriber: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         } catch {
+            CrashReporter.log("whisper failed: \(error.localizedDescription)")
             return nil
         }
     }

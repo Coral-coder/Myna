@@ -49,6 +49,14 @@ final class ConversationPilot: ObservableObject {
         UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? true
     }
 
+    static let composeNotesKey = "myna.composeNotes"
+    /// Off by default: each conversation is filed as its transcript, with no
+    /// AI model in the loop (fast, works in the background, nothing to crash).
+    /// On: the model also writes a structured note.
+    var composeNotes: Bool {
+        UserDefaults.standard.bool(forKey: Self.composeNotesKey)
+    }
+
     let listener: SpeechListener
     let scheduler = EventScheduler()
     weak var brain: MynaBrain?
@@ -60,6 +68,9 @@ final class ConversationPilot: ObservableObject {
     private var isDraining = false
     private var lastSpeechAt: Date = .distantPast
     private var watchdog: Timer?
+    /// Seconds-ish of voice heard this segment (from the mic level), so a
+    /// conversation Apple's recognizer missed still reaches Whisper.
+    private var voiceHits = 0
 
     init(listener: SpeechListener, modelManager: ModelManager, contextHub: ContextHub) {
         self.listener = listener
@@ -75,12 +86,71 @@ final class ConversationPilot: ObservableObject {
             }
             self.segmentLines.append(TranscriptLine(text: text, heardAt: heardAt))
             self.lastSpeechAt = heardAt
+            self.saveJournal()
+        }
+        listener.onVoiceActivity = { [weak self] in
+            guard let self, self.phase != .idle || self.listener.isListening else { return }
+            if self.segmentStartedAt == nil {
+                self.segmentStartedAt = .now
+                if self.whisper?.isEnabled == true { self.listener.beginSegmentCapture() }
+                self.saveJournal()
+            }
+            self.voiceHits += 1
+            self.lastSpeechAt = .now
         }
     }
 
     func attach(modelContext: ModelContext) {
         self.modelContext = modelContext
         refreshQueueCount()
+        recoverJournal()
+    }
+
+    // MARK: - Crash-safe journal
+
+    /// The conversation in progress, mirrored to disk on every line so a crash
+    /// or an iOS kill doesn't throw away what was heard. Recovered at launch.
+    private struct Journal: Codable {
+        var startedAt: Date
+        var lastAt: Date
+        var audioPath: String?
+        var lines: [String]
+    }
+
+    private static let journalURL = SpeechListener.segmentDirectory.appendingPathComponent("current.json")
+
+    private func saveJournal() {
+        guard let started = segmentStartedAt else { return }
+        let journal = Journal(startedAt: started, lastAt: lastSpeechAt == .distantPast ? .now : lastSpeechAt,
+                              audioPath: listener.currentSegmentPath, lines: segmentLines.map(\.text))
+        if let data = try? JSONEncoder().encode(journal) {
+            try? data.write(to: Self.journalURL, options: .atomic)
+        }
+    }
+
+    private func clearJournal() {
+        try? FileManager.default.removeItem(at: Self.journalURL)
+    }
+
+    private func recoverJournal() {
+        let fm = FileManager.default
+        let journal = (try? Data(contentsOf: Self.journalURL)).flatMap { try? JSONDecoder().decode(Journal.self, from: $0) }
+        clearJournal()
+        // Leftover audio from older runs that nothing points to.
+        let keep = journal?.audioPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+        for url in (try? fm.contentsOfDirectory(at: SpeechListener.segmentDirectory, includingPropertiesForKeys: nil)) ?? []
+        where url.pathExtension == "caf" && url.lastPathComponent != keep {
+            try? fm.removeItem(at: url)
+        }
+        guard let journal else { return }
+        let transcript = journal.lines.joined(separator: "\n")
+        let audio = journal.audioPath.flatMap { fm.fileExists(atPath: $0) ? $0 : nil }
+        guard transcript.count > 40 || audio != nil else {
+            if let audio { try? fm.removeItem(atPath: audio) }
+            return
+        }
+        CrashReporter.log("recovered unfinished conversation from \(journal.startedAt) (\(journal.lines.count) lines, audio=\(audio != nil))")
+        compose(transcript: transcript, startedAt: journal.startedAt, endedAt: journal.lastAt, sourceRef: "", audioPath: audio)
     }
 
     // MARK: - Controls
@@ -104,6 +174,7 @@ final class ConversationPilot: ObservableObject {
         if composeRemainder, hasMeaningfulContent {
             finalizeSegment()
         } else {
+            if let url = listener.takeSegmentAudioURL() { try? FileManager.default.removeItem(at: url) }
             clearSegment()
         }
         if phase == .listening { phase = .idle }
@@ -118,6 +189,7 @@ final class ConversationPilot: ObservableObject {
 
     var hasMeaningfulContent: Bool {
         segmentLines.map(\.text).joined(separator: " ").count > 40
+            || (voiceHits >= 6 && listener.currentSegmentPath != nil)
     }
 
     var liveTranscriptTail: [TranscriptLine] {
@@ -152,7 +224,7 @@ final class ConversationPilot: ObservableObject {
         clearSegment()
 
         let transcript = lines.map(\.text).joined(separator: "\n")
-        guard transcript.count > 40 else {
+        guard transcript.count > 40 || audioURL != nil else {
             if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
             return
         }
@@ -189,10 +261,18 @@ final class ConversationPilot: ObservableObject {
 
     private func composeAndFile(transcript rawTranscript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String, audioPath: String? = nil) async throws {
         var transcript = rawTranscript
+        var engine = "Apple Speech"
         // Prefer Whisper's transcript of the captured audio when it's enabled and
         // produced something; otherwise keep Apple's live transcript.
         if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
             transcript = better
+            engine = "Whisper"
+        }
+        // Nothing intelligible (noise, TV murmur): drop it quietly.
+        guard transcript.count > 40 else { return }
+        guard composeNotes else {
+            fileTranscript(transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, engine: engine)
+            return
         }
         let context = await contextHub.noteContext(transcript: transcript, startedAt: startedAt, endedAt: endedAt, place: place)
         let result = try await notesEngine.composeNote(
@@ -212,6 +292,32 @@ final class ConversationPilot: ObservableObject {
         notesComposedToday += 1
         banner = "✨ Note composed: \(note.title)"
         brain?.speakProactively("I just captured a note: \(note.title).")
+    }
+
+    /// The default: file the conversation as its transcript. No model involved.
+    private func fileTranscript(_ transcript: String, startedAt: Date, endedAt: Date, sourceRef: String, place: String, engine: String) {
+        let title = "Conversation · " + startedAt.formatted(date: .omitted, time: .shortened)
+        let preview = String(transcript.replacingOccurrences(of: "\n", with: " ").prefix(160))
+        let note = ConversationNote(
+            startedAt: startedAt,
+            endedAt: endedAt,
+            title: title,
+            overview: preview,
+            detailedNotes: "",
+            keyPoints: [],
+            decisions: [],
+            actionItems: [],
+            detectedEvents: [],
+            followUps: [],
+            transcript: transcript,
+            modelName: engine,
+            sourceRef: sourceRef
+        )
+        note.placeName = place
+        modelContext?.insert(note)
+        try? modelContext?.save()
+        notesComposedToday += 1
+        banner = "Saved: \(title)"
     }
 
     /// Never lose what was heard — file the raw transcript as a note.
@@ -301,5 +407,7 @@ final class ConversationPilot: ObservableObject {
     private func clearSegment() {
         segmentLines = []
         segmentStartedAt = nil
+        voiceHits = 0
+        clearJournal()
     }
 }

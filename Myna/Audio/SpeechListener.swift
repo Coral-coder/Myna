@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Speech
 import UIKit
+import UserNotifications
 
 /// Continuous, fully on-device speech capture.
 ///
@@ -25,6 +26,18 @@ final class SpeechListener: NSObject, ObservableObject {
     var onPartialText: ((String) -> Void)?
     /// Called once when a recognition task finishes, with its final text.
     var onTaskFinished: ((String) -> Void)?
+    /// Called (at most every couple of seconds) while the mic hears voice-level
+    /// sound. Lets the pilot keep recording for Whisper even when Apple's
+    /// recognizer isn't producing text (it can stall in the background).
+    var onVoiceActivity: (() -> Void)?
+    private var lastVoiceActivity: Date = .distantPast
+    /// Recognition tasks that failed right after starting, for backoff. A
+    /// recognizer that errors instantly in a tight loop pins the CPU and gets
+    /// Myna killed by iOS.
+    private var quickFailures = 0
+    private var taskStartedAt: Date = .distantPast
+    private var restartPending = false
+    private var lastStartAt: Date = .distantPast
 
     private let audioEngine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: Locale.preferredLanguages.first ?? "en-US"))
@@ -40,7 +53,13 @@ final class SpeechListener: NSObject, ObservableObject {
     /// stopped the engine; resume the moment the app is active and the mic is
     /// available again. The iPhone can't open the mic while backgrounded, so
     /// restarting the engine there would crash — we wait instead.
-    private var wantsToListen = false
+    private(set) var wantsToListen = false
+
+    /// Guards everything the audio-thread tap touches (`tapRequest`,
+    /// `segmentFile`, `captureActive`). Swapping these on the main thread while
+    /// the tap is mid-write was a use-after-free crash.
+    private let tapLock = NSLock()
+    nonisolated(unsafe) private var tapRequest: SFSpeechAudioBufferRecognitionRequest?
 
     /// Rotate the recognition task once a minute so a single task never grows unbounded.
     private let taskRotationInterval: TimeInterval = 60
@@ -79,23 +98,48 @@ final class SpeechListener: NSObject, ObservableObject {
 
     /// Start recording the current conversation's audio to a temp file.
     func beginSegmentCapture() {
-        guard captureFormat != nil, segmentFile == nil else { return }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("myna-segment-\(UUID().uuidString).caf")
-        guard let format = captureFormat, let file = try? AVAudioFile(forWriting: url, settings: format.settings) else { return }
+        guard let format = captureFormat, segmentURL == nil else { return }
+        let url = Self.segmentDirectory.appendingPathComponent("segment-\(UUID().uuidString).caf")
+        // AAC in a CAF keeps a 20-minute conversation to a few MB (raw float
+        // PCM was ~230 MB) and CAF stays readable even if Myna dies mid-write.
+        let aac: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: min(format.channelCount, 2),
+            AVEncoderBitRateKey: 48_000,
+        ]
+        let file = (try? AVAudioFile(forWriting: url, settings: aac, commonFormat: format.commonFormat, interleaved: format.isInterleaved))
+            ?? (try? AVAudioFile(forWriting: url, settings: format.settings))
+        guard let file else { return }
         segmentURL = url
+        tapLock.lock()
         segmentFile = file
         captureActive = true
+        tapLock.unlock()
     }
 
     /// Stop recording and hand back the file URL (caller transcribes, then deletes it).
     func takeSegmentAudioURL() -> URL? {
+        tapLock.lock()
         captureActive = false
-        let url = segmentURL
         segmentFile = nil   // closing the file flushes it to disk
+        tapLock.unlock()
+        let url = segmentURL
         segmentURL = nil
         return url
     }
+
+    /// The file the current conversation is being recorded to, if any.
+    var currentSegmentPath: String? { segmentURL?.path }
+
+    /// Segment audio lives in Application Support (not tmp) so a conversation
+    /// recorded before a crash can still be transcribed on the next launch.
+    static let segmentDirectory: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("Segments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
 
     override init() {
         super.init()
@@ -103,9 +147,11 @@ final class SpeechListener: NSObject, ObservableObject {
         center.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         center.addObserver(self, selector: #selector(handleMediaReset(_:)), name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
         center.addObserver(self, selector: #selector(handleBecameActive(_:)), name: UIApplication.didBecomeActiveNotification, object: nil)
+        // A route change (AirPods, car, a call) stops AVAudioEngine silently;
+        // without this Myna looked "on" but heard nothing for the rest of the day.
+        center.addObserver(self, selector: #selector(handleEngineConfigChange(_:)), name: .AVAudioEngineConfigurationChange, object: audioEngine)
     }
 
-    /// The mic can only be opened while the app is foreground-active.
     private var appIsActive: Bool { UIApplication.shared.applicationState == .active }
 
     // MARK: - Permissions
@@ -132,9 +178,9 @@ final class SpeechListener: NSObject, ObservableObject {
         // Remember the intent even if we can't start right now, so we resume
         // when the app is next active (see handleBecameActive).
         wantsToListen = true
-        // The iPhone microphone can't be opened from the background; trying would
-        // throw or, worse, install a tap on a zero-rate format and crash. Defer.
-        guard appIsActive else { return }
+        // Started (or resumed after a call) while backgrounded: with the "audio"
+        // background mode iOS usually allows it. If it doesn't, the guards
+        // below fail softly and we resume when Myna is next opened.
         lastError = nil
         do {
             let session = AVAudioSession.sharedInstance()
@@ -154,6 +200,8 @@ final class SpeechListener: NSObject, ObservableObject {
             guard format.sampleRate > 0, format.channelCount > 0 else {
                 lastError = "The microphone isn't available right now."
                 try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                CrashReporter.log("mic unavailable (rate \(format.sampleRate)) state=\(UIApplication.shared.applicationState.rawValue)")
+                notifyStoppedIfBackground()
                 return
             }
             captureFormat = format
@@ -164,18 +212,26 @@ final class SpeechListener: NSObject, ObservableObject {
             // aborts — seen on iOS 26/27. nil is the mismatch-proof choice.
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
                 // While the bracelet is the source, the mic stays off the request.
-                if self?.externalSourceActive != true {
+                guard let self else { return }
+                let fromMic = !self.externalSourceActive
+                if fromMic {
                     // Lift distant, quiet speech so the recognizer can hear it.
-                    Self.boost(buffer, gain: self?.sensitivity ?? 1)
-                    self?.request?.append(buffer)
+                    Self.boost(buffer, gain: self.sensitivity)
+                    self.tapLock.lock()
+                    self.tapRequest?.append(buffer)
                     // Also capture the audio for Whisper, if a segment is recording.
-                    if self?.captureActive == true { try? self?.segmentFile?.write(from: buffer) }
+                    if self.captureActive { try? self.segmentFile?.write(from: buffer) }
+                    self.tapLock.unlock()
                 }
                 let level = Self.rms(of: buffer)
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     // Attack fast, decay slow — feels alive without flickering.
                     self.audioLevel = max(level, self.audioLevel * 0.86)
+                    if fromMic, level > 0.3, Date.now.timeIntervalSince(self.lastVoiceActivity) > 2 {
+                        self.lastVoiceActivity = .now
+                        self.onVoiceActivity?()
+                    }
                 }
             }
 
@@ -183,7 +239,10 @@ final class SpeechListener: NSObject, ObservableObject {
             try audioEngine.start()
             isListening = true
             isPaused = false
+            quickFailures = 0
+            lastStartAt = .now
             startRecognitionTask()
+            CrashReporter.log("listening started state=\(UIApplication.shared.applicationState.rawValue)")
 
             rotationTimer?.invalidate()
             rotationTimer = Timer.scheduledTimer(withTimeInterval: taskRotationInterval, repeats: true) { [weak self] _ in
@@ -191,8 +250,22 @@ final class SpeechListener: NSObject, ObservableObject {
             }
         } catch {
             lastError = "Could not start listening: \(error.localizedDescription)"
-            stop()
+            CrashReporter.log("start failed: \(error.localizedDescription) state=\(UIApplication.shared.applicationState.rawValue)")
+            // Keep the intent so we come back on the next foreground.
+            stopForInterruption()
+            notifyStoppedIfBackground()
         }
+    }
+
+    /// iOS refused the mic while Myna was in the background — tell the user,
+    /// once, instead of silently recording nothing.
+    private func notifyStoppedIfBackground() {
+        guard !appIsActive else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Myna stopped listening"
+        content.body = "iOS paused the microphone. Open Myna to resume recording."
+        let request = UNNotificationRequest(identifier: "myna.micStopped", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     func stop() {
@@ -209,9 +282,8 @@ final class SpeechListener: NSObject, ObservableObject {
         isPaused = false
         liveTranscript = ""
         audioLevel = 0
-        captureActive = false
-        segmentFile = nil
-        segmentURL = nil
+        // Leave a segment that's recording alone: the pilot takes its URL (or the
+        // next launch recovers it) — dropping it here lost the audio.
     }
 
     /// Stops transcribing without releasing the microphone — used while Myna talks.
@@ -241,7 +313,9 @@ final class SpeechListener: NSObject, ObservableObject {
     /// Hand the recognizer a buffer of PCM decoded from the bracelet.
     func feedExternalAudio(_ buffer: AVAudioPCMBuffer) {
         guard externalSourceActive, !isPaused else { return }
-        request?.append(buffer)
+        tapLock.lock()
+        tapRequest?.append(buffer)
+        tapLock.unlock()
         let level = Self.rms(of: buffer)
         audioLevel = max(level, audioLevel * 0.86)
     }
@@ -268,14 +342,16 @@ final class SpeechListener: NSObject, ObservableObject {
             // The privacy contract: recognition never leaves the device.
             newRequest.requiresOnDeviceRecognition = true
         }
-        request = newRequest
+        setRequest(newRequest)
         generation += 1
         let taskGeneration = generation
+        taskStartedAt = .now
 
         task = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
             Task { @MainActor in
                 guard let self, taskGeneration == self.generation else { return }
                 if let result {
+                    self.quickFailures = 0
                     let text = result.bestTranscription.formattedString
                     self.liveTranscript = text
                     if result.isFinal {
@@ -293,10 +369,45 @@ final class SpeechListener: NSObject, ObservableObject {
                     let pending = self.liveTranscript
                     self.flushPartialIfMeaningful()
                     self.onTaskFinished?(pending)
-                    self.startRecognitionTask()
+                    self.restartRecognitionWithBackoff()
                 }
             }
         }
+    }
+
+    /// Restart a task that errored. One that died within seconds of starting
+    /// waits progressively longer (up to 30s) so a failing recognizer can't
+    /// spin the CPU; the mic and Whisper capture keep running meanwhile.
+    private func restartRecognitionWithBackoff() {
+        guard !restartPending else { return }
+        if Date.now.timeIntervalSince(taskStartedAt) < 3 {
+            quickFailures += 1
+        } else {
+            quickFailures = 0
+        }
+        guard quickFailures > 1 else {
+            startRecognitionTask()
+            return
+        }
+        let delay = min(30.0, pow(2.0, Double(quickFailures - 1)))
+        restartPending = true
+        // No live task meanwhile: buffers go nowhere instead of to a dead request.
+        setRequest(nil)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self else { return }
+            self.restartPending = false
+            if self.isListening, !self.isPaused, self.task == nil || self.request == nil {
+                self.startRecognitionTask()
+            }
+        }
+    }
+
+    private func setRequest(_ newRequest: SFSpeechAudioBufferRecognitionRequest?) {
+        request = newRequest
+        tapLock.lock()
+        tapRequest = newRequest
+        tapLock.unlock()
     }
 
     /// Ends the current task gracefully; its final result is delivered via the handler above.
@@ -312,7 +423,7 @@ final class SpeechListener: NSObject, ObservableObject {
         task?.cancel()
         task = nil
         request?.endAudio()
-        request = nil
+        setRequest(nil)
         onTaskFinished?(pending)
     }
 
@@ -346,9 +457,8 @@ final class SpeechListener: NSObject, ObservableObject {
             case .ended:
                 if self.resumeAfterInterruption {
                     self.resumeAfterInterruption = false
-                    // Only reopen the mic if we're foreground-active; otherwise
-                    // wantsToListen stays set and handleBecameActive resumes us.
-                    guard self.appIsActive else { return }
+                    // Background-audio apps may resume after a call; if iOS says
+                    // no, start() fails softly and we resume on next foreground.
                     try? await Task.sleep(for: .milliseconds(600))
                     self.start()
                 }
@@ -362,8 +472,19 @@ final class SpeechListener: NSObject, ObservableObject {
         Task { @MainActor in
             guard self.isListening else { return }
             self.stopForInterruption()
-            guard self.appIsActive else { return }
             try? await Task.sleep(for: .seconds(1))
+            self.start()
+        }
+    }
+
+    @objc private nonisolated func handleEngineConfigChange(_ notification: Notification) {
+        Task { @MainActor in
+            // Engines often post one of these right after starting; ignore that
+            // and never restart more than once every few seconds.
+            guard self.isListening, Date.now.timeIntervalSince(self.lastStartAt) > 3 else { return }
+            CrashReporter.log("audio route/config changed — restarting mic")
+            self.stopForInterruption()
+            try? await Task.sleep(for: .milliseconds(500))
             self.start()
         }
     }

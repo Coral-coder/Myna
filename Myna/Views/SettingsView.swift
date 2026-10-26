@@ -9,7 +9,7 @@ struct SettingsView: View {
     @AppStorage(BeeCloudImporter.autoAddKey) private var beeAutoAdd = true
     @AppStorage(BackgroundWaker.enabledKey) private var backgroundWake = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
-    @AppStorage("myna.micEnabled") private var micEnabled = false
+    @AppStorage("myna.micEnabled") private var micEnabled = true
     @AppStorage("myna.wakeWord") private var wakeWord = true
     @AppStorage("myna.speakReplies") private var speakReplies = true
     @AppStorage("myna.autoCapture") private var autoCapture = true
@@ -17,7 +17,8 @@ struct SettingsView: View {
     @AppStorage("myna.userName") private var userName = ""
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
     @AppStorage("myna.micSensitivity") private var micSensitivity: Double = 3.0
-    @AppStorage("myna.useWhisper") private var useWhisper = false
+    @AppStorage("myna.useWhisper") private var useWhisper = true
+    @AppStorage(ConversationPilot.composeNotesKey) private var composeNotes = false
     @AppStorage("myna.voiceIdentifier") private var voiceIdentifier = ""
     @AppStorage("myna.speakImportant") private var speakImportant = true
     @AppStorage("myna.agentPrompt") private var agentPrompt = ""
@@ -78,6 +79,7 @@ struct SettingsView: View {
                 naturalVoicesCard
                 listeningCard
                 automationCard
+                DiagnosticsCard()
                 ContextCard()
                 BraceletCard()
                 BeeCloudCard()
@@ -166,7 +168,7 @@ struct SettingsView: View {
             Toggle(isOn: $micEnabled) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Use the iPhone mic").settingsLabel()
-                    Text("Let Myna listen through this iPhone. Turn it off to run on your Bee alone — Myna keeps pulling your Bee conversations and facts in the background, and still answers when you ask. The mic is never opened while Myna is in the background either way.").settingsCaption()
+                    Text("Myna records and transcribes through this iPhone, on the device — and keeps going in the background and with the screen locked.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
@@ -178,7 +180,7 @@ struct SettingsView: View {
                 Toggle(isOn: $alwaysOn) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Always on").settingsLabel()
-                        Text("Start listening whenever Myna opens and resume after calls. iOS pauses the mic while Myna is in the background and it picks back up when you return.").settingsCaption()
+                        Text("Start listening whenever Myna opens and resume after calls. If iOS ever stops the mic in the background you'll get a notification to reopen Myna.").settingsCaption()
                     }
                 }
                 .tint(MynaTheme.cyan)
@@ -340,6 +342,14 @@ struct SettingsView: View {
                     Text(whisperStatus).settingsCaption()
                 }
             }
+
+            Toggle(isOn: $composeNotes) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Write AI notes").settingsLabel()
+                    Text("Off: each conversation is saved as its transcript — fast, reliable, works in the background. On: the AI model also writes a summary note (slower, foreground model).").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
