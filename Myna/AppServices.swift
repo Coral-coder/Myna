@@ -75,6 +75,12 @@ final class AppServices {
         beeCloud.generate = { [modelManager] instructions, prompt in
             try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 1200)
         }
+        // The bracelet's key is sealed by Bee, so fetch it with the connected
+        // Bee account when provisioning. Nil (not connected) leaves the bracelet
+        // card telling the user to connect Bee first.
+        bee.fetchSecureKeyToken = { [beeCloud] deviceIDHex in
+            try await beeCloud.braceletKeyToken(deviceIDHex: deviceIDHex)
+        }
         pilot.whisper = whisper
         brain.voice.neural = neuralVoice
 

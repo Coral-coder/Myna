@@ -35,11 +35,13 @@ struct BeeCloudAPI {
     enum Failure: LocalizedError {
         case http(Int)
         case malformed
+        case route(host: String, code: Int)
         var errorDescription: String? {
             switch self {
             case .http(401), .http(403): return "Bee didn't accept that token. Check it in Backstage."
             case .http(let code): return "Bee returned HTTP \(code)."
             case .malformed: return "Bee sent something Myna couldn't read."
+            case .route(let host, let code): return "Bee key endpoint on \(host) returned HTTP \(code)."
             }
         }
     }
@@ -96,6 +98,48 @@ struct BeeCloudAPI {
             .filter { !$0.isEmpty }
     }
 
+    // MARK: - Bracelet key
+
+    /// Fetches the bracelet's sealed encryption-key token from Bee's backend.
+    ///
+    /// The bracelet only accepts a key sealed/signed by Bee, so "my own key"
+    /// isn't possible on the stock firmware. Bee's app gets this blob from
+    /// `POST /ble/secure-key` with the bracelet's device id and hands the whole
+    /// thing to the device; the actual AES-128 CTR key is bytes 12..<28 of it
+    /// (or the whole blob when it's exactly 16 bytes). This is the one call that
+    /// touches Bee's server — the audio itself still never leaves the phone.
+    func secureKeyToken(deviceIDHex: String) async throws -> Data {
+        let (data, contentType) = try await postRaw("/ble/secure-key", json: ["device_id": deviceIDHex], host: Self.baseURL.host ?? "?")
+        if contentType.contains("application/octet-stream") { return data }
+        // Otherwise a JSON { "token": "<hex pairs or base64>" }.
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = object["token"] as? String else { throw Failure.malformed }
+        if let bytes = Self.hexBytes(token) { return bytes }
+        if let b64 = Data(base64Encoded: token) { return b64 }
+        throw Failure.malformed
+    }
+
+    /// The 16-byte AES-CTR key carried inside a sealed token.
+    static func ctrKey(fromToken token: Data) -> Data? {
+        if token.count == BeeProtocol.keyLength { return token }
+        if token.count >= 28 { return token.subdata(in: 12..<28) }
+        return nil
+    }
+
+    private static func hexBytes(_ string: String) -> Data? {
+        let chars = Array(string)
+        guard chars.count % 2 == 0, !chars.isEmpty else { return nil }
+        var out = [UInt8]()
+        out.reserveCapacity(chars.count / 2)
+        var i = 0
+        while i < chars.count {
+            guard let byte = UInt8(String(chars[i...i+1]), radix: 16) else { return nil }
+            out.append(byte)
+            i += 2
+        }
+        return Data(out)
+    }
+
     // MARK: - HTTP
 
     /// Builds a request URL. Uses string concatenation, not
@@ -103,6 +147,25 @@ struct BeeCloudAPI {
     /// into `%3F` and turns e.g. `/v1/facts?limit=50` into a 404.
     static func endpoint(_ path: String) -> URL? {
         URL(string: baseURL.absoluteString + path)
+    }
+
+    /// POST returning the raw body and its content-type (for the key blob,
+    /// which may be octet-stream or JSON).
+    private func postRaw(_ path: String, json: [String: Any], host: String = "") async throws -> (Data, String) {
+        guard let url = Self.endpoint(path) else { throw Failure.malformed }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: json)
+        let (data, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        let code = http?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw host.isEmpty ? Failure.http(code) : Failure.route(host: host, code: code)
+        }
+        let contentType = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        return (data, contentType)
     }
 
     private func get(_ path: String) async throws -> [String: Any] {

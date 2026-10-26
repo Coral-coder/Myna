@@ -53,6 +53,9 @@ final class BeeManager: ObservableObject {
 
     private var key: Data?
     private var nonce: Data?
+    /// Fetches the bracelet's sealed key token from Bee (set by AppServices).
+    /// Returns the full token; the 16-byte CTR key is extracted from it.
+    var fetchSecureKeyToken: ((String) async throws -> Data)?
     private var decryptor: BeeAudioDecryptor?
     private var decoder: BeeAudioDecoder?
     private var feedingSpeech = false
@@ -233,8 +236,6 @@ final class BeeManager: ObservableObject {
 
     /// The handshake that last received secure IDs (stops the retries).
     private var secureIdsToken = -1
-    /// Whether the key being installed was already stored from an earlier pairing.
-    private var keyWasHeldBefore = false
 
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
         secureIdsToken = handshakeToken
@@ -244,48 +245,66 @@ final class BeeManager: ObservableObject {
 
         if isSealed {
             if let heldKey {
-                // Sealed with the key we installed before — reuse it, no re-provision.
+                // Already sealed with a key we installed before — reuse it.
                 key = heldKey
                 installDecryptor()
                 log("Reusing stored key. Requesting session nonce (0xC019)…")
                 central.writeControl(BeeCommand.getSessionNonce.frame())
             } else {
-                // Sealed with a key we don't have. Never try to recover it;
-                // the user factory-resets, which clears it, then we set ours.
+                // Sealed with a key Myna doesn't hold — it can't decrypt the audio.
                 log("Sealed with a key Myna doesn't hold → factory reset needed.")
                 pairing = .needsFactoryReset
             }
             return
         }
 
-        // Unsealed: generate (or reuse) our own key and install it.
-        keyWasHeldBefore = heldKey != nil
-        do {
-            let ourKey = try BeeKeyVault.loadOrCreateKey(deviceID: deviceID)
-            key = ourKey
-            installDecryptor()
-            log("Unsealed. Installing our key (0xC018, \(ourKey.count) bytes)…")
-            central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](ourKey)))
-        } catch {
-            pairing = .error("Couldn't prepare a key: \(error.localizedDescription)")
+        // Unsealed: the bracelet only accepts a token sealed by Bee's server,
+        // so fetch it (one round-trip, device id only) and install it.
+        provisionFromBackend(deviceID: deviceID)
+    }
+
+    private func provisionFromBackend(deviceID: String) {
+        guard let fetchSecureKeyToken else {
+            log("No Bee account connected — connect Bee in Backstage to get the bracelet key.")
+            pairing = .error("Connect your Bee account in Backstage so Myna can fetch the bracelet's key.")
+            return
+        }
+        let token = handshakeToken
+        log("Unsealed. Fetching the sealed key from Bee…")
+        Task { [weak self] in
+            do {
+                let blob = try await fetchSecureKeyToken(deviceID)
+                guard let self, self.handshakeToken == token else { return }
+                guard let ctr = BeeCloudAPI.ctrKey(fromToken: blob) else {
+                    self.log("Key token was \(blob.count) bytes — can't read a key from it.")
+                    self.pairing = .error("Bee returned a key Myna couldn't use (\(blob.count) bytes).")
+                    return
+                }
+                self.key = ctr
+                self.installDecryptor()
+                self.log("Got sealed key (\(blob.count) bytes). Installing on the bracelet (0xC018)…")
+                self.central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](blob)))
+            } catch {
+                guard let self, self.handshakeToken == token else { return }
+                self.log("Bee key fetch failed: \(error.localizedDescription)")
+                self.pairing = .error("Couldn't get the bracelet's key from Bee: \(error.localizedDescription)")
+            }
         }
     }
 
     private func handleKeyResult(_ result: BeeKeyResult) {
         switch result {
         case .installed:
+            if let key { BeeKeyVault.store(key, deviceID: deviceID) }
             log("Key installed. Requesting session nonce (0xC019)…")
             central.writeControl(BeeCommand.getSessionNonce.frame())
         case .alreadySet:
-            // The bracelet kept a key it already had. It's only ours if we
-            // installed it on an earlier connection.
-            if keyWasHeldBefore {
-                log("Key already set (ours). Requesting session nonce (0xC019)…")
-                central.writeControl(BeeCommand.getSessionNonce.frame())
-            } else {
-                log("Bracelet already has a different key → factory reset needed.")
-                pairing = .needsFactoryReset
-            }
+            // We just installed a freshly fetched key; the bracelet reports it
+            // already had one. Persist and continue — if it was a different key,
+            // decryption simply yields nothing and the log shows no audio.
+            if let key { BeeKeyVault.store(key, deviceID: deviceID) }
+            log("Key already set. Requesting session nonce (0xC019)…")
+            central.writeControl(BeeCommand.getSessionNonce.frame())
         case .unknown(let code):
             log("Key reply code \(code) (unrecognized).")
             pairing = .error("The bracelet rejected the key (code \(code)).")
