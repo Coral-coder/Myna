@@ -45,6 +45,23 @@ final class BeeManager: ObservableObject {
     @Published private(set) var diagnostics: [String] = []
 
     var isEnabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
+
+    /// The Bee-signed key token Myna holds for this bracelet, as hex — the thing
+    /// that lets Myna (or anything) decrypt the audio with no Bee server. Full
+    /// token if we have it, otherwise the bare 16-byte AES key.
+    var exportableKeyHex: String? {
+        let id = deviceID.isEmpty ? "default" : deviceID
+        if let token = BeeKeyVault.existingToken(deviceID: id) { return BeeProtocol.hex([UInt8](token)) }
+        if let key = BeeKeyVault.existingKey(deviceID: id) { return BeeProtocol.hex([UInt8](key)) }
+        return nil
+    }
+
+    var exportableKeyLabel: String {
+        let id = deviceID.isEmpty ? "default" : deviceID
+        if let t = BeeKeyVault.existingToken(deviceID: id) { return "\(t.count)-byte Bee token (AES key = bytes 12–27)" }
+        if BeeKeyVault.existingKey(deviceID: id) != nil { return "16-byte AES key" }
+        return "none stored"
+    }
     private static let enabledKey = "myna.bee.enabled"
 
     /// Bumped each handshake so a stale timeout from an earlier attempt is ignored.
