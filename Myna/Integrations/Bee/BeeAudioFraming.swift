@@ -40,15 +40,22 @@ enum BeeAudioFraming {
 
 /// Reassembles the bracelet's AAC stream. After decryption each packet is a
 /// slice of a continuous ADTS byte stream — a frame can span packets — so
-/// bytes are buffered and only complete frames come out (same scan as Bee's
-/// AudioMessageDecoder: sync 0xFFF, 13-bit frame length, first 3 frames
-/// dropped while the encoder warms up).
+/// bytes are buffered and only complete frames come out. This mirrors Bee's own
+/// AudioMessageDecoder.processPacket exactly: find the 0xFFF sync, read the
+/// 13-bit frame length, trust it, emit the frame and advance; the first 3
+/// frames are dropped while the encoder warms up. Each emitted Frame carries
+/// the AAC-LC config (object type, sample-rate index, channels) so the decoder
+/// can build the AudioSpecificConfig that Apple's AAC decoder needs.
 struct BeeADTSAssembler {
     struct Frame: Equatable {
         /// Raw AAC access unit, ADTS header removed.
         let payload: Data
         let sampleRate: Double
         let channels: UInt32
+        /// ADTS sample-rate index (0–12) and MPEG-4 audio object type (profile+1),
+        /// both needed to synthesize the AudioSpecificConfig / magic cookie.
+        let sampleRateIndex: Int
+        let objectType: Int
     }
 
     private var buffer: [UInt8] = []
@@ -65,24 +72,34 @@ struct BeeADTSAssembler {
         var frames: [Frame] = []
         var i = 0
         while i + 7 <= buffer.count {
+            // ADTS sync: 0xFFF (12 bits). Same gate Bee uses — blind trust of
+            // the frame length is correct for a correctly-decrypted stream.
             guard buffer[i] == 0xFF, buffer[i + 1] & 0xF0 == 0xF0 else {
                 i += 1
                 continue
             }
             let length = (Int(buffer[i + 3] & 0x03) << 11) | (Int(buffer[i + 4]) << 3) | (Int(buffer[i + 5]) >> 5)
-            guard length > 7 else { i += 1; continue }
+            // Bee breaks (waits for more bytes) on a too-short or not-yet-complete
+            // frame rather than resyncing — match that.
+            guard length > 7 else { break }
             guard i + length <= buffer.count else { break }
             let protectionAbsent = buffer[i + 1] & 0x01 == 1
             let headerLength = protectionAbsent ? 7 : 9
             let rateIndex = Int((buffer[i + 2] >> 2) & 0x0F)
-            let channels = (UInt32(buffer[i + 2] & 0x01) << 2) | UInt32(buffer[i + 3] >> 6)
+            // ADTS channel-config field → channel count (config 7 == 8 channels).
+            let channelConfig = Int((buffer[i + 2] & 0x01) << 2) | Int(buffer[i + 3] >> 6)
+            let channels = channelConfig == 7 ? 8 : channelConfig
+            // ADTS profile is objectType-1; AudioObjectType = profile + 1.
+            let objectType = Int(buffer[i + 2] >> 6) + 1
             if warmup > 0 {
                 warmup -= 1
-            } else if length > headerLength, rateIndex < Self.sampleRates.count {
+            } else if length > headerLength, rateIndex < Self.sampleRates.count, channels >= 1 {
                 frames.append(Frame(
                     payload: Data(buffer[(i + headerLength)..<(i + length)]),
                     sampleRate: Self.sampleRates[rateIndex],
-                    channels: max(1, channels)
+                    channels: UInt32(channels),
+                    sampleRateIndex: rateIndex,
+                    objectType: objectType
                 ))
             }
             i += length

@@ -41,6 +41,7 @@ final class BeeManager: ObservableObject {
     /// Distinguishes "no audio arriving" from "arriving but not decoding".
     @Published private(set) var rawAudioCount = 0
     private var audioDropReasonLogged = false
+    private var firstPacketLogged = false
     @Published private(set) var brightness: Int?
     @Published private(set) var bitrate: Int?
     @Published private(set) var txPower: Int?
@@ -196,6 +197,7 @@ final class BeeManager: ObservableObject {
         decoder = nil
         deviceState = nil
         codec = nil
+        firstPacketLogged = false
     }
 
     // MARK: - Handshake
@@ -397,6 +399,12 @@ final class BeeManager: ObservableObject {
         nonce = value
         decoder = codec.map { BeeAudioDecoder(codec: $0) }
         log("Session nonce received (\(value.count) bytes). Starting audio…")
+        // Audio can arrive the instant we subscribe, so go to streaming now
+        // rather than waiting for the next device-state reply (that race was
+        // dropping the first burst of audio as "pairing is provisioning").
+        if key != nil, decoder?.unavailableReason == nil, decoder != nil {
+            pairing = .streaming
+        }
         // Bee subscribes to audio only once the key and nonce are in place.
         central.startAudioNotifications()
         scheduleAudioWatchdog(handshakeToken)
@@ -463,7 +471,6 @@ final class BeeManager: ObservableObject {
             audioDropReasonLogged = true
             log("Audio not decoding — \(why).")
         }
-        guard case .streaming = pairing else { return dropOnce("pairing is \(pairing)") }
         guard let packet = BeeAudioFraming.parse(data) else { return dropOnce("packet < 4 bytes (\(data.count))") }
         guard let nonce else { return dropOnce("no session nonce yet") }
         guard let decryptor else { return dropOnce("no decryptor (key missing)") }
@@ -471,9 +478,18 @@ final class BeeManager: ObservableObject {
         guard let plaintext = try? decryptor.decrypt(packet: packet, nonce: nonce), !plaintext.isEmpty else {
             return dropOnce("decrypt failed (wrong key?)")
         }
+        // One-time look at the decrypted bytes: genuine AAC starts with an ADTS
+        // sync (ff f1 / ff f9). Anything else means the key or framing is wrong,
+        // not the decoder — this tells us which without guessing.
+        if !firstPacketLogged {
+            firstPacketLogged = true
+            let head = plaintext.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " ")
+            let adts = plaintext.count >= 2 && plaintext[plaintext.startIndex] == 0xFF && (plaintext[plaintext.index(after: plaintext.startIndex)] & 0xF0) == 0xF0
+            log("First decrypted packet: \(plaintext.count)B seq \(packet.sequence) [\(head)] \(adts ? "✓ ADTS" : "✗ not ADTS")")
+        }
         let buffers = decoder.decodeStream(plaintext)
         guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }
-        if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz).") }
+        if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz)."); audioDropReasonLogged = false }
         packetsDecoded += buffers.count
         audioActive = true
         lastAudioAt = .now

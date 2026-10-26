@@ -177,6 +177,15 @@ final class BeeADTSTests: XCTestCase {
         var adts = BeeADTSAssembler(warmup: 0)
         XCTAssertEqual(adts.append(Data([0x00, 0x13] + frame([0x09]))).map(\.payload), [Data([0x09])])
     }
+
+    func testParsesAacConfigForCookie() {
+        var adts = BeeADTSAssembler(warmup: 0)
+        // 16 kHz mono AAC-LC: object type 2, sample-rate index 8, 1 channel.
+        let out = adts.append(Data(frame([0x11, 0x22])))
+        XCTAssertEqual(out.first?.objectType, 2)
+        XCTAssertEqual(out.first?.sampleRateIndex, 8)
+        XCTAssertEqual(out.first?.channels, 1)
+    }
 }
 
 final class BeeAudioFramingTests: XCTestCase {
