@@ -142,8 +142,10 @@ final class BeeManager: ObservableObject {
 
     /// Unmute (start recording) or mute the bracelet — SetDeviceState 0xC006,
     /// 1 = recording, 0 = mute, as Bee's app sends it.
+    private var lastRecordingSet: Date = .distantPast
     func setRecording(_ on: Bool) {
-        guard isReadyForControl else { return }
+        guard isReadyForControl, Date.now.timeIntervalSince(lastRecordingSet) > 1.5 else { return }
+        lastRecordingSet = .now
         central.writeControl(BeeCommand.setDeviceState.frame(payload: [on ? 0x01 : 0x00]))
     }
 
@@ -397,8 +399,19 @@ final class BeeManager: ObservableObject {
             pairing = .audioUnavailable(reason)
         } else if key != nil, nonce != nil {
             pairing = .streaming
+            // Start the bracelet recording ourselves so Myna doesn't need the
+            // Bee app to "unlock" it. Once per connection; the rate limiter in
+            // setRecording keeps the device's own VAD toggles from spamming.
+            if state == .mute, !autoRecordTried {
+                autoRecordTried = true
+                log("Asking the bracelet to start recording…")
+                setRecording(true)
+            }
         }
     }
+
+    /// Reset when a connection ends so the next one tries auto-record again.
+    private var autoRecordTried = false
 
     private func installDecryptor() {
         guard let key else { return }
@@ -483,6 +496,7 @@ extension BeeManager: BeeCentralDelegate {
 
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
         endSpeechFeed()
+        autoRecordTried = false
         reset()
         if isEnabled { pairing = .scanning }
     }
@@ -536,9 +550,15 @@ extension BeeManager: BeeCentralDelegate {
             txPower = value
         case .deviceID:
             break
-        case .setDeviceState(let ok):
-            log(ok ? "Recording state set." : "Bracelet refused the recording state change.")
-            central.writeControl(BeeCommand.getDeviceState.frame())
+        case .setDeviceState(let state):
+            // The bracelet also sends these unsolicited as its VAD flips
+            // mute/record — just track it, don't treat it as a command reply.
+            if deviceState != state {
+                deviceState = state
+                if !state.isRecording { endSpeechFeed() }
+            }
+        case .serial(let serial):
+            if !serial.isEmpty { log("Serial \(serial)") }
         }
     }
 }

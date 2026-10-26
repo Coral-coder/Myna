@@ -81,7 +81,12 @@ final class BeeCentral: NSObject, ObservableObject {
         if phase == .scanning { phase = .idle }
     }
 
+    /// Whether an unexpected drop should trigger an automatic reconnect. Cleared
+    /// when the user turns the bracelet off, so we don't fight for the link.
+    private var shouldReconnect = false
+
     func disconnect() {
+        shouldReconnect = false
         if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
     }
 
@@ -113,6 +118,7 @@ final class BeeCentral: NSObject, ObservableObject {
     }
 
     private func connect(_ peripheral: CBPeripheral) {
+        shouldReconnect = true
         self.peripheral = peripheral
         peripheral.delegate = self
         discoveredName = peripheral.name
@@ -181,8 +187,13 @@ extension BeeCentral: CBCentralManagerDelegate {
             audioCharacteristic = nil
             phase = .idle
             delegate?.beeCentral(self, didDisconnectWithError: error)
-            // Try to come back; iOS wakes us when a connect completes in the background.
-            if central.state == .poweredOn { manager?.connect(peripheral, options: nil) }
+            // Come back after a short pause — not in a tight loop. If another app
+            // (e.g. the Bee app) is holding the bracelet's single BLE link, an
+            // instant reconnect just ping-pongs; the delay lets the link settle.
+            guard shouldReconnect else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard self.shouldReconnect, self.phase == .idle, central.state == .poweredOn else { return }
+            manager?.connect(peripheral, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
         }
     }
 }
