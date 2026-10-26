@@ -15,6 +15,10 @@ import UserNotifications
 @MainActor
 final class SpeechListener: NSObject, ObservableObject {
     @Published private(set) var isListening = false
+    /// True while the bracelet (not the phone mic) is driving recognition.
+    @Published private(set) var usingExternalSource = false
+    /// Count of recognized partials/finals seen — a heartbeat the debug view shows.
+    @Published private(set) var recognitionTicks = 0
     @Published private(set) var liveTranscript = ""
     /// Smoothed microphone level in 0...1 for the orb animation.
     @Published private(set) var audioLevel: Double = 0
@@ -166,6 +170,17 @@ final class SpeechListener: NSObject, ObservableObject {
         return await AVAudioApplication.requestRecordPermission()
     }
 
+    /// One-line recognizer status for the debug view.
+    var recognizerStatus: String {
+        if !Self.hasPermissions { return "Speech permission not granted" }
+        guard let recognizer else { return "No recognizer for this locale" }
+        if !recognizer.isAvailable { return "Recognizer unavailable right now" }
+        if let lastError { return lastError }
+        if isPaused { return "Paused (Myna is speaking)" }
+        if isListening { return usingExternalSource ? "Transcribing bracelet audio" : "Transcribing mic" }
+        return "Idle"
+    }
+
     static var hasPermissions: Bool {
         SFSpeechRecognizer.authorizationStatus() == .authorized
             && AVAudioApplication.shared.recordPermission == .granted
@@ -308,6 +323,7 @@ final class SpeechListener: NSObject, ObservableObject {
     /// segmentation, wake-word commands and notes all keep working unchanged.
     func beginExternalSource() {
         externalSourceActive = true
+        usingExternalSource = true
     }
 
     /// Hand the recognizer a buffer of PCM decoded from the bracelet.
@@ -323,6 +339,7 @@ final class SpeechListener: NSObject, ObservableObject {
     /// Hand audio back to the phone's microphone.
     func endExternalSource() {
         externalSourceActive = false
+        usingExternalSource = false
         audioLevel = 0
     }
 
@@ -352,6 +369,7 @@ final class SpeechListener: NSObject, ObservableObject {
                 guard let self, taskGeneration == self.generation else { return }
                 if let result {
                     self.quickFailures = 0
+                    self.recognitionTicks += 1
                     let text = result.bestTranscription.formattedString
                     self.liveTranscript = text
                     if result.isFinal {

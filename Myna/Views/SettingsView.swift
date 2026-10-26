@@ -79,6 +79,7 @@ struct SettingsView: View {
                 naturalVoicesCard
                 listeningCard
                 automationCard
+                LiveDebugCard()
                 DiagnosticsCard()
                 ContextCard()
                 BraceletCard()
