@@ -399,12 +399,27 @@ final class BeeManager: ObservableObject {
         log("Session nonce received (\(value.count) bytes). Starting audio…")
         // Bee subscribes to audio only once the key and nonce are in place.
         central.startAudioNotifications()
+        scheduleAudioWatchdog(handshakeToken)
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
         central.writeControl(BeeCommand.getFirmwareVersion.frame())
         central.writeControl(BeeCommand.getBrightness.frame(payload: [0x01]))
         central.writeControl(BeeCommand.getBitrate.frame())
         central.writeControl(BeeCommand.getTxLevel.frame())
+    }
+
+    /// If no audio has arrived a while after subscribing, say why in plain terms
+    /// rather than sitting silent.
+    private func scheduleAudioWatchdog(_ token: Int) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, self.handshakeToken == token, self.rawAudioCount == 0 else { return }
+            if self.deviceState?.isRecording == true {
+                self.log("No audio 12s after subscribing, though the bracelet says it's recording. If the Bee app is still connected (even backgrounded), fully quit it — the bracelet streams to one app at a time.")
+            } else {
+                self.log("No audio yet — the bracelet isn't in recording mode. It uses voice detection, so speak near it, or it may be asleep.")
+            }
+        }
     }
 
     private func handleDeviceState(state: BeeDeviceState, codec: BeeCodec) {
