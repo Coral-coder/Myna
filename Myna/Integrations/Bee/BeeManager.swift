@@ -236,7 +236,6 @@ final class BeeManager: ObservableObject {
 
     /// The handshake that last received secure IDs (stops the retries).
     private var secureIdsToken = -1
-    /// Whether the key being installed was already stored from an earlier pairing.
 
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
         secureIdsToken = handshakeToken
