@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bee Bracelet Flasher</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0d12; --card:#151924; --line:#263042; --ink:#e7ecf5; --dim:#8a97ad; --cyan:#54d1fb; --gold:#ffae3d; --red:#ff5c7a; --mint:#4fe0b0; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; padding:24px 16px; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 12px; }
+  button { font:600 14px system-ui; color:#06202b; background:var(--cyan); border:0; border-radius:9px; padding:10px 16px; cursor:pointer; }
+  button.sec { background:transparent; color:var(--cyan); border:1px solid var(--line); }
+  button.danger { background:var(--red); color:#2b0410; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .kv { display:grid; grid-template-columns:140px 1fr; gap:4px 12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  .kv div:nth-child(odd){ color:var(--dim); }
+  #log { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; white-space:pre-wrap; background:#0a0c11; border:1px solid var(--line); border-radius:9px; padding:12px; height:230px; overflow:auto; }
+  .warn { color:var(--gold); } .err{ color:var(--red);} .ok{ color:var(--mint);}
+  .note { color:var(--dim); font-size:13px; margin-top:10px; }
+  code { background:#0a0c11; padding:1px 5px; border-radius:5px; }
+  progress { width:100%; height:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bee Bracelet Flasher</h1>
+  <p class="sub">nRF52840 over SWD, in Chrome. Needs a CMSIS-DAP probe (e.g. a &plusmn;$15 DAPLink, or a J-Link) wired to the bracelet's SWD pads: <code>SWDIO</code>, <code>SWCLK</code>, <code>GND</code>, and <code>VTG/VREF</code> to the bracelet's 3V.</p>
+
+  <div class="card">
+    <h2>1 · Probe</h2>
+    <div class="row">
+      <button id="connect">Connect probe</button>
+      <span id="probe" class="note">Not connected.</span>
+    </div>
+    <p class="note">Chrome or Edge only. Click Connect, then pick your CMSIS-DAP / DAPLink device. If nothing appears, the probe isn't in WebUSB mode or the cable is data-only.</p>
+  </div>
+
+  <div class="card">
+    <h2>2 · Identify the chip</h2>
+    <div class="row"><button id="ident" class="sec" disabled>Read chip</button></div>
+    <div class="kv" id="chip" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>3 · Back up the stock firmware first</h2>
+    <p class="note">Reads all 1&nbsp;MB of flash to a file. Do this before anything else &mdash; it's your undo. If the chip is read-protected (APPROTECT), this fails and the log says so; we then restore from the stock images pulled from the Bee app instead.</p>
+    <div class="row">
+      <button id="backup" disabled>Back up flash &rarr; file</button>
+      <progress id="bar" value="0" max="100" style="display:none"></progress>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+  <p class="note">Flashing custom firmware (erase + program + verify) is the next step and will be added here once we confirm the probe connects and the chip's protection state on your actual bracelet. Erasing is destructive, so it's deliberately not in this first version.</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/dapjs@2.3.0/dist/dap.umd.js"></script>
+<script>
+// nRF52840 memory map
+const FICR_PART = 0x10000100, FICR_VARIANT = 0x10000104, FICR_DEVICEID0 = 0x10000060, FICR_DEVICEID1 = 0x10000064;
+const FLASH_SIZE = 0x100000; // 1 MB
+
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
+function log(msg, cls){ const d=document.createElement('div'); if(cls)d.className=cls; d.textContent=msg; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+
+let transport, target;
+
+$('#connect').onclick = async () => {
+  try {
+    if (!('usb' in navigator)) { log('WebUSB not available. Use Chrome or Edge, over https:// or a local file.', 'err'); return; }
+    const device = await navigator.usb.requestDevice({ filters: [] });
+    transport = new Dapjs.WebUSB(device);
+    target = new Dapjs.CortexM(transport);
+    log('Connecting to target over SWD…');
+    await target.connect();
+    const id = await target.readCoreRegister(0); // wake the DAP
+    $('#probe').textContent = (device.productName || 'Probe') + ' — connected';
+    $('#probe').className = 'ok';
+    log('Connected.', 'ok');
+    $('#ident').disabled = false; $('#backup').disabled = false;
+  } catch (e) {
+    log('Connect failed: ' + e.message, 'err');
+    log('If the probe enumerates but SWD connect fails, the chip is likely read-protected (APPROTECT). That is expected on a shipped bracelet.', 'warn');
+  }
+};
+
+$('#ident').onclick = async () => {
+  try {
+    await target.halt();
+    const part = await target.readMem32(FICR_PART);
+    const variant = await target.readMem32(FICR_VARIANT);
+    const d0 = await target.readMem32(FICR_DEVICEID0);
+    const d1 = await target.readMem32(FICR_DEVICEID1);
+    const vtxt = String.fromCharCode((variant>>>24)&0xff,(variant>>>16)&0xff,(variant>>>8)&0xff,variant&0xff).replace(/[^\x20-\x7e]/g,'');
+    const rows = {
+      'Part': '0x' + part.toString(16).toUpperCase() + (part===0x52840?' (nRF52840 ✓)':' (unexpected)'),
+      'Variant': vtxt || ('0x'+variant.toString(16)),
+      'Device ID': d1.toString(16).padStart(8,'0') + d0.toString(16).padStart(8,'0'),
+    };
+    $('#chip').innerHTML = Object.entries(rows).map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('');
+    if (part !== 0x52840) log('Part ID is not 0x52840 — reads may be blocked by APPROTECT, or the wiring/probe is wrong.', 'warn');
+    else log('Chip identified: nRF52840.', 'ok');
+    await target.resume();
+  } catch (e) { log('Read failed: ' + e.message, 'err'); }
+};
+
+$('#backup').onclick = async () => {
+  const bar = $('#bar'); bar.style.display='inline-block'; bar.value=0;
+  try {
+    await target.halt();
+    log('Reading 1 MB of flash — this takes a few minutes…');
+    const chunk = 0x400; // 1 KB per read
+    const out = new Uint8Array(FLASH_SIZE);
+    let allFF = true;
+    for (let addr=0; addr<FLASH_SIZE; addr+=chunk) {
+      const block = await target.readBlock(addr, chunk); // Uint8Array
+      out.set(block.subarray(0, chunk), addr);
+      for (let i=0;i<block.length && allFF;i++) if (block[i]!==0xFF) allFF=false;
+      bar.value = Math.round((addr+chunk)/FLASH_SIZE*100);
+      if ((addr & 0x3FFF)===0) { log('… ' + (addr>>>10) + ' KB'); await new Promise(r=>setTimeout(r)); }
+    }
+    await target.resume();
+    if (allFF) { log('All bytes read as 0xFF — the chip is blank or read-protected; this backup is not usable.', 'warn'); }
+    const blob = new Blob([out], {type:'application/octet-stream'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'bee-stock-backup-' + Date.now() + '.bin';
+    a.click();
+    log('Backup saved (' + FLASH_SIZE + ' bytes). Keep this file safe.', 'ok');
+  } catch (e) { log('Backup failed: ' + e.message, 'err'); log('A failure here usually means APPROTECT is on and SWD reads are blocked.', 'warn'); }
+};
+</script>
+</body>
+</html>
