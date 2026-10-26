@@ -84,6 +84,12 @@ final class BeeCloudImporter: ObservableObject {
         self.modelContext = modelContext
     }
 
+    /// Fetch the bracelet's sealed key token from Bee (for BeeManager).
+    func braceletKeyToken(deviceIDHex: String) async throws -> Data {
+        guard let token, !token.isEmpty else { throw BeeCloudAPI.Failure.http(401) }
+        return try await BeeCloudAPI(token: token).secureKeyToken(deviceIDHex: deviceIDHex)
+    }
+
     // MARK: - Settings
 
     var hasToken: Bool { token?.isEmpty == false }
