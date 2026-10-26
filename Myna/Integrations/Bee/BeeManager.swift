@@ -180,6 +180,22 @@ final class BeeManager: ObservableObject {
         log("Connected. Requesting secure IDs (0xC01B)…")
         central.writeControl(BeeCommand.getSecureIds.frame())
         scheduleHandshakeTimeout(handshakeToken)
+        scheduleSecureIdsRetry(handshakeToken, attempt: 1)
+    }
+
+    /// The bracelet sends a burst of status messages (0xA003–0xA005) right
+    /// after connecting and can drop a request that arrives meanwhile. Ask
+    /// again every 3s until the secure IDs come back.
+    private func scheduleSecureIdsRetry(_ token: Int, attempt: Int) {
+        guard attempt <= 3 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.handshakeToken == token, case .provisioning = self.pairing,
+                  self.secureIdsToken != token, self.central.isReady else { return }
+            self.log("No secure IDs yet — asking again (\(attempt + 1))…")
+            self.central.writeControl(BeeCommand.getSecureIds.frame())
+            self.scheduleSecureIdsRetry(token, attempt: attempt + 1)
+        }
     }
 
     /// If the handshake is still provisioning after a while, stop waiting and
@@ -204,7 +220,11 @@ final class BeeManager: ObservableObject {
     /// Copyable device log for sharing.
     var diagnosticsText: String { diagnostics.joined(separator: "\n") }
 
+    /// The handshake that last received secure IDs (stops the retries).
+    private var secureIdsToken = -1
+
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
+        secureIdsToken = handshakeToken
         self.deviceID = deviceID
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
@@ -365,10 +385,24 @@ extension BeeManager: BeeCentralDelegate {
             // A well-formed message Myna doesn't model. During provisioning this
             // is probably the real key-set reply in a shape this build didn't
             // expect — log the raw bytes so we can learn the device's scheme.
-            log("Unhandled 0x\(String(format: "%04X", id)) ← \(BeeProtocol.hex([UInt8](data)))")
+            if id >> 8 == 0xA0 {
+                // Unsolicited bracelet status (Bee's own app ignores these too).
+                log(Self.describeStatus(id: id, payload: [UInt8](payload)))
+            } else {
+                log("Unhandled 0x\(String(format: "%04X", id)) ← \(BeeProtocol.hex([UInt8](data)))")
+            }
         case .malformed:
             log("Malformed ← \(BeeProtocol.hex([UInt8](data)))")
         }
+    }
+
+    private static func describeStatus(id: UInt16, payload: [UInt8]) -> String {
+        let hex = BeeProtocol.hex(payload)
+        if id == 0xA004, payload.count >= 2 {
+            let millivolts = Int(payload[0]) | Int(payload[1]) << 8
+            return "Status 0xA004: battery \(String(format: "%.2f", Double(millivolts) / 1000)) V"
+        }
+        return "Status 0x\(String(format: "%04X", id))" + (hex.isEmpty ? "" : " ← \(hex)")
     }
 
     func beeCentral(_ central: BeeCentral, didReceiveAudio data: Data) {

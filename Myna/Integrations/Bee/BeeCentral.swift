@@ -202,10 +202,20 @@ extension BeeCentral: CBPeripheralDelegate {
                     break
                 }
             }
-            if controlCharacteristic != nil && audioCharacteristic != nil {
-                phase = .ready
-                delegate?.beeCentralDidReady(self)
-            }
+            // Not ready yet: wait until the bracelet confirms control
+            // notifications are on (below). Writing the first command before
+            // that lost its reply — the bracelet answered into the void.
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        let isControl = characteristic.uuid == Self.controlUUID
+        let notifying = characteristic.isNotifying
+        Task { @MainActor in
+            guard isControl, notifying, phase != .ready,
+                  controlCharacteristic != nil, audioCharacteristic != nil else { return }
+            phase = .ready
+            delegate?.beeCentralDidReady(self)
         }
     }
 
