@@ -46,8 +46,7 @@ final class WhisperTranscriber: ObservableObject {
                 let compute = ModelComputeOptions(
                     melCompute: .cpuOnly,
                     audioEncoderCompute: .cpuAndNeuralEngine,
-                    textDecoderCompute: .cpuAndNeuralEngine,
-                    prefillCompute: .cpuOnly
+                    textDecoderCompute: .cpuAndNeuralEngine
                 )
                 let kit = try await WhisperKit(WhisperKitConfig(model: model, computeOptions: compute))
                 await MainActor.run {
