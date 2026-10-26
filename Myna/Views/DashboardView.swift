@@ -38,11 +38,9 @@ struct DashboardView: View {
 
                 assistantCard
 
-                if pilot.phase == .listening || pilot.phase == .composing || listener.usingExternalSource {
-                    liveTranscriptCard
-                }
+                liveActivityCard
 
-                if pilot.phase == .listening && pilot.hasMeaningfulContent {
+                if pilot.hasMeaningfulContent {
                     Button(action: pilot.composeNow) {
                         Label("Conclude & Compose Note", systemImage: "wand.and.stars")
                             .font(MynaTheme.display(15, weight: .semibold))
@@ -59,6 +57,7 @@ struct DashboardView: View {
                     modelCTA
                 }
 
+                recentNotesCard
                 todayCard
             }
             .padding(.horizontal, 20)
@@ -273,6 +272,144 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.05)))
+    }
+
+    private var isLive: Bool { pilot.phase == .listening || listener.usingExternalSource }
+
+    private var liveActivityCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                SectionHeading(icon: "waveform", title: "Live", tint: MynaTheme.mint)
+                Spacer()
+                liveSourceBadge
+            }
+            levelMeter
+            liveBody
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(glow: MynaTheme.mint)
+        .animation(.easeOut(duration: 0.25), value: listener.liveTranscript)
+    }
+
+    private var levelMeter: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            let base = isLive ? listener.audioLevel : 0
+            HStack(spacing: 3) {
+                ForEach(0..<26, id: \.self) { i in
+                    let wobble = 0.4 + 0.6 * abs(sin(t * 3 + Double(i) * 0.5))
+                    let h = max(3, CGFloat(3 + 24 * base * wobble))
+                    Capsule()
+                        .fill(MynaTheme.mint.opacity(isLive ? 0.9 : 0.22))
+                        .frame(width: 4, height: h)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+        }
+        .frame(height: 30)
+    }
+
+    @ViewBuilder
+    private var liveBody: some View {
+        if !listener.liveTranscript.isEmpty || !pilot.segmentLines.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if !pilot.segmentLines.isEmpty {
+                    Text("Note taking shape · \(pilot.segmentLines.count) line\(pilot.segmentLines.count == 1 ? "" : "s")")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                ForEach(pilot.liveTranscriptTail) { line in
+                    Text(line.text)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(2)
+                }
+                if !listener.liveTranscript.isEmpty {
+                    Text(listener.liveTranscript)
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundStyle(MynaTheme.mint)
+                        .lineLimit(3)
+                        .contentTransition(.interpolate)
+                }
+            }
+        } else if isLive {
+            Text("Listening… say something and it'll appear here.")
+                .font(.system(size: 13, design: .rounded))
+                .foregroundStyle(.white.opacity(0.45))
+                .italic()
+        } else if let last = latestNote {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Last note")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.4))
+                Text(last.title)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if !last.overview.isEmpty {
+                    Text(last.overview)
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(2)
+                }
+            }
+        } else {
+            Text("Tap the orb to start. What you say turns into notes right here.")
+                .font(.system(size: 13, design: .rounded))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+    }
+
+    @ViewBuilder
+    private var liveSourceBadge: some View {
+        if bee.pairing == .streaming {
+            liveBadge("Bracelet", "wave.3.right", MynaTheme.cyan)
+        } else if pilot.phase == .listening {
+            liveBadge("Mic", "mic.fill", MynaTheme.mint)
+        } else {
+            liveBadge("Idle", "pause.circle", .white.opacity(0.4))
+        }
+    }
+
+    private func liveBadge(_ text: String, _ icon: String, _ tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 10))
+            Text(text).font(.system(size: 11, weight: .semibold, design: .rounded))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(tint.opacity(0.14)))
+    }
+
+    private var latestNote: ConversationNote? {
+        allNotes.max(by: { $0.createdAt < $1.createdAt })
+    }
+
+    @ViewBuilder
+    private var recentNotesCard: some View {
+        let recent = allNotes.sorted { $0.createdAt > $1.createdAt }.prefix(4)
+        if !recent.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeading(icon: "clock.arrow.circlepath", title: "Recent notes", tint: MynaTheme.cyan)
+                ForEach(Array(recent)) { note in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(note.title.isEmpty ? "Untitled note" : note.title)
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(note.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.system(size: 11, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassCard(glow: MynaTheme.cyan)
+        }
     }
 
     // MARK: - Actions
