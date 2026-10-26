@@ -14,11 +14,13 @@ import Foundation
 /// `SFSpeechAudioBufferRecognitionRequest` accepts.
 final class BeeAudioDecoder {
     let codec: BeeCodec
-    let sampleRate: Double
-    let channels: UInt32
+    private(set) var sampleRate: Double
+    private(set) var channels: UInt32
     private(set) var unavailableReason: String?
 
-    let outputFormat: AVAudioFormat
+    private(set) var outputFormat: AVAudioFormat
+    /// AAC arrives as an ADTS byte stream split across packets.
+    private var adts = BeeADTSAssembler()
     private var inputFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var opusDecoder: OpusFrameDecoder?
@@ -53,6 +55,27 @@ final class BeeAudioDecoder {
     }
 
     /// Decode one codec frame to PCM, or nil if it can't be decoded.
+    /// Feed one decrypted packet; returns whatever PCM it completed. For AAC the
+    /// ADTS frames are reassembled across packets and the decoder follows the
+    /// stream's own sample rate and channel count from the ADTS header.
+    func decodeStream(_ packet: Data) -> [AVAudioPCMBuffer] {
+        switch codec {
+        case .aac:
+            return adts.append(packet).compactMap { frame in
+                if converter == nil || frame.sampleRate != sampleRate || frame.channels != channels {
+                    sampleRate = frame.sampleRate
+                    channels = frame.channels
+                    setupAAC()
+                }
+                return decodeAAC(frame.payload)
+            }
+        case .opus:
+            return decode(packet).map { [$0] } ?? []
+        case .unknown:
+            return []
+        }
+    }
+
     func decode(_ frame: Data) -> AVAudioPCMBuffer? {
         guard !frame.isEmpty else { return nil }
         switch codec {
@@ -76,8 +99,20 @@ final class BeeAudioDecoder {
             mBitsPerChannel: 0,
             mReserved: 0
         )
-        guard let input = AVAudioFormat(streamDescription: &asbd),
-              let converter = AVAudioConverter(from: input, to: outputFormat) else {
+        if let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) {
+            outputFormat = mono
+        }
+        guard let input = AVAudioFormat(streamDescription: &asbd) else {
+            unavailableReason = "Couldn't start the AAC decoder."
+            return
+        }
+        // AudioSpecificConfig for AAC-LC so the decoder doesn't have to guess.
+        if let index = BeeADTSAssembler.sampleRates.firstIndex(of: sampleRate) {
+            let objectType: UInt16 = 2
+            let config = (objectType << 11) | (UInt16(index) << 7) | (UInt16(channels & 0x0F) << 3)
+            input.magicCookie = Data([UInt8(config >> 8), UInt8(config & 0xFF)])
+        }
+        guard let converter = AVAudioConverter(from: input, to: outputFormat) else {
             unavailableReason = "Couldn't start the AAC decoder."
             return
         }
