@@ -243,24 +243,80 @@ final class BeeManager: ObservableObject {
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
 
+        // A captured Bee-signed token (pasted in Backstage) gives the AES key
+        // directly — bytes 12..<28 — with no Bee server at all.
+        let capturedToken = BeeKeyVault.existingToken(deviceID: deviceID)
+
         if isSealed {
             if let heldKey {
-                // Already sealed with a key we installed before — reuse it.
+                // Already sealed with a key we hold — reuse it.
                 key = heldKey
                 installDecryptor()
                 log("Reusing stored key. Requesting session nonce (0xC019)…")
                 central.writeControl(BeeCommand.getSessionNonce.frame())
+            } else if let capturedToken, let ctr = BeeCloudAPI.ctrKey(fromToken: capturedToken) {
+                // Sealed with the key this token carries (Bee installed it, we
+                // captured it): decrypt with the token's key, no re-install.
+                key = ctr
+                BeeKeyVault.store(ctr, deviceID: deviceID)
+                installDecryptor()
+                log("Using captured key. Requesting session nonce (0xC019)…")
+                central.writeControl(BeeCommand.getSessionNonce.frame())
             } else {
-                // Sealed with a key Myna doesn't hold — it can't decrypt the audio.
-                log("Sealed with a key Myna doesn't hold → factory reset needed.")
+                log("Sealed with a key Myna doesn't hold → capture the key or factory reset.")
                 pairing = .needsFactoryReset
             }
             return
         }
 
-        // Unsealed: the bracelet only accepts a token sealed by Bee's server,
-        // so fetch it (one round-trip, device id only) and install it.
-        provisionFromBackend(deviceID: deviceID)
+        // Unsealed: install a captured token if we have one; otherwise there's
+        // nothing to install without Bee's (attestation-gated) server.
+        if let capturedToken {
+            installToken(capturedToken, deviceID: deviceID, source: "captured")
+        } else {
+            provisionFromBackend(deviceID: deviceID)
+        }
+    }
+
+    /// Install a full Bee-signed key token on the bracelet and keep its AES key.
+    private func installToken(_ token: Data, deviceID: String, source: String) {
+        guard let ctr = BeeCloudAPI.ctrKey(fromToken: token) else {
+            log("\(source.capitalized) token was \(token.count) bytes — can't read a key from it.")
+            pairing = .error("That key token is the wrong size (\(token.count) bytes). It should be the 108 bytes after 18 C0.")
+            return
+        }
+        key = ctr
+        installDecryptor()
+        log("Installing \(source) key on the bracelet (0xC018, \(token.count) bytes)…")
+        central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](token)))
+    }
+
+    /// Save a token captured from the bracelet's BLE pairing (hex, optionally
+    /// with the leading 18 C0 command bytes) and retry the handshake with it.
+    func setCapturedKeyToken(_ raw: String) {
+        let hex = raw.lowercased().filter { $0.isHexDigit }
+        guard hex.count % 2 == 0, hex.count >= 2 else {
+            pairing = .error("That doesn't look like hex. Paste the bytes from the SetEncryptionKey write.")
+            return
+        }
+        var bytes = [UInt8]()
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2)
+            guard let b = UInt8(hex[i..<j], radix: 16) else { return }
+            bytes.append(b); i = j
+        }
+        // Drop a leading 18 C0 (the 0xC018 command id) if the whole frame was pasted.
+        if bytes.count >= 2, bytes[0] == 0x18, bytes[1] == 0xC0 { bytes.removeFirst(2) }
+        guard BeeCloudAPI.ctrKey(fromToken: Data(bytes)) != nil else {
+            pairing = .error("That token is \(bytes.count) bytes — expected 16, or 28+ (108 for Bee).")
+            return
+        }
+        let id = deviceID.isEmpty ? "default" : deviceID
+        BeeKeyVault.forget(deviceID: id)   // clear any stale derived key/token first
+        BeeKeyVault.storeToken(Data(bytes), deviceID: id)
+        log("Saved a captured key token (\(bytes.count) bytes). Reconnecting…")
+        retry()
     }
 
     private func provisionFromBackend(deviceID: String) {
