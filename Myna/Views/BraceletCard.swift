@@ -8,6 +8,8 @@ struct BraceletCard: View {
     @EnvironmentObject private var bee: BeeManager
     @State private var brightness: Double = 128
     @State private var editingBrightness = false
+    @State private var pastedKey = ""
+    @State private var showKeyPaste = false
     private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
@@ -36,6 +38,7 @@ struct BraceletCard: View {
                     detailRow(icon: "number", text: "Device \(bee.deviceID.prefix(8))")
                 }
                 pairingDetail
+                capturedKeySection
                 if bee.isReadyForControl, bee.deviceState == .mute {
                     VStack(alignment: .leading, spacing: 8) {
                         detailRow(icon: "mic.slash.fill", text: "The bracelet is muted, so it isn't sending audio.", tint: MynaTheme.gold)
@@ -51,6 +54,38 @@ struct BraceletCard: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(glow: MynaTheme.cyan)
+    }
+
+    /// Paste a Bee-signed key token captured from the bracelet's BLE pairing
+    /// (the SetEncryptionKey 0xC018 write), so Myna can decrypt audio with no
+    /// Bee server. See the flasher/README for how to capture it.
+    @ViewBuilder
+    private var capturedKeySection: some View {
+        DisclosureGroup(isExpanded: $showKeyPaste) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paste the bytes from the bracelet's SetEncryptionKey write (the value after 18 C0, 108 bytes as hex). Myna stores it on-device and uses it to decrypt audio — no Bee server.")
+                    .braceletCaption()
+                TextField("18c0… or the 108-byte hex", text: $pastedKey, axis: .vertical)
+                    .lineLimit(2...4)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                Button("Save key & reconnect") {
+                    bee.setCapturedKeyToken(pastedKey)
+                    pastedKey = ""
+                }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .tint(MynaTheme.cyan)
+                .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced: paste captured key").braceletLabel()
+        }
+        .tint(.white.opacity(0.6))
     }
 
     private var deviceLog: some View {

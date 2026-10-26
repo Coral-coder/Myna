@@ -26,9 +26,25 @@ enum BeeKeyVault {
         try? Keychain.set(key, for: account(for: deviceID))
     }
 
+    // The full Bee-signed key token, captured from the bracelet's BLE pairing
+    // (the SetEncryptionKey 0xC018 write). Stored so Myna can install/reuse it
+    // on its own, with no Bee server. The AES-CTR key is bytes 12..<28 of it.
+    private static func tokenAccount(for deviceID: String) -> String {
+        "bee.token.\(deviceID.isEmpty ? "default" : deviceID)"
+    }
+
+    static func existingToken(deviceID: String) -> Data? {
+        Keychain.data(for: tokenAccount(for: deviceID))
+    }
+
+    static func storeToken(_ token: Data, deviceID: String) {
+        try? Keychain.set(token, for: tokenAccount(for: deviceID))
+    }
+
     /// Forget a bracelet's key (e.g. after a factory reset, so the next pairing
     /// generates a new one).
     static func forget(deviceID: String) {
         Keychain.delete(account(for: deviceID))
+        Keychain.delete(tokenAccount(for: deviceID))
     }
 }
