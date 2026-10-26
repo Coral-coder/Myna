@@ -264,7 +264,11 @@ enum BeeProtocol {
         case .setTxPower:
             guard let b = bytes.first else { return .malformed }
             return .response(.txPower(Int(b)))
-        case .setBitrate, .getChargingSpeed:
+        case .setBitrate:
+            // The bracelet also reports its current bitrate unsolicited (int32 LE).
+            guard bytes.count >= 4 else { return .malformed }
+            return .response(.bitrate(Int(bytes[0]) | (Int(bytes[1]) << 8) | (Int(bytes[2]) << 16) | (Int(bytes[3]) << 24)))
+        case .getChargingSpeed:
             return .unhandled(id: id, payload: payload)
         }
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Backstage card: pair and watch the Bee bracelet — your own device, your own
 /// key. Shows connection state, battery, firmware and the audio codec, and
@@ -63,6 +64,18 @@ struct BraceletCard: View {
     private var capturedKeySection: some View {
         DisclosureGroup(isExpanded: $showKeyPaste) {
             VStack(alignment: .leading, spacing: 8) {
+                if let keyHex = bee.exportableKeyHex {
+                    Text("Key held: \(bee.exportableKeyLabel)").braceletCaption()
+                    Text(keyHex)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Copy key") { UIPasteboard.general.string = keyHex }
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .tint(MynaTheme.cyan)
+                    Divider().overlay(.white.opacity(0.1))
+                }
                 Text("Paste the bytes from the bracelet's SetEncryptionKey write (the value after 18 C0, 108 bytes as hex). Myna stores it on-device and uses it to decrypt audio — no Bee server.")
                     .braceletCaption()
                 TextField("18c0… or the 108-byte hex", text: $pastedKey, axis: .vertical)
