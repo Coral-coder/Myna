@@ -92,7 +92,14 @@ final class BeeAudioDecoder {
         // initialise ("Couldn't start the AAC decoder"). With the object type
         // set, the decoder reads everything it needs from the ASBD, so no magic
         // cookie is required (and a wrong one would break init).
-        let channelCount = max(1, channels)
+        // If we already have a working converter, a failure to build a new one
+        // (from a stray/garbage frame) must not wedge the whole decoder — keep
+        // the one that works rather than marking audio unavailable.
+        let hadWorkingConverter = (converter != nil)
+        func fail(_ reason: String) {
+            if !hadWorkingConverter { unavailableReason = reason }
+        }
+        let channelCount = min(2, max(1, channels))
         var asbd = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatMPEG4AAC,
@@ -105,18 +112,18 @@ final class BeeAudioDecoder {
             mReserved: 0
         )
         guard let input = AVAudioFormat(streamDescription: &asbd) else {
-            unavailableReason = "Couldn't build the AAC input format."
+            fail("Couldn't build the AAC input format.")
             return
         }
         guard let pcm = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: channelCount, interleaved: false) else {
-            unavailableReason = "Couldn't build the PCM output format."
+            fail("Couldn't build the PCM output format.")
+            return
+        }
+        guard let converter = AVAudioConverter(from: input, to: pcm) else {
+            fail("iOS wouldn't start the AAC decoder (\(Int(sampleRate)) Hz, \(channelCount) ch).")
             return
         }
         outputFormat = pcm
-        guard let converter = AVAudioConverter(from: input, to: pcm) else {
-            unavailableReason = "iOS wouldn't start the AAC decoder (\(Int(sampleRate)) Hz, \(channelCount) ch)."
-            return
-        }
         self.inputFormat = input
         self.converter = converter
         unavailableReason = nil

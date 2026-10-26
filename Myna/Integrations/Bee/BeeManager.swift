@@ -41,6 +41,7 @@ final class BeeManager: ObservableObject {
     /// Distinguishes "no audio arriving" from "arriving but not decoding".
     @Published private(set) var rawAudioCount = 0
     private var audioDropReasonLogged = false
+    private var firstPacketLogged = false
     @Published private(set) var brightness: Int?
     @Published private(set) var bitrate: Int?
     @Published private(set) var txPower: Int?
@@ -196,6 +197,7 @@ final class BeeManager: ObservableObject {
         decoder = nil
         deviceState = nil
         codec = nil
+        firstPacketLogged = false
     }
 
     // MARK: - Handshake
@@ -475,6 +477,15 @@ final class BeeManager: ObservableObject {
         guard let decoder else { return dropOnce("no decoder (codec unknown)") }
         guard let plaintext = try? decryptor.decrypt(packet: packet, nonce: nonce), !plaintext.isEmpty else {
             return dropOnce("decrypt failed (wrong key?)")
+        }
+        // One-time look at the decrypted bytes: genuine AAC starts with an ADTS
+        // sync (ff f1 / ff f9). Anything else means the key or framing is wrong,
+        // not the decoder — this tells us which without guessing.
+        if !firstPacketLogged {
+            firstPacketLogged = true
+            let head = plaintext.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " ")
+            let adts = plaintext.count >= 2 && plaintext[plaintext.startIndex] == 0xFF && (plaintext[plaintext.index(after: plaintext.startIndex)] & 0xF0) == 0xF0
+            log("First decrypted packet: \(plaintext.count)B seq \(packet.sequence) [\(head)] \(adts ? "✓ ADTS" : "✗ not ADTS")")
         }
         let buffers = decoder.decodeStream(plaintext)
         guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }

@@ -175,7 +175,17 @@ final class BeeADTSTests: XCTestCase {
 
     func testResyncsPastGarbage() {
         var adts = BeeADTSAssembler(warmup: 0)
-        XCTAssertEqual(adts.append(Data([0x00, 0x13] + frame([0x09]))).map(\.payload), [Data([0x09])])
+        // Garbage, then two real frames — the second confirms the first's sync.
+        let out = adts.append(Data([0x00, 0x13] + frame([0x09]) + frame([0x0A])))
+        XCTAssertEqual(out.map(\.payload), [Data([0x09]), Data([0x0A])])
+    }
+
+    func testFalseSyncWithoutFollowingHeaderIsRejected() {
+        var adts = BeeADTSAssembler(warmup: 0)
+        // A valid-looking ADTS header whose frame is NOT followed by another
+        // sync — i.e. a false 0xFFF match on random bytes. Must emit nothing.
+        let bogus = frame([0x01, 0x02, 0x03]) + [UInt8](repeating: 0x00, count: 24)
+        XCTAssertEqual(adts.append(Data(bogus)), [])
     }
 }
 
