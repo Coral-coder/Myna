@@ -399,8 +399,19 @@ final class BeeManager: ObservableObject {
             pairing = .audioUnavailable(reason)
         } else if key != nil, nonce != nil {
             pairing = .streaming
+            // Start the bracelet recording ourselves so Myna doesn't need the
+            // Bee app to "unlock" it. Once per connection; the rate limiter in
+            // setRecording keeps the device's own VAD toggles from spamming.
+            if state == .mute, !autoRecordTried {
+                autoRecordTried = true
+                log("Asking the bracelet to start recording…")
+                setRecording(true)
+            }
         }
     }
+
+    /// Reset when a connection ends so the next one tries auto-record again.
+    private var autoRecordTried = false
 
     private func installDecryptor() {
         guard let key else { return }
@@ -485,6 +496,7 @@ extension BeeManager: BeeCentralDelegate {
 
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
         endSpeechFeed()
+        autoRecordTried = false
         reset()
         if isEnabled { pairing = .scanning }
     }
