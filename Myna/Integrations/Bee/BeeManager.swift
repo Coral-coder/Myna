@@ -347,6 +347,43 @@ final class BeeManager: ObservableObject {
         retry()
     }
 
+    /// Masquerade as the Bee app: call Bee's `/ble/secure-key` with the account
+    /// auth headers (captured once from any Bee request) to fetch this bracelet's
+    /// sealed token, store it, and reconnect so the handshake uses its key. No
+    /// BLE capture or factory reset needed — just the account's proof/secret/token.
+    func fetchKeyFromBeeServer(host: String, proof: String, secret: String, sessionToken: String, amazonToken: String? = nil) {
+        let id = deviceID.isEmpty ? "default" : deviceID
+        let deviceHex = deviceID.isEmpty ? "" : deviceID
+        guard !deviceHex.isEmpty else {
+            pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
+            return
+        }
+        log("Fetching the sealed key from Bee's server (masquerading as the app)…")
+        Task { [weak self] in
+            do {
+                let token = try await BeeCloudAPI.fetchBraceletToken(
+                    host: host, deviceIDHex: deviceHex,
+                    proof: proof, secret: secret,
+                    sessionToken: sessionToken, amazonToken: amazonToken
+                )
+                guard let self else { return }
+                guard BeeCloudAPI.ctrKey(fromToken: token) != nil else {
+                    self.log("Bee returned a token Myna couldn't use (\(token.count) bytes).")
+                    self.pairing = .error("Bee returned a \(token.count)-byte token — expected 108.")
+                    return
+                }
+                BeeKeyVault.forget(deviceID: id)
+                BeeKeyVault.storeToken(token, deviceID: id)
+                self.log("Got the sealed key from Bee (\(token.count) bytes). Reconnecting…")
+                self.retry()
+            } catch {
+                guard let self else { return }
+                self.log("Bee key fetch failed: \(error.localizedDescription)")
+                self.pairing = .error("Couldn't fetch the key from Bee: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func provisionFromBackend(deviceID: String) {
         guard let fetchSecureKeyToken else {
             log("No Bee account connected — connect Bee in Backstage to get the bracelet key.")

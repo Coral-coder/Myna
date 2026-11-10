@@ -11,6 +11,11 @@ struct BraceletCard: View {
     @State private var editingBrightness = false
     @State private var pastedKey = ""
     @State private var showKeyPaste = false
+    @State private var showServerFetch = false
+    @State private var fetchHost = "api.beeai-services.com"
+    @State private var fetchProof = ""
+    @State private var fetchSecret = ""
+    @State private var fetchToken = ""
     private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
@@ -40,6 +45,7 @@ struct BraceletCard: View {
                 }
                 pairingDetail
                 capturedKeySection
+                serverFetchSection
                 if bee.isReadyForControl, bee.deviceState == .mute {
                     VStack(alignment: .leading, spacing: 8) {
                         detailRow(icon: "mic.slash.fill", text: "The bracelet is muted, so it isn't sending audio.", tint: MynaTheme.gold)
@@ -99,6 +105,52 @@ struct BraceletCard: View {
             Text("Advanced: paste captured key").braceletLabel()
         }
         .tint(.white.opacity(0.6))
+    }
+
+    /// Fetch the sealed key from Bee's backend the way the app does, by sending
+    /// the account auth headers. Captured once from any Bee request, they let
+    /// Myna pull the key with no BLE capture and no factory reset.
+    @ViewBuilder
+    private var serverFetchSection: some View {
+        DisclosureGroup(isExpanded: $showServerFetch) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Myna calls Bee's /ble/secure-key as the app would, for this bracelet's device id. Paste the three auth values from any Bee request (x-bee-proof, x-bee-secret, and your session token — an x-bee-ephemeral-token, or an Authorization Bearer token). They stay on-device.")
+                    .braceletCaption()
+                fetchField("API host", text: $fetchHost)
+                fetchField("x-bee-proof", text: $fetchProof)
+                fetchField("x-bee-secret", text: $fetchSecret)
+                fetchField("session token (ephemeral or Bearer …)", text: $fetchToken)
+                Button("Fetch key from Bee") {
+                    bee.fetchKeyFromBeeServer(
+                        host: fetchHost,
+                        proof: fetchProof,
+                        secret: fetchSecret,
+                        sessionToken: fetchToken
+                    )
+                }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .tint(MynaTheme.cyan)
+                .disabled(fetchProof.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || fetchSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || fetchToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || bee.deviceID.isEmpty)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced: fetch key from Bee server").braceletLabel()
+        }
+        .tint(.white.opacity(0.6))
+    }
+
+    private func fetchField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text, axis: .vertical)
+            .lineLimit(1...3)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.white)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
     }
 
     private var deviceLog: some View {

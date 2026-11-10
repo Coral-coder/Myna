@@ -126,6 +126,86 @@ struct BeeCloudAPI {
         return nil
     }
 
+    /// Masquerade as the Bee app to fetch the bracelet's sealed key token from
+    /// Bee's own backend (not the developer API). This is the exact call Bee's
+    /// app makes — `POST https://<host>/ble/secure-key` with `{"deviceId": …}` —
+    /// authenticated with the account headers the app sends: `x-bee-proof`,
+    /// `x-bee-secret`, and a session token (ephemeral token, or a Bearer token).
+    /// Those three identify your Bee account and must be captured once from any
+    /// authenticated Bee request; the server won't release your device key
+    /// without them. The AES key is bytes 12..<28 of the returned token.
+    static func fetchBraceletToken(
+        host: String,
+        deviceIDHex: String,
+        proof: String,
+        secret: String,
+        sessionToken: String,
+        amazonToken: String? = nil,
+        session: URLSession = .shared
+    ) async throws -> Data {
+        let cleanHost = host.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "https://\(cleanHost)/ble/secure-key") else { throw Failure.malformed }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(proof.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-bee-proof")
+        request.setValue(secret.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "x-bee-secret")
+        let t = sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.lowercased().hasPrefix("bearer ") {
+            request.setValue(t, forHTTPHeaderField: "Authorization")
+        } else {
+            request.setValue(t, forHTTPHeaderField: "x-bee-ephemeral-token")
+        }
+        if let amazonToken = amazonToken?.trimmingCharacters(in: .whitespacesAndNewlines), !amazonToken.isEmpty {
+            request.setValue(amazonToken, forHTTPHeaderField: "x-amazon-access-token")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+
+        let (data, response) = try await session.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw Failure.route(host: cleanHost, code: code) }
+        guard let token = braceletToken(fromResponse: data) else { throw Failure.malformed }
+        return token
+    }
+
+    /// Pulls the sealed token out of a `/ble/secure-key` response, whatever shape
+    /// it takes: raw bytes, or a JSON field holding the token as hex or base64.
+    /// Picks the shortest value that decodes to a plausible token (>= 28 bytes),
+    /// to avoid grabbing a longer cert/chain field by mistake.
+    static func braceletToken(fromResponse data: Data) -> Data? {
+        if let object = try? JSONSerialization.jsonObject(with: data) {
+            var best: Data?
+            func consider(_ s: String) {
+                let candidate = hexBytes(s) ?? base64Bytes(s)
+                guard let b = candidate, b.count >= 28 else { return }
+                if best == nil || b.count < best!.count { best = b }
+            }
+            func walk(_ value: Any) {
+                if let s = value as? String { consider(s) }
+                else if let dict = value as? [String: Any] { dict.values.forEach(walk) }
+                else if let arr = value as? [Any] { arr.forEach(walk) }
+            }
+            walk(object)
+            if let best { return best }
+        }
+        // Raw-bytes response (octet-stream).
+        if data.count >= 28 { return data }
+        return nil
+    }
+
+    private static func base64Bytes(_ string: String) -> Data? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padded = trimmed + String(repeating: "=", count: (4 - trimmed.count % 4) % 4)
+        guard let data = Data(base64Encoded: padded), data.count >= 16 else { return nil }
+        return data
+    }
+
     private static func hexBytes(_ string: String) -> Data? {
         let chars = Array(string)
         guard chars.count % 2 == 0, !chars.isEmpty else { return nil }
