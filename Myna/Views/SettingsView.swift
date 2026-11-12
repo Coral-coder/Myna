@@ -28,6 +28,7 @@ struct SettingsView: View {
     @EnvironmentObject private var whisper: WhisperTranscriber
     @EnvironmentObject private var neuralVoice: NeuralVoice
     @EnvironmentObject private var brain: MynaBrain
+    @EnvironmentObject private var themeStore: ThemeStore
 
     /// The installed system voices, enumerated once. `AVSpeechSynthesisVoice
     /// .speechVoices()` is slow and was being called on every render of this
@@ -75,6 +76,7 @@ struct SettingsView: View {
                     .auroraText()
                     .padding(.top, 16)
 
+                appearanceCard
                 assistantCard
                 naturalVoicesCard
                 listeningCard
@@ -94,6 +96,48 @@ struct SettingsView: View {
         .task {
             if cachedVoices.isEmpty { cachedVoices = brain.voice.availableVoices() }
         }
+    }
+
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeading(icon: "paintbrush.pointed.fill", title: "Appearance", tint: MynaTheme.cyan)
+            Text("Pick how loud Myna looks.")
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+            HStack(spacing: 10) {
+                ForEach(MynaThemeStyle.allCases) { style in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) { themeStore.style = style }
+                    } label: {
+                        VStack(spacing: 6) {
+                            Text(style.label)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            Circle()
+                                .fill(themeStore.style == style ? MynaTheme.cyan : .white.opacity(0.25))
+                                .frame(width: 6, height: 6)
+                        }
+                        .foregroundStyle(themeStore.style == style ? .white : .white.opacity(0.55))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(themeStore.style == style ? MynaTheme.cyan.opacity(0.12) : .white.opacity(0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .strokeBorder(themeStore.style == style ? MynaTheme.cyan.opacity(0.5) : .clear, lineWidth: 1)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(themeStore.style.blurb)
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(glow: MynaTheme.cyan)
     }
 
     private var naturalVoicesCard: some View {

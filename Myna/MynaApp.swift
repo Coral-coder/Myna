@@ -4,11 +4,13 @@ import SwiftUI
 @main
 struct MynaApp: App {
     private let services = AppServices.shared
+    @StateObject private var themeStore = ThemeStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environmentObject(themeStore)
                 .environmentObject(services.modelManager)
                 .environmentObject(services.listener)
                 .environmentObject(services.pilot)
