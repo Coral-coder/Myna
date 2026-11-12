@@ -182,11 +182,31 @@ final class NotesEngine {
           "reminders": [{"text": "what \(owner) should be reminded of", "at": "ISO 8601 local datetime or null", "as_heard": "the time phrase as spoken or null"}]
         }
 
-        Only include events that are genuinely being planned or agreed (meetings, calls, \
-        appointments) — not past events or hypotheticals. If the transcript is small talk \
-        with nothing substantive, still write an accurate title, overview and notes. \
-        my_tasks, shopping_items and reminders are only for \(owner) — leave them empty \
-        rather than guessing.
+        Rules for accuracy:
+        - Stay true to what was actually said. A suggestion is not a decision; agreement \
+        is not completion; "I'll do it" is an intention, not a finished thing. Keep that \
+        distinction in the notes and decisions, and don't turn a plan that was merely \
+        floated into a firm commitment.
+        - Never write a speaker label like "Speaker 1" anywhere. If you don't know who \
+        said something, write it without a name or as "someone" — never guess or invent a \
+        name. Keep exact spellings, numbers and dates from the transcript; don't \
+        "correct" an unfamiliar name from general knowledge.
+        - title: a specific headline of at most 10 words about the main topic or outcome. \
+        You may name the one or two most central people (spelled exactly as in the \
+        transcript), but never \(owner) — the note is theirs.
+        - action_items: each is timeless, verb-led and about 15 words at most, stating \
+        the action and its object; keep timing out of the task text. Set "due" ONLY when a \
+        specific date was explicitly committed — never invent an hour; if only a day was \
+        named, leave due null and mention the day in the task.
+        - events: only genuinely planned or agreed meetings, calls or appointments with a \
+        concrete date AND time — not past events, hypotheticals, or things merely floated. \
+        Don't emit the same plan as both an event and a reminder.
+        - my_tasks, shopping_items and reminders are ONLY for \(owner): things \(owner) \
+        personally committed to or asked to be reminded of, plus an explicit offer someone \
+        made to \(owner) ("I'll send you the file"). Leave them empty rather than guessing. \
+        A "remind me to…" from \(owner) always belongs in reminders, even a small errand.
+        - If the transcript is small talk with nothing substantive, still write an \
+        accurate title and short overview, and keep the lists empty.
 
         JSON:
         """
