@@ -50,7 +50,7 @@ final class AppServices {
         CrashReporter.shared.start()
         Self.restoreOnDeviceListening()
         do {
-            container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self)
+            container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self)
         } catch {
             fatalError("Could not create SwiftData container: \(error)")
         }

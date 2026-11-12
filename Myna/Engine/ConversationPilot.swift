@@ -292,6 +292,20 @@ final class ConversationPilot: ObservableObject {
         notesComposedToday += 1
         banner = "✨ Note composed: \(note.title)"
         brain?.speakProactively("I just captured a note: \(note.title).")
+        await extractMemories(for: note)
+    }
+
+    /// Distil a few durable memories from a freshly composed note and file them,
+    /// deduped against what Myna already keeps.
+    private func extractMemories(for note: ConversationNote) async {
+        guard let modelContext else { return }
+        let existing = ((try? modelContext.fetch(FetchDescriptor<Memory>())) ?? []).map(\.content)
+        let drafts = await notesEngine.extractMemories(from: note, existing: existing)
+        guard !drafts.isEmpty else { return }
+        for draft in drafts where !existing.contains(where: { $0.caseInsensitiveCompare(draft.content) == .orderedSame }) {
+            modelContext.insert(Memory(content: draft.content, category: draft.category, sourceNoteID: note.id))
+        }
+        try? modelContext.save()
     }
 
     /// The default: file the conversation as its transcript. No model involved.
