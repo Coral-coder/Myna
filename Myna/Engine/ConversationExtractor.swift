@@ -55,9 +55,9 @@ enum ConversationExtractor {
     static func instructions(for wearerName: String?) -> String {
         let who = (wearerName?.isEmpty == false) ? wearerName! : "the wearer"
         return """
-        You help \(who), who wears a Bee recording bracelet that captures audio of \
+        You help \(who), who wears a recording bracelet that captures audio of \
         their day. You read a transcript and extract ONLY concrete action items \
-        that \(who) is responsible for.
+        that belong to \(who).
 
         Return STRICT JSON, nothing else, in exactly this shape:
         {"isMedia": false, "items": [{"kind": "...", "title": "...", "dateTime": "...", "confidence": 0, "evidence": "..."}]}
@@ -65,20 +65,32 @@ enum ConversationExtractor {
         - isMedia: true if the audio is a TV show, movie, podcast, video, radio or \
         other media/background playing nearby rather than \(who) in a real \
         conversation. If true, items MUST be empty.
-        - Include an item ONLY if \(who) personally committed to it, agreed to it, \
-        asked to be reminded of it, or was directly asked to do it. A plan everyone \
-        settled on (a dinner, meeting, appointment with a time) counts.
-        - EXCLUDE: things that already happened; hypotheticals ("we could", "maybe \
-        someday", "we should probably"); jokes, stories, quotes; opinions and \
-        complaints; other people's tasks; anything vague with no real commitment. \
-        When in doubt, leave it out.
-        - kind is one of: "calendarEvent" (has a day and time), "reminder" (dated \
-        nudge), "todo" (task, no fixed time), "shopping" (something to buy).
-        - title: short and plain, e.g. "Dentist appointment", "Call Mom about Sunday", \
-        "Milk". No filler words.
-        - dateTime: "yyyy-MM-dd HH:mm" in local time resolved against the \
-        conversation date; use 09:00 if only a day was named; "" if no time at all.
-        - confidence: 0-100, how sure you are \(who) truly committed to this.
+        - Include an item ONLY when it is \(who)'s to act on: something \(who) \
+        committed to, agreed to, was directly asked to do, or explicitly asked to be \
+        reminded of. ALSO include an explicit offer or promise made TO \(who) by \
+        someone else — "I'll send you the deck", "I'll forward their contact" — those \
+        are real follow-ups for \(who) even though \(who) receives them. A plan \
+        everyone settled on with a time (a dinner, meeting, appointment) counts.
+        - "Remind me to…" and "don't let me forget…" from \(who) are ALWAYS items, \
+        even ordinary errands like "buy milk".
+        - EXCLUDE: status and observations ("Dave is working on the proposal" — an \
+        ongoing activity is not a task); things that already happened; suggestions \
+        and hypotheticals nobody committed to ("we could", "maybe someday", "we \
+        should probably"); jokes, stories, quotes; opinions and complaints; another \
+        person's task that doesn't involve \(who); vague social small talk unless a \
+        specific time or a named person with a specific place/time is attached \
+        ("catch up with Matt in NYC Friday"). When in doubt, leave it out.
+        - kind is one of: "calendarEvent" (a specific day AND time), "reminder" \
+        (dated nudge), "todo" (task, no fixed time), "shopping" (something to buy).
+        - title: self-contained and verb-led — the action and its object in plain \
+        words, e.g. "Send the deck to Morgan", "Call Mom about Sunday", "Buy milk". \
+        No timing words in the title. Never write a speaker label like "Speaker 1" or \
+        a guessed name; if you can't tell who, leave the name out ("Buy milk" needs none).
+        - dateTime: "yyyy-MM-dd HH:mm" in local time resolved against the conversation \
+        date, ONLY when a specific date was actually committed. Never invent an hour: \
+        if only a day was named, leave it "" (it becomes a todo) rather than guessing. \
+        "" when no time at all.
+        - confidence: 0-100, how sure you are this is genuinely \(who)'s commitment.
         - evidence: the exact words from the transcript that justify the item. \
         Never invent an item you cannot quote.
         """
@@ -179,9 +191,9 @@ enum ConversationExtractor {
     struct Item {
         @Guide(description: "What kind of action this is.")
         var kind: Kind
-        @Guide(description: "A short, clear title in plain words, e.g. 'Dentist appointment', 'Call Mom about Sunday', 'Milk'. No filler.")
+        @Guide(description: "A self-contained, verb-led title — the action and its object in plain words, e.g. 'Send the deck to Morgan', 'Call Mom about Sunday', 'Buy milk'. Never a speaker label or a guessed name; omit the name if unknown.")
         var title: String
-        @Guide(description: "When it happens or is due, as 'yyyy-MM-dd HH:mm' in local time, resolved against the conversation date. Use 09:00 if only a day was said. Empty string if no time was given.")
+        @Guide(description: "When it is due, as 'yyyy-MM-dd HH:mm' in local time resolved against the conversation date — ONLY when a specific date was committed. Never invent an hour: if only a day was named, leave it empty (it becomes a todo). Empty string if no time was given.")
         var dateTime: String
         @Guide(description: "0 to 100: how sure you are that the wearer genuinely committed to this, asked for it, or agreed to it in this conversation.")
         var confidence: Int
@@ -202,23 +214,33 @@ enum ConversationExtractor {
     private static func run(transcript: String, beeSummary: String, wearerName: String?, conversationDate: Date) async -> Result? {
         let who = (wearerName?.isEmpty == false) ? wearerName! : "the wearer"
         let instructions = """
-        You help \(who), who wears a Bee recording bracelet. You read a transcript \
-        of audio it captured and find ONLY real action items for \(who).
+        You help \(who), who wears a recording bracelet. You read a transcript \
+        of audio it captured and find ONLY real action items that belong to \(who).
 
         Rules:
         - First decide if the audio is TV, a movie, a podcast, a video, the radio or \
         any other media playing nearby. Dialogue from media is NEVER an action item. \
         If it is media, set isMediaOrBackground to true and return no items.
-        - Only include things \(who) committed to, agreed to, asked to be reminded of, \
-        or was directly asked to do by someone in the conversation. Plans everyone \
-        agreed on (a dinner, a meeting, an appointment) count.
-        - Ignore: things that already happened, hypotheticals ("we could…", "maybe \
-        someday"), jokes, stories, quotes, complaints, general opinions, other \
-        people's tasks that don't involve \(who), and vague talk with no real intent.
-        - calendarEvent: a specific event with a day/time (appointment, meeting, \
+        - Include a task ONLY when it is \(who)'s to act on: something \(who) committed \
+        to, agreed to, was directly asked to do, or explicitly asked to be reminded of. \
+        ALSO include an explicit offer or promise made TO \(who) by someone else \
+        ("I'll send you the deck", "I'll forward their contact") — those are real \
+        follow-ups for \(who). A plan everyone agreed on with a time (a dinner, a \
+        meeting, an appointment) counts.
+        - "Remind me to…" and "don't let me forget…" from \(who) are always tasks, \
+        even ordinary errands.
+        - Ignore: status and observations ("Dave is working on the proposal" is not a \
+        task); things that already happened; suggestions nobody committed to ("we \
+        could…", "maybe someday"); jokes, stories, quotes, complaints, opinions; other \
+        people's tasks that don't involve \(who); vague social small talk with no \
+        specific person+time.
+        - Never invent a name, a date, or an hour. If only a day was said, leave the \
+        time empty (a todo) rather than guessing. Title the action in plain, \
+        self-contained, verb-led words ("Send the deck to Morgan", "Buy milk") — never \
+        a speaker label like "Speaker 1".
+        - calendarEvent: a specific event with a day AND time (appointment, meeting, \
         dinner, flight…). reminder: something to be reminded of at a time. todo: a \
         task with no fixed time. shopping: something to buy.
-        - Plans, appointments, reminders and errands \(who) mentioned doing are what matter most — don't miss them. Never invent details.
         """
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE yyyy-MM-dd HH:mm"
