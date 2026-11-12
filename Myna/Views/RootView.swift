@@ -24,6 +24,7 @@ struct RootView: View {
 
     @State private var tab: Tab = .ask
     @EnvironmentObject private var pilot: ConversationPilot
+    @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage("myna.onboarded") private var onboarded = false
 
     var body: some View {
@@ -42,6 +43,9 @@ struct RootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .safeAreaPadding(.bottom, 84)
+            // Rebuild the active screen when the look changes so cards and
+            // headings pick up the new chrome.
+            .id(themeStore.style)
 
             dock
         }
@@ -110,6 +114,7 @@ struct RootView: View {
 #Preview {
     let services = AppServices.shared
     RootView()
+        .environmentObject(ThemeStore())
         .environmentObject(services.modelManager)
         .environmentObject(services.listener)
         .environmentObject(services.pilot)

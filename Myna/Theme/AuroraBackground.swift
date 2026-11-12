@@ -8,24 +8,35 @@ struct AuroraBackground: View {
     var energy: Double = 0.35
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+        switch MynaTheme.style {
+        case .minimal:
+            // Flat and quiet — just the void with a faint centre lift.
             ZStack {
                 MynaTheme.void.ignoresSafeArea()
-
-                GridField(time: t, energy: energy)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-
-                // Vignette: pull the eye to the centre, darken the edges.
                 RadialGradient(
-                    colors: [.clear, MynaTheme.void.opacity(0.85)],
-                    center: .center,
-                    startRadius: 140,
-                    endRadius: 560
+                    colors: [MynaTheme.indigo.opacity(0.10), .clear],
+                    center: .top, startRadius: 0, endRadius: 500
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
+            }
+        case .grid, .calm:
+            // The Grid — full for `.grid`, dimmed and still for `.calm`.
+            let calm = MynaTheme.style == .calm
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                let t = calm ? 0 : timeline.date.timeIntervalSinceReferenceDate
+                ZStack {
+                    MynaTheme.void.ignoresSafeArea()
+                    GridField(time: t, energy: calm ? 0 : energy, quiet: calm)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                    RadialGradient(
+                        colors: [.clear, MynaTheme.void.opacity(0.85)],
+                        center: .center, startRadius: 140, endRadius: 560
+                    )
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                }
             }
         }
     }
@@ -36,12 +47,14 @@ struct AuroraBackground: View {
 private struct GridField: View {
     let time: TimeInterval
     let energy: Double
+    /// `.calm`: draw only the dim ruled grid — no scanline, no drifting motes.
+    var quiet: Bool = false
 
     private let spacing: CGFloat = 46
 
     var body: some View {
         Canvas { context, size in
-            let base = 0.05 + 0.06 * energy
+            let base = quiet ? 0.035 : 0.05 + 0.06 * energy
             let lineColor = MynaTheme.cyan.opacity(base)
 
             // Ruled grid.
@@ -59,6 +72,9 @@ private struct GridField: View {
                 y += spacing
             }
             context.stroke(grid, with: .color(lineColor), lineWidth: 0.75)
+
+            // Calm draws only the still grid — stop here.
+            if quiet { return }
 
             // Scanline sweeping down, with a soft glow band behind it.
             let scanY = CGFloat(fract(time * 0.05)) * size.height
