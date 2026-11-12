@@ -102,6 +102,27 @@ enum ModelCatalog {
             minimumDeviceRAMGB: 8
         ),
         CatalogModel(
+            id: "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+            displayName: "DeepSeek R1 1.5B",
+            family: "DeepSeek",
+            parameters: "1.5B · 4-bit",
+            downloadGB: 1.1,
+            peakRAMGB: 1.8,
+            badge: nil,
+            blurb: "DeepSeek's reasoning distilled small — a fast, lightweight Chinese model that thinks step by step before it answers. Runs on any recent iPhone; strong on logic and multilingual conversations, lighter on long-form prose."
+        ),
+        CatalogModel(
+            id: "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
+            displayName: "DeepSeek R1 7B",
+            family: "DeepSeek",
+            parameters: "7B · 4-bit",
+            downloadGB: 4.3,
+            peakRAMGB: 5.3,
+            badge: nil,
+            blurb: "The larger DeepSeek reasoner: deeper step-by-step thinking and sharper answers when you ask Myna hard questions. Needs an 8 GB iPhone and keeps the screen on while it works.",
+            minimumDeviceRAMGB: 8
+        ),
+        CatalogModel(
             id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
             displayName: "Llama 3.2 1B Instruct",
             family: "Meta Llama",

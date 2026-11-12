@@ -3,6 +3,7 @@ import SwiftUI
 /// The stage: aurora backdrop, the active scene, and a floating glass dock.
 struct RootView: View {
     enum Tab: String, CaseIterable {
+        case ask = "Ask"
         case inbox = "Inbox"
         case notes = "Notes"
         case lists = "Lists"
@@ -11,6 +12,7 @@ struct RootView: View {
 
         var icon: String {
             switch self {
+            case .ask: return "bubble.left.and.bubble.right.fill"
             case .inbox: return "tray.full"
             case .notes: return "sparkles.rectangle.stack"
             case .lists: return "checklist"
@@ -20,7 +22,7 @@ struct RootView: View {
         }
     }
 
-    @State private var tab: Tab = .inbox
+    @State private var tab: Tab = .ask
     @EnvironmentObject private var pilot: ConversationPilot
     @AppStorage("myna.onboarded") private var onboarded = false
 
@@ -30,6 +32,7 @@ struct RootView: View {
 
             Group {
                 switch tab {
+                case .ask: ChatView()
                 case .inbox: SuggestionsView()
                 case .notes: NotesListView()
                 case .lists: ListsView()
