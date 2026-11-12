@@ -4,15 +4,17 @@ import SwiftUI
 struct RootView: View {
     enum Tab: String, CaseIterable {
         case ask = "Ask"
-        case inbox = "Inbox"
+        case memories = "Memory"
         case notes = "Notes"
         case lists = "Lists"
+        case inbox = "Inbox"
         case models = "Neural Core"
         case settings = "Backstage"
 
         var icon: String {
             switch self {
             case .ask: return "bubble.left.and.bubble.right.fill"
+            case .memories: return "brain"
             case .inbox: return "tray.full"
             case .notes: return "sparkles.rectangle.stack"
             case .lists: return "checklist"
@@ -34,6 +36,7 @@ struct RootView: View {
             Group {
                 switch tab {
                 case .ask: ChatView()
+                case .memories: MemoriesView()
                 case .inbox: SuggestionsView()
                 case .notes: NotesListView()
                 case .lists: ListsView()

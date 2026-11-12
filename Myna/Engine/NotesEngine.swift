@@ -62,7 +62,71 @@ final class NotesEngine {
         UserDefaults.standard.string(forKey: "myna.userName")?.trimmingCharacters(in: .whitespaces) ?? ""
     }
 
+    /// One memory the curator proposed from a note.
+    struct MemoryDraft { let content: String; let category: MemoryCategory }
+
+    private struct MemoriesReply: Decodable {
+        struct Item: Decodable { var content: String; var category: String }
+        var memories: [Item]
+    }
+
     // MARK: - Public API
+
+    /// Distil durable memories from a composed note, following Omi's memory
+    /// curator rules: a few timeless facts about the user ("system") or outside
+    /// wisdom ("interesting"), deduped against what Myna already knows. Returns
+    /// an empty list when nothing is worth keeping.
+    func extractMemories(from note: ConversationNote, existing: [String]) async -> [MemoryDraft] {
+        let owner = userName.isEmpty ? "the user" : userName
+        let material = [note.overview, note.detailedNotes].filter { !$0.isEmpty }.joined(separator: "\n")
+        guard material.count > 60 else { return [] }
+        let budget = await MainActor.run { modelManager.promptCharacterBudget }
+        let known = existing.prefix(60).joined(separator: "\n")
+        let fittedKnown = known.count > budget / 3 ? String(known.prefix(budget / 3)) : known
+        let fittedMaterial = material.count > budget ? String(material.prefix(budget)) : material
+
+        let instructions = """
+        You are an expert memory curator for \(owner). From a conversation you keep only \
+        a few genuinely durable memories and ignore everything trivial. You reply with \
+        one JSON object and nothing else.
+        """
+        let prompt = """
+        CONVERSATION:
+        \(fittedMaterial)
+
+        MEMORIES ALREADY KNOWN (never repeat these or anything that means the same):
+        \(fittedKnown.isEmpty ? "(none yet)" : fittedKnown)
+
+        Extract durable memories. Two kinds:
+        - "system": a fact ABOUT \(owner) — a preference, opinion, realization, relationship, project, decision or dislike. Write it starting with "\(owner)".
+        - "interesting": actionable wisdom or advice FROM someone else that \(owner) could learn from. Say who it is from, formatted "Source: insight".
+
+        Rules:
+        - At most 2 system and 2 interesting. Fewer is better; prefer an empty list over weak memories.
+        - Each memory is ONE short, specific, TIMELESS statement — at most 15 words. No "Thursday"/"next week"; scheduled events are not memories.
+        - \(owner)'s own opinions and realizations are "system", never "interesting".
+        - Never repeat a known memory. But if something changed or contradicts one, include the new version.
+        - No hedging ("maybe", "seems"), no filler, no transient "is working on". If it is uncertain or temporary, skip it.
+        - Never include news, general knowledge, product facts, or other people's facts with no stated relation to \(owner).
+
+        Reply with JSON and nothing else:
+        {"memories": [{"content": "...", "category": "system"}]}
+
+        JSON:
+        """
+        guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 500),
+              let json = Self.extractJSON(from: raw),
+              let data = json.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(MemoriesReply.self, from: data) else {
+            return []
+        }
+        return decoded.memories.compactMap { item in
+            let text = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count > 3, text.split(separator: " ").count <= 22 else { return nil }
+            let category = MemoryCategory(rawValue: item.category.lowercased()) ?? .system
+            return MemoryDraft(content: text, category: category)
+        }
+    }
 
     func composeNote(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String = "", context: NoteContext = .empty) async throws -> Result {
         let condensed = try await condenseIfNeeded(transcript)
