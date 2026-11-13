@@ -19,6 +19,8 @@ struct BraceletCard: View {
     @State private var showAccountFetch = false
     @State private var acctSessionToken = ""
     @State private var acctPassphrase = ""
+    @State private var acctProof = ""
+    @State private var acctSecret = ""
     private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
@@ -118,24 +120,38 @@ struct BraceletCard: View {
     private var accountFetchSection: some View {
         DisclosureGroup(isExpanded: $showAccountFetch) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Myna logs into Bee like the app does. Paste your Bee session token (the x-bee-token value from one Bee request — it's long-lived) and your Bee recovery passphrase. Myna derives the account keys itself and fetches your bracelet's key. Both stay on-device.")
+                Text("Myna fetches the key like the Bee app does, minting fresh tokens itself so nothing expires. From one Bee request (via a proxy) paste your session token, then EITHER your recovery passphrase OR the proof + secret from that same request. Everything stays on-device.")
                     .braceletCaption()
                 fetchField("x-bee-token (session token)", text: $acctSessionToken)
+                Text("Option A — recovery passphrase:").braceletCaption()
                 fetchField("recovery passphrase (your BIP39 words)", text: $acctPassphrase)
+                Text("Option B — paste proof + secret from the same request:").braceletCaption()
+                fetchField("x-bee-proof", text: $acctProof)
+                fetchField("x-bee-secret", text: $acctSecret)
                 Button("Fetch key with my Bee login") {
-                    bee.fetchKeyFromBeeAccount(sessionToken: acctSessionToken, passphrase: acctPassphrase)
+                    if !acctPassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        bee.fetchKeyFromBeeAccount(sessionToken: acctSessionToken, passphrase: acctPassphrase)
+                    } else {
+                        bee.fetchKeyFromBeeAccount(sessionToken: acctSessionToken, proof: acctProof, secret: acctSecret)
+                    }
                 }
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .tint(MynaTheme.cyan)
-                .disabled(acctSessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || acctPassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || bee.deviceID.isEmpty)
+                .disabled(accountFetchDisabled)
             }
             .padding(.top, 6)
         } label: {
             Text("Advanced: fetch key with Bee login").braceletLabel()
         }
         .tint(.white.opacity(0.6))
+    }
+
+    private var accountFetchDisabled: Bool {
+        func blank(_ s: String) -> Bool { s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if bee.deviceID.isEmpty || blank(acctSessionToken) { return true }
+        let hasPassphrase = !blank(acctPassphrase)
+        let hasProofSecret = !blank(acctProof) && !blank(acctSecret)
+        return !(hasPassphrase || hasProofSecret)
     }
 
     /// Fetch the sealed key from Bee's backend the way the app does, by sending

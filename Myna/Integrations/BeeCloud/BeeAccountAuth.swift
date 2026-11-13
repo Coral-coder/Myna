@@ -84,6 +84,24 @@ enum BeeAccountAuth {
         throw lastError
     }
 
+    /// Same fetch, but with proof/secret you captured directly (no recovery
+    /// passphrase). Still mints a fresh ephemeral from the durable session
+    /// token each time, so the stored credentials never expire.
+    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
+        let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
+        var lastError: Error = AuthError.http("secure-key", 0)
+        for apiHost in apiHostCandidates {
+            do {
+                let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
+                return Result(keyToken: token, apiHost: apiHost)
+            } catch {
+                lastError = error
+                continue
+            }
+        }
+        throw lastError
+    }
+
     // MARK: - Steps
 
     /// POST {auth}/users/sessions/token  (header x-bee-token) → ephemeral token.
