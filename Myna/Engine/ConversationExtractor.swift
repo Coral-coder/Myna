@@ -133,7 +133,8 @@ enum ConversationExtractor {
         let rawItems = (obj["items"] as? [[String: Any]]) ?? []
         var out: [ParsedSuggestion] = []
         for it in rawItems {
-            guard let title = (it["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), title.count >= 2 else { continue }
+            guard let title = (it["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  title.count >= 2, !ModelPlaceholder.looksLikePlaceholder(title) else { continue }
             let date = parseDate((it["dateTime"] as? String) ?? "")
             let kindRaw = (it["kind"] as? String ?? "todo").lowercased()
             var kind: SuggestionKind
@@ -281,7 +282,7 @@ enum ConversationExtractor {
     @available(iOS 26.0, *)
     private static func convert(_ item: Item, reference: Date) -> ParsedSuggestion? {
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard title.count >= 2 else { return nil }
+        guard title.count >= 2, !ModelPlaceholder.looksLikePlaceholder(title) else { return nil }
         let date = parseDate(item.dateTime)
         let kind: SuggestionKind
         switch item.kind {

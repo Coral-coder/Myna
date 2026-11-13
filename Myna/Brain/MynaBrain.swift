@@ -578,7 +578,7 @@ final class MynaBrain: ObservableObject {
                 // Weaker models sometimes echo the JSON template's placeholder
                 // instead of answering. Catch that and get a plain answer instead.
                 if answer.isEmpty || Self.looksLikePlaceholder(answer) {
-                    return await plainAnswer(question: question, contextBlock: context(extra: deviceContext), webResults: webResults, instructions: instructions)
+                    return await plainAnswer(question: question, contextBlock: context(extra: deviceContext), webResults: webResults)
                 }
                 return answer
             } catch MynaModelError.needsForeground {
@@ -594,34 +594,43 @@ final class MynaBrain: ObservableObject {
     }
 
     /// True when the model handed back the schema's placeholder rather than a
-    /// real answer (a common small-model failure).
+    /// real answer (a common small-model failure). Shared detector.
     private static func looksLikePlaceholder(_ s: String) -> Bool {
-        if s.hasPrefix("<"), s.hasSuffix(">") { return true }
-        let lower = s.lowercased()
-        let markers = ["what you say back", "spoken aloud", "that actually answer the user",
-                       "<write", "real words, never this placeholder", "your spoken answer"]
-        return markers.contains { lower.contains($0) }
+        ModelPlaceholder.looksLikePlaceholder(s)
     }
 
     /// Fallback when the structured pass fails or echoes: ask plainly for a
-    /// short spoken answer, no JSON.
-    private func plainAnswer(question: String, contextBlock: String, webResults: String?, instructions: String) async -> String {
+    /// short spoken answer. Uses its own plain-text instructions (NOT the JSON
+    /// agent ones) and still unwraps JSON if the model emits it anyway.
+    private func plainAnswer(question: String, contextBlock: String, webResults: String?) async -> String {
         let web = webResults.map { "\nWEB RESULTS:\n\($0)\n" } ?? ""
+        let plainInstructions = """
+        You are \(assistantName), a warm, concise assistant on the user's iPhone. \
+        Answer in one to three natural spoken sentences. Plain text only — no JSON, \
+        no markdown, no lists, no placeholders. If the context doesn't say, reply \
+        that you don't know.
+        """
         let prompt = """
         \(contextBlock)
         \(web)
-        Answer this in one to three natural spoken sentences. Plain text only — no JSON, no lists, no placeholders. If the context doesn't say, reply that you don't know.
-
         QUESTION: "\(question)"
 
         ANSWER:
         """
-        guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 400) else {
+        guard let raw = try? await modelManager.respond(instructions: plainInstructions, prompt: prompt, maxTokens: 400) else {
             return "Sorry, I couldn't work that one out."
         }
-        let plain = raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+        var text = raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return plain.isEmpty ? "Sorry, I couldn't work that one out." : String(plain.prefix(400))
+        // If the model emitted JSON anyway, pull the reply out instead of
+        // showing braces to the user.
+        if text.hasPrefix("{"), let json = NotesEngine.extractJSON(from: text),
+           let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(AgentReply.self, from: data),
+           !Self.looksLikePlaceholder(decoded.reply) {
+            text = decoded.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text.isEmpty || Self.looksLikePlaceholder(text) ? "Sorry, I couldn't work that one out." : String(text.prefix(400))
     }
 
     private func apply(_ actions: [AgentReply.Action], origin: Origin) async {

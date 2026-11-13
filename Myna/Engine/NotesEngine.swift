@@ -122,45 +122,64 @@ final class NotesEngine {
         }
         return decoded.memories.compactMap { item in
             let text = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard text.count > 3, text.split(separator: " ").count <= 22 else { return nil }
+            guard text.count > 3, text.split(separator: " ").count <= 22, !Self.isPlaceholder(text) else { return nil }
             let category = MemoryCategory(rawValue: item.category.lowercased()) ?? .system
             return MemoryDraft(content: text, category: category)
         }
+    }
+
+    /// Did the model echo a schema placeholder instead of real content?
+    /// (See `ModelPlaceholder`.) Guards every field that reaches a saved note.
+    static func isPlaceholder(_ s: String) -> Bool { ModelPlaceholder.looksLikePlaceholder(s) }
+
+    /// A field that must read as prose: cleared if it's a placeholder.
+    static func cleaned(_ s: String) -> String {
+        isPlaceholder(s) ? "" : s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A list with placeholders and blanks dropped.
+    static func cleanedList(_ xs: [String]?) -> [String] {
+        (xs ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !isPlaceholder($0) }
     }
 
     func composeNote(transcript: String, startedAt: Date, endedAt: Date, sourceRef: String = "", context: NoteContext = .empty) async throws -> Result {
         let condensed = try await condenseIfNeeded(transcript)
         let composed = try await composeStructuredNote(from: condensed, startedAt: startedAt, context: context)
 
-        let events = (composed.events ?? []).map { raw -> DetectedEvent in
-            DetectedEvent(
-                title: raw.title,
-                startDate: Self.resolveDate(iso: raw.start, phrase: raw.as_heard, reference: endedAt),
-                rawWhen: raw.as_heard ?? raw.start ?? "time not specified",
-                durationMinutes: raw.duration_minutes,
-                location: raw.location,
-                attendees: (raw.attendees ?? []).map(context.resolveAttendee),
-                confidence: raw.confidence
-            )
-        }
+        let events = (composed.events ?? [])
+            .filter { !Self.isPlaceholder($0.title) }
+            .map { raw -> DetectedEvent in
+                DetectedEvent(
+                    title: raw.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    startDate: Self.resolveDate(iso: raw.start, phrase: raw.as_heard, reference: endedAt),
+                    rawWhen: raw.as_heard ?? raw.start ?? "time not specified",
+                    durationMinutes: raw.duration_minutes,
+                    location: raw.location,
+                    attendees: (raw.attendees ?? []).map(context.resolveAttendee),
+                    confidence: raw.confidence
+                )
+            }
 
-        let actionItems = (composed.action_items ?? []).map {
-            ActionItem(task: $0.task, owner: $0.owner, due: $0.due)
-        }
+        let actionItems = (composed.action_items ?? [])
+            .filter { !Self.isPlaceholder($0.task) }
+            .map { ActionItem(task: $0.task.trimmingCharacters(in: .whitespacesAndNewlines),
+                              owner: $0.owner.flatMap { Self.isPlaceholder($0) ? nil : $0.trimmingCharacters(in: .whitespacesAndNewlines) },
+                              due: $0.due.flatMap { Self.isPlaceholder($0) ? nil : $0.trimmingCharacters(in: .whitespacesAndNewlines) }) }
 
         let modelName = await MainActor.run { modelManager.activeModel?.displayName ?? "Local model" }
 
+        let title = Self.cleaned(composed.title)
         let note = ConversationNote(
             startedAt: startedAt,
             endedAt: endedAt,
-            title: composed.title.isEmpty ? "Conversation" : composed.title,
-            overview: composed.overview,
-            detailedNotes: composed.detailed_notes,
-            keyPoints: composed.key_points ?? [],
-            decisions: composed.decisions ?? [],
+            title: title.isEmpty ? "Conversation" : title,
+            overview: Self.cleaned(composed.overview),
+            detailedNotes: Self.cleaned(composed.detailed_notes),
+            keyPoints: Self.cleanedList(composed.key_points),
+            decisions: Self.cleanedList(composed.decisions),
             actionItems: actionItems,
             detectedEvents: events,
-            followUps: composed.follow_ups ?? [],
+            followUps: Self.cleanedList(composed.follow_ups),
             transcript: transcript,
             modelName: modelName,
             sourceRef: sourceRef
@@ -168,14 +187,17 @@ final class NotesEngine {
         note.placeName = context.place
         note.people = context.people.map(\.summary)
         note.photoIdentifiers = context.photoIdentifiers
-        let reminders = (composed.reminders ?? []).map { raw in
-            (text: raw.text, at: Self.resolveDate(iso: raw.at, phrase: raw.as_heard, reference: endedAt))
-        }
+        let reminders = (composed.reminders ?? [])
+            .filter { !Self.isPlaceholder($0.text) }
+            .map { raw in
+                (text: raw.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                 at: Self.resolveDate(iso: raw.at, phrase: raw.as_heard, reference: endedAt))
+            }
         return Result(
             note: note,
-            myTasks: (composed.my_tasks ?? []).filter { !$0.isEmpty },
-            shoppingItems: (composed.shopping_items ?? []).filter { !$0.isEmpty },
-            reminders: reminders.filter { !$0.text.isEmpty }
+            myTasks: Self.cleanedList(composed.my_tasks),
+            shoppingItems: Self.cleanedList(composed.shopping_items),
+            reminders: reminders
         )
     }
 
@@ -241,9 +263,9 @@ final class NotesEngine {
           "action_items": [{"task": "...", "owner": "person responsible or null", "due": "deadline as spoken or null"}],
           "events": [{"title": "...", "start": "ISO 8601 local datetime like 2026-06-12T14:00, resolved from phrases like 'next Tuesday at 2' using the conversation date above; null if you cannot resolve it", "as_heard": "the scheduling phrase as spoken", "duration_minutes": 60, "location": "or null", "attendees": ["names"], "confidence": 0.9}],
           "follow_ups": ["open questions or things to revisit"],
-          "my_tasks": ["things \(owner) personally said they will do or must do, phrased as short to-dos"],
-          "shopping_items": ["anything \(owner) needs to buy or pick up, one item per entry"],
-          "reminders": [{"text": "what \(owner) should be reminded of", "at": "ISO 8601 local datetime or null", "as_heard": "the time phrase as spoken or null"}]
+          "my_tasks": ["a short to-do the owner committed to"],
+          "shopping_items": ["something the owner needs to buy"],
+          "reminders": [{"text": "what the owner should be reminded of", "at": "ISO 8601 local datetime or null", "as_heard": "the time phrase as spoken or null"}]
         }
 
         Rules for accuracy:
