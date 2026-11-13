@@ -539,7 +539,7 @@ final class MynaBrain: ObservableObject {
             THE USER SAYS: "\(question)"
 
             Respond with JSON:
-            {"reply": "what you say back, spoken aloud",
+            {"reply": "<write one to three spoken sentences that actually answer the user — real words, never this placeholder>",
              "actions": [
                {"type": "add_todo", "text": "...", "at": "ISO 8601 local datetime or null"},
                {"type": "add_shopping", "items": ["..."]},
@@ -574,7 +574,13 @@ final class MynaBrain: ObservableObject {
                 }
 
                 await apply((decoded.actions ?? []).filter { $0.type != "search" }, origin: origin)
-                return decoded.reply
+                let answer = decoded.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Weaker models sometimes echo the JSON template's placeholder
+                // instead of answering. Catch that and get a plain answer instead.
+                if answer.isEmpty || Self.looksLikePlaceholder(answer) {
+                    return await plainAnswer(question: question, contextBlock: context(extra: deviceContext), webResults: webResults, instructions: instructions)
+                }
+                return answer
             } catch MynaModelError.needsForeground {
                 add(.memo, texts: ["Asked: \(question)"], detail: "Open Myna and ask again for an answer.", source: origin.itemSource)
                 return "I need you to open Myna before I can think that one through. I've saved the question."
@@ -585,6 +591,37 @@ final class MynaBrain: ObservableObject {
             }
         }
         return "Sorry, I couldn't work that one out."
+    }
+
+    /// True when the model handed back the schema's placeholder rather than a
+    /// real answer (a common small-model failure).
+    private static func looksLikePlaceholder(_ s: String) -> Bool {
+        if s.hasPrefix("<"), s.hasSuffix(">") { return true }
+        let lower = s.lowercased()
+        let markers = ["what you say back", "spoken aloud", "that actually answer the user",
+                       "<write", "real words, never this placeholder", "your spoken answer"]
+        return markers.contains { lower.contains($0) }
+    }
+
+    /// Fallback when the structured pass fails or echoes: ask plainly for a
+    /// short spoken answer, no JSON.
+    private func plainAnswer(question: String, contextBlock: String, webResults: String?, instructions: String) async -> String {
+        let web = webResults.map { "\nWEB RESULTS:\n\($0)\n" } ?? ""
+        let prompt = """
+        \(contextBlock)
+        \(web)
+        Answer this in one to three natural spoken sentences. Plain text only — no JSON, no lists, no placeholders. If the context doesn't say, reply that you don't know.
+
+        QUESTION: "\(question)"
+
+        ANSWER:
+        """
+        guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 400) else {
+            return "Sorry, I couldn't work that one out."
+        }
+        let plain = raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return plain.isEmpty ? "Sorry, I couldn't work that one out." : String(plain.prefix(400))
     }
 
     private func apply(_ actions: [AgentReply.Action], origin: Origin) async {
