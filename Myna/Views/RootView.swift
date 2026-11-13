@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// Reports the floating dock's real rendered height so content can clear it.
+private struct DockHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 100
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 /// The stage: aurora backdrop, the active scene, and a floating glass dock.
 struct RootView: View {
     enum Tab: String, CaseIterable {
@@ -28,6 +34,9 @@ struct RootView: View {
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage("myna.onboarded") private var onboarded = false
+    /// Measured height of the floating dock (+ margin), so every scrolling
+    /// screen insets its content enough to clear it on any device.
+    @State private var dockClearance: CGFloat = 100
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -45,13 +54,19 @@ struct RootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .safeAreaPadding(.bottom, 84)
+            .safeAreaPadding(.bottom, dockClearance)
             // Rebuild the active screen when the look changes so cards and
             // headings pick up the new chrome.
             .id(themeStore.style)
 
             dock
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: DockHeightKey.self, value: geo.size.height + 12)
+                    }
+                )
         }
+        .onPreferenceChange(DockHeightKey.self) { dockClearance = $0 }
         .overlay(alignment: .top) { bannerView }
         .fullScreenCover(isPresented: .constant(!onboarded)) {
             PermissionsView(onboarded: $onboarded)
