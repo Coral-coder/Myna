@@ -16,6 +16,9 @@ struct BraceletCard: View {
     @State private var fetchProof = ""
     @State private var fetchSecret = ""
     @State private var fetchToken = ""
+    @State private var showAccountFetch = false
+    @State private var acctSessionToken = ""
+    @State private var acctPassphrase = ""
     private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
@@ -45,6 +48,7 @@ struct BraceletCard: View {
                 }
                 pairingDetail
                 capturedKeySection
+                accountFetchSection
                 serverFetchSection
                 if bee.isReadyForControl, bee.deviceState == .mute {
                     VStack(alignment: .leading, spacing: 8) {
@@ -103,6 +107,33 @@ struct BraceletCard: View {
             .padding(.top, 6)
         } label: {
             Text("Advanced: paste captured key").braceletLabel()
+        }
+        .tint(.white.opacity(0.6))
+    }
+
+    /// The full in-app path: Myna reproduces the Bee app's account auth from a
+    /// durable session token + your recovery passphrase, derives proof/secret
+    /// itself, and fetches the key. Only the session token is captured (once).
+    @ViewBuilder
+    private var accountFetchSection: some View {
+        DisclosureGroup(isExpanded: $showAccountFetch) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Myna logs into Bee like the app does. Paste your Bee session token (the x-bee-token value from one Bee request — it's long-lived) and your Bee recovery passphrase. Myna derives the account keys itself and fetches your bracelet's key. Both stay on-device.")
+                    .braceletCaption()
+                fetchField("x-bee-token (session token)", text: $acctSessionToken)
+                fetchField("recovery passphrase (your BIP39 words)", text: $acctPassphrase)
+                Button("Fetch key with my Bee login") {
+                    bee.fetchKeyFromBeeAccount(sessionToken: acctSessionToken, passphrase: acctPassphrase)
+                }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .tint(MynaTheme.cyan)
+                .disabled(acctSessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || acctPassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || bee.deviceID.isEmpty)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced: fetch key with Bee login").braceletLabel()
         }
         .tint(.white.opacity(0.6))
     }

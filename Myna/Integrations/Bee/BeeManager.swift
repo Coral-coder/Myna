@@ -347,6 +347,39 @@ final class BeeManager: ObservableObject {
         retry()
     }
 
+    /// The full in-app path: reproduce the Bee app's account auth from your
+    /// session token + recovery passphrase, derive proof/secret, and fetch the
+    /// sealed key — no header capture needed beyond the one durable session token.
+    func fetchKeyFromBeeAccount(sessionToken: String, passphrase: String) {
+        let id = deviceID.isEmpty ? "default" : deviceID
+        let deviceHex = deviceID
+        guard !deviceHex.isEmpty else {
+            pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
+            return
+        }
+        log("Deriving your Bee account keys from the recovery passphrase…")
+        Task { [weak self] in
+            do {
+                let result = try await BeeAccountAuth.fetchBraceletKey(
+                    sessionToken: sessionToken, passphrase: passphrase, deviceIDHex: deviceHex
+                )
+                guard let self else { return }
+                guard BeeCloudAPI.ctrKey(fromToken: result.keyToken) != nil else {
+                    self.pairing = .error("Bee returned a \(result.keyToken.count)-byte token — expected 108.")
+                    return
+                }
+                BeeKeyVault.forget(deviceID: id)
+                BeeKeyVault.storeToken(result.keyToken, deviceID: id)
+                self.log("Got your bracelet key from Bee (\(result.keyToken.count) bytes, via \(result.apiHost)). Reconnecting…")
+                self.retry()
+            } catch {
+                guard let self else { return }
+                self.log("Bee account key fetch failed: \(error.localizedDescription)")
+                self.pairing = .error("Couldn't fetch the key: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Masquerade as the Bee app: call Bee's `/ble/secure-key` with the account
     /// auth headers (captured once from any Bee request) to fetch this bracelet's
     /// sealed token, store it, and reconnect so the handshake uses its key. No
