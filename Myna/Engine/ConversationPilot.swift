@@ -50,11 +50,13 @@ final class ConversationPilot: ObservableObject {
     }
 
     static let composeNotesKey = "myna.composeNotes"
-    /// Off by default: each conversation is filed as its transcript, with no
-    /// AI model in the loop (fast, works in the background, nothing to crash).
-    /// On: the model also writes a structured note.
+    /// On by default: Myna reads each finished conversation on-device — writing a
+    /// structured note AND pulling out the to-dos, reminders and memories it heard
+    /// (the Omi loop, no cloud). When a model can't run yet (phone locked, only an
+    /// MLX model installed) the conversation is queued and processed on next launch.
+    /// Off: file the raw transcript only, no model in the loop — nothing extracted.
     var composeNotes: Bool {
-        UserDefaults.standard.bool(forKey: Self.composeNotesKey)
+        UserDefaults.standard.object(forKey: Self.composeNotesKey) as? Bool ?? true
     }
 
     let listener: SpeechListener

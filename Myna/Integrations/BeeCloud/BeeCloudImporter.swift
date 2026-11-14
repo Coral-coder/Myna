@@ -42,6 +42,8 @@ final class BeeCloudImporter: ObservableObject {
         return Date.now.timeIntervalSince(started) < 180
     }
     private static let rescanKey = "myna.beeCloud.rescan.v2"
+    /// Bee todo ids already pulled into Lists, so re-imports don't duplicate.
+    private static let importedTodoIDsKey = "myna.beeCloud.importedTodoIDs"
     /// What the last import read and did, shown in Backstage.
     @Published private(set) var lastReport: String?
     /// Acts on confident findings (calendar, reminders, lists) and notifies.
@@ -163,6 +165,10 @@ final class BeeCloudImporter: ObservableObject {
         importStartedAt = .now
         let api = BeeCloudAPI(token: token)
         do {
+            // Bee's own server-extracted to-dos — the most reliable action
+            // items, since Bee's cloud model did the work. Import the open ones
+            // straight into Lists before any on-device extraction.
+            let beeTodosAdded = await importBeeTodos(api)
             let summaries = try await api.recentConversations(limit: limit)
             var added = 0
             // Suggestions we've already offered (any status) — so we never
@@ -226,9 +232,10 @@ final class BeeCloudImporter: ObservableObject {
             } else if !autoAddEnabled {
                 inboxCount += toApply.count
             }
-            if checked > 0 {
+            if checked > 0 || beeTodosAdded > 0 {
                 let ai = usedModel ? (AppServices.shared.modelManager.activeModel?.displayName ?? "the on-device model") : "keyword matching"
-                lastReport = "Read \(checked) conversation\(checked == 1 ? "" : "s") with \(ai): added \(applied), \(inboxCount) waiting in the Inbox."
+                let beePart = beeTodosAdded > 0 ? " \(beeTodosAdded) to-do\(beeTodosAdded == 1 ? "" : "s") from Bee," : ""
+                lastReport = "Read \(checked) conversation\(checked == 1 ? "" : "s") with \(ai):\(beePart) added \(applied), \(inboxCount) waiting in the Inbox."
             }
             lastImport = .now
             UserDefaults.standard.set(lastImport, forKey: Self.lastImportKey)
@@ -238,6 +245,26 @@ final class BeeCloudImporter: ObservableObject {
             status = .failed(error.localizedDescription)
             return 0
         }
+    }
+
+    /// Pull Bee's own extracted to-dos into Myna's Lists. Open items with a time
+    /// become reminders, the rest to-dos; each Bee id is imported once. Returns
+    /// how many new items were added. Never throws — a missing `/v1/todos`
+    /// endpoint just yields nothing and the conversation import carries on.
+    private func importBeeTodos(_ api: BeeCloudAPI) async -> Int {
+        guard let brain else { return 0 }
+        guard let todos = try? await api.todos(limit: 60), !todos.isEmpty else { return 0 }
+        var seen = Set(UserDefaults.standard.stringArray(forKey: Self.importedTodoIDsKey) ?? [])
+        var added = 0
+        for todo in todos where !todo.completed && !seen.contains(todo.id) {
+            seen.insert(todo.id)
+            let kind: ItemKind = todo.due != nil ? .reminder : .todo
+            let made = brain.add(kind, texts: [todo.text], due: todo.due,
+                                 detail: "From Bee", source: .conversation, announce: false)
+            added += made.count
+        }
+        UserDefaults.standard.set(Array(seen), forKey: Self.importedTodoIDsKey)
+        return added
     }
 
     /// What to act on in one conversation. TV / film / podcast audio yields

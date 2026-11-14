@@ -98,6 +98,46 @@ struct BeeCloudAPI {
             .filter { !$0.isEmpty }
     }
 
+    /// A to-do Bee's own server extracted from your conversations. These are the
+    /// reliable action items — Bee's cloud model did the extraction, so Myna
+    /// imports them directly instead of re-running a weaker on-device pass.
+    struct Todo: Equatable {
+        var id: String
+        var text: String
+        var completed: Bool
+        var due: Date?
+    }
+
+    /// Your open + recent to-dos, already extracted by Bee. Field names in the
+    /// developer API are undocumented, so every key is read tolerantly.
+    func todos(limit: Int = 50) async throws -> [Todo] {
+        let body = try await get("/v1/todos?limit=\(limit)")
+        let list = (body["todos"] as? [[String: Any]])
+            ?? (body["items"] as? [[String: Any]])
+            ?? (body["results"] as? [[String: Any]])
+            ?? []
+        return list.compactMap { raw -> Todo? in
+            let text = ((raw["text"] as? String)
+                ?? (raw["task"] as? String)
+                ?? (raw["title"] as? String)
+                ?? (raw["content"] as? String)
+                ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            let id: String = {
+                if let n = raw["id"] as? Int { return String(n) }
+                if let s = raw["id"] as? String, !s.isEmpty { return s }
+                return text   // stable enough to dedupe on when Bee omits an id
+            }()
+            let completed = (raw["completed"] as? Bool)
+                ?? (raw["done"] as? Bool)
+                ?? (raw["is_completed"] as? Bool)
+                ?? ((raw["state"] as? String)?.lowercased() == "completed")
+            let due = Self.date(raw["alarm_at"] ?? raw["due"] ?? raw["remind_at"]
+                ?? raw["due_at"] ?? raw["date"])
+            return Todo(id: id, text: text, completed: completed, due: due)
+        }
+    }
+
     // MARK: - Bracelet key
 
     /// Fetches the bracelet's sealed encryption-key token from Bee's backend.

@@ -14,7 +14,7 @@ import FoundationModels
 enum ConversationExtractor {
     /// Minimum confidence (0–100) to act without asking. Only a model that
     /// genuinely understood the exchange clears this; junk sits lower.
-    static let autoAddConfidence = 70
+    static let autoAddConfidence = 60
 
     /// Generates text from `prompt` under `instructions`. The app injects one
     /// backed by the user's downloaded model (a bigger MLX model when installed
@@ -79,7 +79,10 @@ enum ConversationExtractor {
         should probably"); jokes, stories, quotes; opinions and complaints; another \
         person's task that doesn't involve \(who); vague social small talk unless a \
         specific time or a named person with a specific place/time is attached \
-        ("catch up with Matt in NYC Friday"). When in doubt, leave it out.
+        ("catch up with Matt in NYC Friday"). Those exclusions aside, lean toward \
+        capturing: if something is a plausible task \(who) would want to remember, \
+        include it as a "todo" with a lower confidence rather than dropping it — \
+        \(who) can dismiss it. Only leave it out when it clearly isn't a task at all.
         - kind is one of: "calendarEvent" (a specific day AND time), "reminder" \
         (dated nudge), "todo" (task, no fixed time), "shopping" (something to buy).
         - title: self-contained and verb-led — the action and its object in plain \
