@@ -18,7 +18,7 @@ struct SettingsView: View {
     @AppStorage("myna.customWakeWord") private var customWakeWord = ""
     @AppStorage("myna.micSensitivity") private var micSensitivity: Double = 3.0
     @AppStorage("myna.useWhisper") private var useWhisper = true
-    @AppStorage(ConversationPilot.composeNotesKey) private var composeNotes = false
+    @AppStorage(ConversationPilot.composeNotesKey) private var composeNotes = true
     @AppStorage("myna.voiceIdentifier") private var voiceIdentifier = ""
     @AppStorage("myna.speakImportant") private var speakImportant = true
     @AppStorage("myna.agentPrompt") private var agentPrompt = ""
@@ -390,8 +390,8 @@ struct SettingsView: View {
 
             Toggle(isOn: $composeNotes) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Write AI notes").settingsLabel()
-                    Text("Off: each conversation is saved as its transcript — fast, reliable, works in the background. On: the AI model also writes a summary note (slower, foreground model).").settingsCaption()
+                    Text("Read conversations").settingsLabel()
+                    Text("On: Myna reads each conversation on-device and pulls out your to-dos, reminders and memories, plus a summary note. Off: just save the transcript — nothing is extracted.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
