@@ -87,7 +87,10 @@ final class ReminderCenter {
     }
 
     func removeMirror(of item: MynaItem) {
-        guard let identifier = item.reminderID,
+        // Touch EventKit only with access — calendarItem(withIdentifier:) can
+        // raise an NSException when Reminders access isn't granted.
+        guard hasRemindersAccess,
+              let identifier = item.reminderID,
               let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder else { return }
         try? store.remove(reminder, commit: true)
     }

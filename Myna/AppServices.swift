@@ -50,11 +50,7 @@ final class AppServices {
     private init() {
         CrashReporter.shared.start()
         Self.restoreOnDeviceListening()
-        do {
-            container = try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self)
-        } catch {
-            fatalError("Could not create SwiftData container: \(error)")
-        }
+        container = Self.makeContainer()
 
         Self.applyCustomWakeWords()
         modelManager = ModelManager()
@@ -96,9 +92,37 @@ final class AppServices {
         beeRefresh.register()
         // Location-driven wake-ups so Bee is checked while Myna is closed.
         waker.apply()
-        // Warm up Whisper if the user turned it on previously.
-        if whisper.isEnabled { whisper.load() }
+        // NB: Whisper is intentionally NOT warmed up here. Loading its model is a
+        // memory spike, and doing it on the synchronous launch path is exactly
+        // what gets a cold launch (e.g. tapping a notification) jetsam-killed.
+        // becameActive() loads it once the app is settled and foreground.
         Self.sharedIfReady = self
+    }
+
+    /// Open the SwiftData store, resiliently. A cold launch (tapping a
+    /// notification) can race a still-suspended prior instance that holds the
+    /// SQLite file lock, which made `ModelContainer(for:)` throw and the old
+    /// `fatalError` crash the app on every such launch. Retry briefly; if the
+    /// store truly won't open, fall back to an in-memory store so the app still
+    /// opens (a later clean launch recovers the on-disk data) rather than
+    /// crash-looping.
+    private static func makeContainer() -> ModelContainer {
+        for attempt in 0..<4 {
+            do {
+                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self)
+            } catch {
+                CrashReporter.log("ModelContainer attempt \(attempt) failed: \(error.localizedDescription)")
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.25) }
+            }
+        }
+        if let fallback = try? ModelContainer(
+            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        ) {
+            CrashReporter.log("ModelContainer: in-memory fallback (on-disk store unavailable this launch).")
+            return fallback
+        }
+        fatalError("Could not create SwiftData container after retries.")
     }
 
     /// One-time: the Bee-companion builds turned the mic and Whisper off. Turn
@@ -129,6 +153,7 @@ final class AppServices {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, UIApplication.shared.applicationState == .active else { return }
+            if self.whisper.isEnabled { self.whisper.load() }
             self.beeCloud.importIfEnabled()
             self.pilot.drainQueue()
         }
@@ -161,8 +186,21 @@ private final class NotificationPresenter: NSObject, UNUserNotificationCenterDel
               let undo = ActionUndo(payload: response.notification.request.content.userInfo) else { return }
         let identifier = response.notification.request.identifier
         await MainActor.run {
-            AppServices.shared.brain.undo(undo)
-            AppServices.shared.brain.notifier.clearDelivered(identifier)
+            // Only act once services are fully initialised. Never force a
+            // first-time AppServices init from the notification-delivery path —
+            // that races app launch and is one way this handler crashed.
+            guard let services = AppServices.sharedIfReady else { return }
+            // EventKit / CoreData calls in `undo` can raise an Objective-C
+            // NSException, which Swift cannot catch and which aborted the whole
+            // app when a notification was acted on (confirmed in a crash report).
+            // Run the work inside an ObjC @try/@catch so a raised exception is
+            // logged, never fatal.
+            if let reason = MynaExceptionCatcher.catching({
+                services.brain.undo(undo)
+                services.brain.notifier.clearDelivered(identifier)
+            }) {
+                CrashReporter.log("Undo from notification raised, ignored: \(reason)")
+            }
         }
     }
 }
