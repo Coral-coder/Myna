@@ -96,6 +96,10 @@ final class BeeCloudImporter: ObservableObject {
 
     var hasToken: Bool { token?.isEmpty == false }
 
+    /// The connected Bee account token, so the bracelet key-fetch UI can reuse it
+    /// as the session token instead of making you capture one by hand.
+    var storedToken: String? { token }
+
     var isEnabled: Bool {
         UserDefaults.standard.bool(forKey: Self.enabledKey) && hasToken
     }
