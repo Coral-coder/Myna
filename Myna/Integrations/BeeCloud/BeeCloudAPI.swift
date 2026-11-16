@@ -151,7 +151,7 @@ struct BeeCloudAPI {
     /// Hosts that actually serve `/ble/secure-key`. This is Bee's account/services
     /// backend — NOT the developer API (`api.developer.bee.amazon.dev`), which has
     /// no key endpoint and returns 404 for it.
-    static let keyHosts = ["api.beeai-services.com", "ce-beeai-services.com"]
+    static let keyHosts = ["auth.beeai-services.com"]
 
     func secureKeyToken(deviceIDHex: String) async throws -> Data {
         var lastError: Error = Failure.malformed
