@@ -125,6 +125,12 @@ final class BeeManager: ObservableObject {
     /// falls back to syncing from Bee's cloud. Wired by AppServices.
     var onSyncFallback: (() -> Void)?
 
+    /// User-triggered: remove the bracelet and fall back to Bee cloud sync, even
+    /// when nothing has failed (a manual "stop fighting the bracelet" button).
+    func removeAndSync() {
+        removeBraceletAndSync(reason: "removed by you")
+    }
+
     /// On an unrecoverable key failure: remove the bracelet (forget its stored key
     /// and drop the BLE link so Myna stops looping a provisioning it can't finish),
     /// then fall back to syncing conversations from Bee's cloud.
