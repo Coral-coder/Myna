@@ -297,12 +297,22 @@ final class BeeManager: ObservableObject {
             return
         }
 
-        // Unsealed: install a captured token if we have one; otherwise there's
-        // nothing to install without Bee's (attestation-gated) server.
-        if let capturedToken {
+        // Unsealed: the firmware's 0xC018 only accepts Bee's full ~108-byte
+        // ECDSA-signed token. A bare 16-byte key (count < 44) can NOT be
+        // installed here — it comes back invalidParam every time — it's only
+        // usable to decrypt a bracelet already sealed with it. So install only a
+        // real token; otherwise fetch the genuine signed token from the connected
+        // Bee account rather than jamming a key the firmware will reject.
+        if let capturedToken, capturedToken.count >= 44 {
             installToken(capturedToken, deviceID: deviceID, source: "captured")
-        } else {
+        } else if fetchSecureKeyToken != nil {
+            if capturedToken != nil {
+                log("Ignoring a stored bare key — 0xC018 needs Bee's full signed token. Fetching it from your Bee account…")
+            }
             provisionFromBackend(deviceID: deviceID)
+        } else {
+            log("Unsealed, and Myna holds no installable token (a bare 16-byte key is rejected by 0xC018). Connect your Bee account so Myna can fetch the signed key, or paste the full 108-byte token.")
+            pairing = .error("This bracelet needs Bee's signed key. Connect your Bee account in Backstage, or paste the full 108-byte token in the key field.")
         }
     }
 
