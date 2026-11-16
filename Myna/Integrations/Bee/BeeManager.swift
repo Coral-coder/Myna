@@ -566,6 +566,54 @@ final class BeeManager: ObservableObject {
         if decryptor == nil { pairing = .error("Couldn't set up decryption.") }
     }
 
+    // MARK: - Developer lab
+    //
+    // A reconnaissance surface for the bracelet's firmware: dump the full GATT
+    // table, probe whether the key-set command will take an unsigned/null key,
+    // and send arbitrary control frames. Everything goes to the device log so it
+    // can be copied out. None of this can forge Bee's signed token — it's for
+    // learning exactly what the firmware will and won't accept.
+
+    /// Enumerate and log every service + characteristic on the bracelet.
+    func labDumpGatt() {
+        log("Lab: dumping the full GATT table…")
+        central.dumpGatt()
+    }
+
+    /// Try to set an all-zero ("null") key, both as a bare 16-byte key and as a
+    /// 108-byte zero token. We expect the firmware's 0xC018 to reject both with
+    /// invalidParam (it demands Bee's ECDSA-signed token) — this confirms it on
+    /// your device and rules the idea out for good, or surprises us.
+    func labProbeNullKey() {
+        log("Lab: 0xC018 ← 16 zero bytes (bare null key)…")
+        central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](repeating: 0, count: 16)))
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self else { return }
+            self.log("Lab: 0xC018 ← 108 zero bytes (null token)…")
+            self.central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](repeating: 0, count: 108)))
+        }
+    }
+
+    /// Send a raw control frame (hex). First two bytes are the little-endian
+    /// command id, the rest payload. The reply is logged by the normal handler.
+    func labSendControl(hex raw: String) {
+        let clean = raw.lowercased().filter { $0.isHexDigit }
+        guard clean.count >= 4, clean.count % 2 == 0 else {
+            log("Lab: enter at least 2 bytes of hex (id low, id high, …).")
+            return
+        }
+        var bytes: [UInt8] = []
+        var i = clean.startIndex
+        while i < clean.endIndex {
+            let j = clean.index(i, offsetBy: 2)
+            if let b = UInt8(clean[i..<j], radix: 16) { bytes.append(b) }
+            i = j
+        }
+        log("Lab: control ← \(BeeProtocol.hex(bytes))")
+        central.writeControl(Data(bytes))
+    }
+
     // MARK: - Audio
 
     private func handleAudio(_ data: Data) {

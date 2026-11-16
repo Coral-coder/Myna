@@ -106,6 +106,34 @@ final class BeeCentral: NSObject, ObservableObject {
         peripheral.setNotifyValue(true, for: audioCharacteristic)
     }
 
+    // MARK: - Developer lab
+
+    /// When set, Myna enumerates and logs the WHOLE GATT table (every service +
+    /// characteristic) and dumps the value of every readable one, instead of only
+    /// the known control/audio pair. Pure reconnaissance of the bracelet.
+    private var labDumping = false
+
+    /// Developer: walk the full GATT table and log it. Reveals any undocumented
+    /// services/characteristics (a DFU/SMP service, a debug surface) the normal
+    /// handshake never touches.
+    func dumpGatt() {
+        guard let peripheral else { onDiagnostic?("Lab: not connected to the bracelet."); return }
+        labDumping = true
+        onDiagnostic?("Lab: discovering ALL services…")
+        peripheral.discoverServices(nil)
+    }
+
+    /// Human-readable characteristic property flags.
+    private static func props(_ p: CBCharacteristicProperties) -> String {
+        var out: [String] = []
+        if p.contains(.read) { out.append("read") }
+        if p.contains(.write) { out.append("write") }
+        if p.contains(.writeWithoutResponse) { out.append("writeNR") }
+        if p.contains(.notify) { out.append("notify") }
+        if p.contains(.indicate) { out.append("indicate") }
+        return out.isEmpty ? "—" : out.joined(separator: ",")
+    }
+
     // MARK: - Reconnect
 
     private func reconnectKnownPeripheral() -> Bool {
@@ -185,6 +213,7 @@ extension BeeCentral: CBCentralManagerDelegate {
         Task { @MainActor in
             controlCharacteristic = nil
             audioCharacteristic = nil
+            labDumping = false
             phase = .idle
             delegate?.beeCentral(self, didDisconnectWithError: error)
             // Come back after a short pause — not in a tight loop. If another app
@@ -203,6 +232,15 @@ extension BeeCentral: CBCentralManagerDelegate {
 extension BeeCentral: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
+            if labDumping {
+                let services = peripheral.services ?? []
+                onDiagnostic?("Lab: \(services.count) service(s) total")
+                for s in services {
+                    onDiagnostic?("Lab: service \(s.uuid)")
+                    peripheral.discoverCharacteristics(nil, for: s)
+                }
+                return
+            }
             guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
                 phase = .idle
                 return
@@ -213,6 +251,13 @@ extension BeeCentral: CBPeripheralDelegate {
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
+            if labDumping {
+                for c in service.characteristics ?? [] {
+                    onDiagnostic?("Lab:   char \(c.uuid) [\(Self.props(c.properties))]")
+                    if c.properties.contains(.read) { peripheral.readValue(for: c) }
+                }
+                return
+            }
             for characteristic in service.characteristics ?? [] {
                 switch characteristic.uuid {
                 case Self.controlUUID:
@@ -256,11 +301,15 @@ extension BeeCentral: CBPeripheralDelegate {
         guard error == nil, let value = characteristic.value else { return }
         let isControl = characteristic.uuid == Self.controlUUID
         let isAudio = characteristic.uuid == Self.audioUUID
+        let uuid = characteristic.uuid
         Task { @MainActor in
             if isControl {
                 delegate?.beeCentral(self, didReceiveControl: value)
             } else if isAudio {
                 delegate?.beeCentral(self, didReceiveAudio: value)
+            } else if labDumping {
+                let hex = value.prefix(40).map { String(format: "%02x", $0) }.joined()
+                onDiagnostic?("Lab:   \(uuid) = \(hex)\(value.count > 40 ? "…" : "") (\(value.count)B)")
             }
         }
     }

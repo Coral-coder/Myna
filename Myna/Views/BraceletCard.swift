@@ -21,6 +21,8 @@ struct BraceletCard: View {
     @State private var acctPassphrase = ""
     @State private var acctProof = ""
     @State private var acctSecret = ""
+    @State private var showLab = false
+    @State private var labHex = ""
     private let bitrateOptions = [16000, 24000, 32000, 64000, 128000]
 
     var body: some View {
@@ -61,6 +63,7 @@ struct BraceletCard: View {
                     }
                 }
                 if bee.isReadyForControl { controlsSection }
+                if bee.isReadyForControl { labSection }
                 if !bee.diagnostics.isEmpty { deviceLog }
             }
         }
@@ -185,6 +188,41 @@ struct BraceletCard: View {
             .padding(.top, 6)
         } label: {
             Text("Advanced: fetch key from Bee server").braceletLabel()
+        }
+        .tint(.white.opacity(0.6))
+    }
+
+    /// Developer reconnaissance of the bracelet firmware: enumerate its full GATT
+    /// map, test whether it will accept a null/unsigned key, and send raw control
+    /// frames. All output lands in the device log below (copyable).
+    @ViewBuilder
+    private var labSection: some View {
+        DisclosureGroup(isExpanded: $showLab) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Probes the bracelet's firmware. Results appear in the device log below — expand it and tap Copy to send them to me.")
+                    .braceletCaption()
+                Button("Dump full GATT map") { bee.labDumpGatt() }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.cyan)
+                Button("Probe null key (expect reject)") { bee.labProbeNullKey() }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.gold)
+                Text("Send a raw control frame (hex: id low, id high, payload…):")
+                    .braceletCaption()
+                HStack(spacing: 8) {
+                    fetchField("e.g. 1bc0", text: $labHex)
+                    Button("Send") {
+                        bee.labSendControl(hex: labHex)
+                        labHex = ""
+                    }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.cyan)
+                    .disabled(labHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Developer: bracelet lab").braceletLabel()
         }
         .tint(.white.opacity(0.6))
     }
