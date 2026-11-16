@@ -10,22 +10,16 @@ private struct DockHeightKey: PreferenceKey {
 struct RootView: View {
     enum Tab: String, CaseIterable {
         case ask = "Ask"
-        case memories = "Memory"
-        case notes = "Notes"
+        case memory = "Memory"
         case lists = "Lists"
-        case inbox = "Inbox"
-        case models = "Neural Core"
-        case settings = "Backstage"
+        case more = "More"
 
         var icon: String {
             switch self {
             case .ask: return "bubble.left.and.bubble.right.fill"
-            case .memories: return "brain"
-            case .inbox: return "tray.full"
-            case .notes: return "sparkles.rectangle.stack"
+            case .memory: return "brain"
             case .lists: return "checklist"
-            case .models: return "cpu"
-            case .settings: return "slider.horizontal.3"
+            case .more: return "ellipsis.circle"
             }
         }
     }
@@ -45,12 +39,9 @@ struct RootView: View {
             Group {
                 switch tab {
                 case .ask: ChatView()
-                case .memories: MemoriesView()
-                case .inbox: SuggestionsView()
-                case .notes: NotesListView()
+                case .memory: MemoryHubView()
                 case .lists: ListsView()
-                case .models: ModelHubView()
-                case .settings: SettingsView()
+                case .more: MoreView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
