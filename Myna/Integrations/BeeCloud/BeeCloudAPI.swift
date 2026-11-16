@@ -148,15 +148,42 @@ struct BeeCloudAPI {
     /// thing to the device; the actual AES-128 CTR key is bytes 12..<28 of it
     /// (or the whole blob when it's exactly 16 bytes). This is the one call that
     /// touches Bee's server — the audio itself still never leaves the phone.
+    /// Hosts that actually serve `/ble/secure-key`. This is Bee's account/services
+    /// backend — NOT the developer API (`api.developer.bee.amazon.dev`), which has
+    /// no key endpoint and returns 404 for it.
+    static let keyHosts = ["api.beeai-services.com", "ce-beeai-services.com"]
+
     func secureKeyToken(deviceIDHex: String) async throws -> Data {
-        let (data, contentType) = try await postRaw("/ble/secure-key", json: ["device_id": deviceIDHex], host: Self.baseURL.host ?? "?")
+        var lastError: Error = Failure.malformed
+        for host in Self.keyHosts {
+            do {
+                return try await Self.postSecureKey(host: host, deviceIDHex: deviceIDHex, bearer: token, session: session)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    /// POST `/ble/secure-key` to one Bee services host with the account Bearer
+    /// token. Returns the sealed token (raw bytes, or parsed from JSON).
+    private static func postSecureKey(host: String, deviceIDHex: String, bearer: String, session: URLSession) async throws -> Data {
+        guard let url = URL(string: "https://\(host)/ble/secure-key") else { throw Failure.malformed }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Bee's app sends camelCase "deviceId".
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+        let (data, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        let code = http?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw Failure.route(host: host, code: code) }
+        let contentType = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         if contentType.contains("application/octet-stream") { return data }
-        // Otherwise a JSON { "token": "<hex pairs or base64>" }.
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = object["token"] as? String else { throw Failure.malformed }
-        if let bytes = Self.hexBytes(token) { return bytes }
-        if let b64 = Data(base64Encoded: token) { return b64 }
-        throw Failure.malformed
+        guard let token = braceletToken(fromResponse: data) else { throw Failure.malformed }
+        return token
     }
 
     /// The 16-byte AES-CTR key carried inside a sealed token.
