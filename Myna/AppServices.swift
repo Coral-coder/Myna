@@ -78,6 +78,9 @@ final class AppServices {
         bee.fetchSecureKeyToken = { [beeCloud] deviceIDHex in
             try await beeCloud.braceletKeyToken(deviceIDHex: deviceIDHex)
         }
+        // When the bracelet's key can't be fetched, Myna removes the bracelet and
+        // falls back to syncing conversations from Bee's cloud instead.
+        bee.onSyncFallback = { [beeCloud] in beeCloud.importIfEnabled() }
         pilot.whisper = whisper
         brain.voice.neural = neuralVoice
 

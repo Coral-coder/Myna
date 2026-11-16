@@ -121,6 +121,29 @@ final class BeeManager: ObservableObject {
         central.startScan()
     }
 
+    /// Called when provisioning fails unrecoverably: Myna removes the bracelet and
+    /// falls back to syncing from Bee's cloud. Wired by AppServices.
+    var onSyncFallback: (() -> Void)?
+
+    /// User-triggered: remove the bracelet and fall back to Bee cloud sync, even
+    /// when nothing has failed (a manual "stop fighting the bracelet" button).
+    func removeAndSync() {
+        removeBraceletAndSync(reason: "removed by you")
+    }
+
+    /// On an unrecoverable key failure: remove the bracelet (forget its stored key
+    /// and drop the BLE link so Myna stops looping a provisioning it can't finish),
+    /// then fall back to syncing conversations from Bee's cloud.
+    private func removeBraceletAndSync(reason: String) {
+        if !deviceID.isEmpty { BeeKeyVault.forget(deviceID: deviceID) }
+        reset()
+        endSpeechFeed()
+        central.forget()
+        pairing = .error("Couldn't get the bracelet's key (\(reason)). Removed the bracelet — syncing from Bee instead.")
+        log("Removed the bracelet after the key fetch failed. Syncing from Bee cloud…")
+        onSyncFallback?()
+    }
+
     private func start() {
         pairing = .scanning
         central.activate()
@@ -484,7 +507,7 @@ final class BeeManager: ObservableObject {
             } catch {
                 guard let self, self.handshakeToken == token else { return }
                 self.log("Bee key fetch failed: \(error.localizedDescription)")
-                self.pairing = .error("Couldn't get the bracelet's key from Bee: \(error.localizedDescription)")
+                self.removeBraceletAndSync(reason: error.localizedDescription)
             }
         }
     }

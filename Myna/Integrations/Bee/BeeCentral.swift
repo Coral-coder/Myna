@@ -90,6 +90,20 @@ final class BeeCentral: NSObject, ObservableObject {
         if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
     }
 
+    /// Fully remove the bracelet: stop reconnecting, drop the saved peripheral so
+    /// Myna won't auto-reconnect to it, and tear down the link. Used when
+    /// provisioning fails and we stop fighting the device.
+    func forget() {
+        shouldReconnect = false
+        manager?.stopScan()
+        UserDefaults.standard.removeObject(forKey: Self.knownPeripheralKey)
+        if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
+        self.peripheral = nil
+        controlCharacteristic = nil
+        audioCharacteristic = nil
+        if phase != .poweredOff, phase != .unauthorized { phase = .idle }
+    }
+
     /// Writes a framed control command. Bee's app uses a normal (acknowledged)
     /// write; a write-without-response to a characteristic that doesn't
     /// support it is silently dropped by iOS.

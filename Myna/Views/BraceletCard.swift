@@ -64,6 +64,13 @@ struct BraceletCard: View {
                 }
                 if bee.isReadyForControl { controlsSection }
                 if bee.isReadyForControl { labSection }
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Remove bracelet & sync from Bee") { bee.removeAndSync() }
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .tint(MynaTheme.gold)
+                    Text("Stop trying to pair the bracelet directly and pull your conversations from Bee's cloud instead.")
+                        .braceletCaption()
+                }
                 if !bee.diagnostics.isEmpty { deviceLog }
             }
         }
