@@ -28,7 +28,10 @@ enum BeeAccountAuth {
     static let authHost = "auth.beeai-services.com"
     /// Candidate API hosts (the app discovers this at runtime; these cover the
     /// known production + enclave domains).
-    static let apiHostCandidates = ["api.beeai-services.com", "ce-beeai-services.com"]
+    // Confirmed live: auth.beeai-services.com serves /ble/secure-key and
+    // /encryption/* (both return 401, i.e. exist + need auth). api.beeai-services.com
+    // no longer resolves.
+    static let apiHostCandidates = ["auth.beeai-services.com"]
     /// Candidate recovery-blob endpoints (the exact path is built at runtime in
     /// the app; these are the observed `/encryption/*` surface).
     static let recoveryPaths = ["/encryption/recovery", "/encryption/recovery-blob", "/users/me/recovery", "/encryption/recovery-key"]
