@@ -186,8 +186,21 @@ private final class NotificationPresenter: NSObject, UNUserNotificationCenterDel
               let undo = ActionUndo(payload: response.notification.request.content.userInfo) else { return }
         let identifier = response.notification.request.identifier
         await MainActor.run {
-            AppServices.shared.brain.undo(undo)
-            AppServices.shared.brain.notifier.clearDelivered(identifier)
+            // Only act once services are fully initialised. Never force a
+            // first-time AppServices init from the notification-delivery path —
+            // that races app launch and is one way this handler crashed.
+            guard let services = AppServices.sharedIfReady else { return }
+            // EventKit / CoreData calls in `undo` can raise an Objective-C
+            // NSException, which Swift cannot catch and which aborted the whole
+            // app when a notification was acted on (confirmed in a crash report).
+            // Run the work inside an ObjC @try/@catch so a raised exception is
+            // logged, never fatal.
+            if let reason = MynaExceptionCatcher.catching({
+                services.brain.undo(undo)
+                services.brain.notifier.clearDelivered(identifier)
+            }) {
+                CrashReporter.log("Undo from notification raised, ignored: \(reason)")
+            }
         }
     }
 }
