@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 import UserNotifications
 
 /// Everything Myna runs on, created once and shared by the app, its views and
@@ -114,14 +115,23 @@ final class AppServices {
     /// First launch after onboarding, and every return to the foreground.
     func becameActive() {
         modelManager.refreshInstalledStates()
-        beeCloud.importIfEnabled()
         beeRefresh.schedule()
         waker.apply()
         if alwaysOn, micEnabled, UserDefaults.standard.bool(forKey: "myna.onboarded"), SpeechListener.hasPermissions,
            pilot.phase == .idle, !listener.isListening {
             pilot.startListening()
         }
-        pilot.drainQueue()
+        // Heavy work — composing queued conversations (loads the on-device model)
+        // and pulling from Bee — must NOT run on the launch-critical window. When
+        // iOS cold-launches Myna from a notification tap, doing it inline can trip
+        // the launch watchdog and the app is killed ("crashes on opening a
+        // notification"). Defer it until the app has settled and is still active.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, UIApplication.shared.applicationState == .active else { return }
+            self.beeCloud.importIfEnabled()
+            self.pilot.drainQueue()
+        }
     }
 
     /// Entered the background: keep recording (background audio mode), drop
