@@ -7,7 +7,6 @@ import UIKit
 /// with a key Myna doesn't hold.
 struct BraceletCard: View {
     @EnvironmentObject private var bee: BeeManager
-    @EnvironmentObject private var beeCloud: BeeCloudImporter
     @State private var brightness: Double = 128
     @State private var editingBrightness = false
     @State private var pastedKey = ""
@@ -131,12 +130,9 @@ struct BraceletCard: View {
     private var accountFetchSection: some View {
         DisclosureGroup(isExpanded: $showAccountFetch) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Myna fetches the key like the Bee app does. If your Bee account is connected, the session token below is already filled in — just paste your recovery passphrase and tap Fetch. Everything stays on-device.")
+                Text("Myna makes the exact call the Bee app does. Paste your real session token — the x-bee-token header from a Bee app request (the one whose POST /users/sessions/token returns 200) — plus your recovery passphrase, then tap Fetch. Everything stays on-device.")
                     .braceletCaption()
-                fetchField("x-bee-token (session token)", text: $acctSessionToken)
-                if !(beeCloud.storedToken ?? "").isEmpty, acctSessionToken == (beeCloud.storedToken ?? "") {
-                    Text("Using your connected Bee account's token.").braceletCaption()
-                }
+                fetchField("x-bee-token (paste from a Bee app request)", text: $acctSessionToken)
                 Text("Option A — recovery passphrase:").braceletCaption()
                 fetchField("recovery passphrase (your BIP39 words)", text: $acctPassphrase)
                 Text("Option B — paste proof + secret from the same request:").braceletCaption()
@@ -158,14 +154,6 @@ struct BraceletCard: View {
             Text("Advanced: fetch key with Bee login").braceletLabel()
         }
         .tint(.white.opacity(0.6))
-        .onAppear {
-            // Reuse the connected Bee account token as the session token so the
-            // only thing you paste is the recovery passphrase.
-            if acctSessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let t = beeCloud.storedToken, !t.isEmpty {
-                acctSessionToken = t
-            }
-        }
     }
 
     private var accountFetchDisabled: Bool {
