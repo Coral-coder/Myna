@@ -157,7 +157,8 @@ struct BeeCloudAPI {
         var lastError: Error = Failure.malformed
         for host in Self.keyHosts {
             do {
-                return try await Self.postSecureKey(host: host, deviceIDHex: deviceIDHex, bearer: token, session: session)
+                // Bee's compute-edge hosts use a private CA; beeSession trusts it.
+                return try await Self.postSecureKey(host: host, deviceIDHex: deviceIDHex, bearer: token, session: BeeAccountAuth.beeSession)
             } catch {
                 lastError = error
             }
@@ -208,7 +209,7 @@ struct BeeCloudAPI {
         secret: String,
         sessionToken: String,
         amazonToken: String? = nil,
-        session: URLSession = .shared
+        session: URLSession = BeeAccountAuth.beeSession
     ) async throws -> Data {
         let cleanHost = host.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: "https://", with: "")

@@ -6,6 +6,56 @@ import CommonCrypto
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import Security
+
+/// Trusts Bee's private CA for its compute-edge hosts (`*.ce-beeai-services.com`
+/// and `*.ce.bee.amazon.dev`). Those hosts — including the `api` endpoint that
+/// serves `/ble/secure-key` — present short-lived certs issued by
+/// `BeeCertificateAuthority`, a root iOS doesn't ship, so a default URLSession
+/// aborts the TLS handshake ("a TLS error caused the secure connection to
+/// fail"). The Bee app trusts this CA via its own trust manager; Myna does the
+/// same, scoped to Bee's hosts. Every other host falls through to system trust,
+/// so auth.beeai-services.com (a public cert) is unaffected.
+final class BeeTLSDelegate: NSObject, URLSessionDelegate {
+    static let shared = BeeTLSDelegate()
+
+    /// BeeCertificateAuthority root — self-signed, valid 2025-08-21 .. 2035-08-21,
+    /// SHA-256 9A:8E:3E:25:04:90:41:8F:2F:5C:B9:A0:F7:E2:57:3E:97:53:96:8E:47:14:B8:33:E3:5B:1A:F7:70:22:04:08.
+    /// DER, base64. The short-lived leaf/intermediate rotate under it; the root is stable.
+    private static let rootCABase64 = "MIIDfzCCAmegAwIBAgIRANp9rGecKAk6t6XGd3GWVHkwDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MDgyMTE5MjUyNloXDTM1MDgyMTIwMjUyNlowWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7a4dWfEBlstJGQWx2MG9fInEWw4v5e2Sasiw8D09fW77VbSskLEectYlt8XgM8a2O9JAPkCQ3vNJmIO+6etyPj/DEtjwllSPR5/1qcZXGFMbjRGzmDz2Y6MruPlrGYZZQgSNrnuSSndADCrqSEGLdBzkjXqkuXLXDqdLLTzseNQVfCiN2LDCwFRDUgjw4KuiJzSBZ1CQEdug4qauitcif6NOFEiTViAOkXjSmjAdTjN0GDKQdTmDtQYgNfLuhhfmEB9mdiEm3++AUURQ2Cn+MfP2YAy/5gr3t+ydPRx361mbA1UiWnx7lmLUxRmZhzeaDmO8vUxxM1jHSXLNxMPMUwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRAKKN5ASGNfQOKcsdpaFwNki78xzAOBgNVHQ8BAf8EBAMCAYYwDQYJKoZIhvcNAQELBQADggEBADXy/YcenRwuAbCH57sFcwe/akWsdh7bs9ZNb7dqg6qzDpitO8yhpEK1DSW2Nmbtxd59rhV5jmnAfFHLEoeOlsSeBLADH3/3uRLV1kIRM3kUPKOv1FJq7UkK2VzgabpehyeJ4lfozfT983b3AoDvI6quf3Dl2NrCmmUUewrZ6g+RSR6n6Q/PalGUPtoV+W4OT5j9hS1d0PSNO6QbRRFzW+NZ+aQdLwHQPzwjofShvM1JjV7Hz2KOPJwmqHQbCiaayGq5lZIVI3UrqnTIqB/hySEBIJNeyHN3ggORH2JJwzMF+xiaNYUCir9ZzsgYiEsuaxEyiS96ydDImWJboALiWmE="
+
+    private let anchor: SecCertificate? = {
+        guard let der = Data(base64Encoded: BeeTLSDelegate.rootCABase64) else { return nil }
+        return SecCertificateCreateWithData(nil, der as CFData)
+    }()
+
+    private func isBeeHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h.hasSuffix(".ce-beeai-services.com") || h.hasSuffix(".ce.bee.amazon.dev")
+    }
+
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let anchor,
+              isBeeHost(challenge.protectionSpace.host) else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // Add Bee's root as an anchor (keeping system roots too) and let the OS
+        // do full chain + hostname validation. The leaf's SANs include the
+        // ce-beeai-services.com hosts, so this is standard, not a blanket bypass.
+        SecTrustSetAnchorCertificates(trust, [anchor] as CFArray)
+        SecTrustSetAnchorCertificatesOnly(trust, false)
+        if SecTrustEvaluateWithError(trust, nil) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
 
 /// Reproduces the Bee app's own account auth so Myna can fetch a bracelet's
 /// sealed key the way the app does — no per-use capture.
@@ -25,6 +75,10 @@ import FoundationNetworking
 /// byte layouts) are recovered from the Bee app's `BackgroundSecureAuth` and
 /// `MnemonicCryptoEngine`.
 enum BeeAccountAuth {
+    /// URLSession that trusts Bee's private CA for its compute-edge hosts, so the
+    /// TLS handshake to the api endpoint (api-N.ce-beeai-services.com) succeeds.
+    static let beeSession: URLSession = URLSession(configuration: .default, delegate: BeeTLSDelegate.shared, delegateQueue: nil)
+
     static let authHost = "auth.beeai-services.com"
     /// Candidate API hosts (the app discovers this at runtime; these cover the
     /// known production + enclave domains).
@@ -72,7 +126,7 @@ enum BeeAccountAuth {
     /// Full chain: session token + passphrase + device id → the 108-byte sealed
     /// key token (its bytes 12..<28 are the AES key). Self-verifies before the
     /// final fetch so a wrong constant fails loudly instead of yielding garbage.
-    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = BeeAccountAuth.beeSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
 
         // The recovery blob and the key endpoint can live on DIFFERENT hosts
@@ -122,7 +176,7 @@ enum BeeAccountAuth {
     /// Same fetch, but with proof/secret you captured directly (no recovery
     /// passphrase). Still mints a fresh ephemeral from the durable session
     /// token each time, so the stored credentials never expire.
-    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = BeeAccountAuth.beeSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
         let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
         log?("device_id=\(deviceIDHex)")
