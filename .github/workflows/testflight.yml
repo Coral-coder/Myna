@@ -1,22 +1,20 @@
 name: TestFlight
 
-# Archives Myna for the App Store and uploads it to TestFlight.
+# Archives Myna and uploads it to TestFlight — as TWO separate jobs:
 #
-# Run it from the Actions tab ("Run workflow") on main. Signing is automatic:
-# xcodebuild uses an App Store Connect API key to fetch or create the
-# provisioning profile. Repository secrets:
+#   build   archives, normalizes frameworks, and exports a signed .ipa, then
+#           saves it as a workflow artifact. This is the slow (~14 min) part and
+#           it never talks to App Store Connect's upload endpoint.
+#   upload  downloads that .ipa and ships it to TestFlight with altool.
 #
-#   ASC_KEY_ID          Key ID of an App Store Connect API key       (required)
-#   ASC_ISSUER_ID       Issuer ID shown above the key list           (required)
-#   ASC_KEY_P8          Contents of the AuthKey_XXXXXXXXXX.p8 file   (required)
-#   APPLE_TEAM_ID       Team ID                       (optional, defaults to 9BQDEVHKJZ)
-#   DEV_CERT_P12        base64 of an Apple Distribution .p12         (optional)
-#   DEV_CERT_PASSWORD   password for that .p12                       (optional)
+# So when App Store Connect is flaky (the recurring "Error Downloading App
+# Information"), you re-run ONLY the failed `upload` job — seconds — without
+# re-archiving. The `build` artifact is reused.
 #
-# With the .p12, signing uses that certificate from a temporary keychain.
-# Without it, Xcode uses a cloud-managed distribution certificate, which
-# needs an API key with the Admin role. An app record for com.lightwave.myna
-# must already exist in App Store Connect.
+# Run it from the Actions tab ("Run workflow"). Repository secrets:
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8        (required)
+#   APPLE_TEAM_ID                                (optional, defaults below)
+#   DEV_CERT_P12, DEV_CERT_PASSWORD              (optional local signing cert)
 
 on:
   workflow_dispatch:
@@ -34,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  upload:
+  build:
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -126,10 +124,7 @@ jobs:
         #      unsupported on modern iOS and clashes with the app's min OS.
         # The app is arm64-only (iOS 26), so: thin every embedded framework
         # binary to arm64, then set its declared MinimumOSVersion to the app's
-        # own minimum. The arm64 slices all build for far below 26, so declaring
-        # the app min is always supported, and dropping the dead 32-bit slices
-        # removes the architecture warning. -exportArchive re-signs the app and
-        # its embedded frameworks afterwards, so the edits are re-sealed.
+        # own minimum. -exportArchive re-signs afterwards, re-sealing the edits.
         run: |
           APP="$RUNNER_TEMP/Myna.xcarchive/Products/Applications/Myna.app"
           FWDIR="$APP/Frameworks"
@@ -146,7 +141,6 @@ jobs:
             plist="$fw/Info.plist"
             exe="$fw/$name"
             [ -f "$plist" ] || continue
-            # Thin the binary to arm64 only, dropping any 32-bit / simulator slices.
             if [ -f "$exe" ]; then
               archs="$(lipo -archs "$exe" 2>/dev/null || echo "")"
               echo "$name.framework archs: $archs"
@@ -159,7 +153,6 @@ jobs:
                 echo "  -> after thinning: $(lipo -archs "$exe" 2>/dev/null)"
               fi
             fi
-            # Declare the app's minimum (arm64 binaries all support it).
             cur="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null || echo '(none)')"
             /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $APP_MIN" "$plist" 2>/dev/null \
               || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $APP_MIN" "$plist"
@@ -167,8 +160,6 @@ jobs:
             echo "$name.framework MinimumOSVersion: $cur -> $new"
             [ "$new" = "$APP_MIN" ] || { echo "::error::Failed to set MinimumOSVersion for $name.framework"; fail=1; }
           done
-          # Hard stop: never ship onnxruntime.framework still declaring the old
-          # 15.1 that App Store validation rejects, or any leftover 32-bit slice.
           onx="$FWDIR/onnxruntime.framework"
           if [ -d "$onx" ]; then
             v="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$onx/Info.plist" 2>/dev/null)"
@@ -185,7 +176,10 @@ jobs:
           done
           exit $fail
 
-      - name: Upload to TestFlight
+      - name: Export a signed .ipa (no upload)
+        # destination=export produces an App Store-signed .ipa on disk and does
+        # NOT contact App Store Connect's upload endpoint, so it can't hit the
+        # "Error Downloading App Information" outage. The upload job ships it.
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -193,7 +187,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
+            <key>destination</key><string>export</string>
             <key>teamID</key><string>$TEAM_ID</string>
             <key>signingStyle</key><string>automatic</string>
             <key>uploadSymbols</key><true/>
@@ -202,41 +196,34 @@ jobs:
           </plist>
           PLIST
           set -o pipefail
-          # The exportArchive upload fetches app info from App Store Connect, which
-          # intermittently fails ("Error Downloading App Information"). The archive
-          # is already built, so retry just the upload a few times before giving up.
-          max=4
-          for attempt in $(seq 1 "$max"); do
-            echo "=== Export/upload attempt $attempt/$max ==="
-            rm -rf "$RUNNER_TEMP/export"
-            if xcodebuild -exportArchive \
-              -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
-              -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-              -exportPath "$RUNNER_TEMP/export" \
-              -allowProvisioningUpdates \
-              -authenticationKeyPath "$KEY_PATH" \
-              -authenticationKeyID "$ASC_KEY_ID" \
-              -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-              2>&1 | tee export.log; then
-              echo "Upload succeeded on attempt $attempt."
-              echo "### Uploaded Myna build $BUILD_NUMBER to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
-              echo "It appears in TestFlight once Apple finishes processing (usually 5–30 minutes)." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "Attempt $attempt failed."
-            if [ "$attempt" -lt "$max" ]; then
-              echo "Retrying in $((attempt * 30))s (likely a transient App Store Connect error)…"
-              sleep $((attempt * 30))
-            fi
-          done
-          echo "::error::Export/upload to App Store Connect failed after $max attempts — likely an App Store Connect outage. The archive built fine; re-run the workflow."
-          exit 1
+          rm -rf "$RUNNER_TEMP/export"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee export.log
+          ipa="$(ls "$RUNNER_TEMP/export"/*.ipa 2>/dev/null | head -1)"
+          [ -n "$ipa" ] || { echo "::error::Export produced no .ipa."; exit 1; }
+          echo "Exported $ipa"
+          cp "$ipa" "$RUNNER_TEMP/Myna.ipa"
 
-      - name: Keep logs
+      - name: Upload the .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: myna-ipa
+          path: ${{ runner.temp }}/Myna.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: testflight-logs
+          name: testflight-build-logs
           path: |
             archive.log
             export.log
@@ -248,3 +235,69 @@ jobs:
         run: |
           rm -rf "$RUNNER_TEMP/keys"
           if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+
+  upload:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY: ${{ secrets.ASC_KEY_P8 }}
+      BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+    steps:
+      - name: Select Xcode 26 or later
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$xcode" ] && sudo xcode-select -s "$xcode/Contents/Developer" || true
+          xcrun altool --version || true
+
+      - name: Download the .ipa artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: myna-ipa
+          path: ${{ runner.temp }}/ipa
+
+      - name: Install the API key for altool
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s\n' "$ASC_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Upload to TestFlight (altool, retried)
+        run: |
+          set -o pipefail
+          IPA="$(ls "$RUNNER_TEMP/ipa"/*.ipa | head -1)"
+          [ -n "$IPA" ] || { echo "::error::No .ipa in the build artifact."; exit 1; }
+          echo "Uploading $IPA"
+          max=5
+          for attempt in $(seq 1 "$max"); do
+            echo "=== Upload attempt $attempt/$max ==="
+            if xcrun altool --upload-app --type ios --file "$IPA" \
+              --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee upload.log; then
+              echo "Upload succeeded on attempt $attempt."
+              echo "### Uploaded Myna build $BUILD_NUMBER to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
+              echo "It appears in TestFlight once Apple finishes processing (usually 5–30 minutes)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt failed."
+            if [ "$attempt" -lt "$max" ]; then
+              echo "Retrying in $((attempt * 30))s (likely a transient App Store Connect error)…"
+              sleep $((attempt * 30))
+            fi
+          done
+          echo "::error::Upload to App Store Connect failed after $max attempts — likely an ASC outage. The .ipa is built and saved as the 'myna-ipa' artifact; just re-run THIS job (no re-archive needed) when ASC recovers."
+          exit 1
+
+      - name: Keep upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-upload-log
+          path: upload.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect/private_keys"
