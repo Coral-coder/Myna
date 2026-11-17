@@ -225,6 +225,7 @@ final class BeeManager: ObservableObject {
         deviceState = nil
         codec = nil
         firstPacketLogged = false
+        decryptProbed = false
     }
 
     // MARK: - Handshake
@@ -414,10 +415,15 @@ final class BeeManager: ObservableObject {
             return
         }
         key = ctr
+        installedToken = token
         installDecryptor()
         log("Installing \(source) key on the bracelet (0xC018, \(token.count) bytes)…")
         central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](token)))
     }
+
+    /// The full key token last installed, so the audio probe can test key offsets.
+    private var installedToken: Data?
+    private var decryptProbed = false
 
     /// Save a token captured from the bracelet's BLE pairing (hex, optionally
     /// with the leading 18 C0 command bytes) and retry the handshake with it.
@@ -752,6 +758,7 @@ final class BeeManager: ObservableObject {
             let adts = plaintext.count >= 2 && plaintext[plaintext.startIndex] == 0xFF && (plaintext[plaintext.index(after: plaintext.startIndex)] & 0xF0) == 0xF0
             log("First decrypted packet: \(plaintext.count)B seq \(packet.sequence) [\(head)] \(adts ? "✓ ADTS" : "✗ not ADTS")")
         }
+        if !decryptProbed { decryptProbed = true; probeDecryption(ciphertext: packet.ciphertext, nonce: nonce, seq: packet.sequence) }
         let buffers = decoder.decodeStream(plaintext)
         guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }
         if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz)."); audioDropReasonLogged = false }
@@ -760,6 +767,44 @@ final class BeeManager: ObservableObject {
         lastAudioAt = .now
         if !feedingSpeech { beginSpeechFeed() }
         for pcm in buffers { listener?.feedExternalAudio(pcm) }
+    }
+
+    /// One-shot diagnostic: try candidate AES-CTR key offsets and counter layouts
+    /// against the real first packet and report which (if any) yields an ADTS
+    /// sync. Pins down a key/nonce/seq mismatch deterministically, no guessing.
+    private func probeDecryption(ciphertext: Data, nonce: Data, seq: UInt32) {
+        guard let token = installedToken else { log("probe: no installed token."); return }
+        func be(_ v: UInt32) -> Data { Data([UInt8((v >> 24) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)]) }
+        func le(_ v: UInt32) -> Data { Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)]) }
+        func adtsAt(_ d: Data) -> Int? {
+            let b = [UInt8](d); var i = 0
+            while i + 1 < b.count { if b[i] == 0xFF, (b[i + 1] & 0xF0) == 0xF0 { return i }; i += 1 }
+            return nil
+        }
+        var keys: [(String, Data)] = []
+        if token.count >= 28 { keys.append(("tok[12:28]", token.subdata(in: 12..<28))) }
+        if token.count >= 16 { keys.append(("tok[0:16]", token.subdata(in: 0..<16))) }
+        if token.count >= 44 { keys.append(("tok[28:44]", token.subdata(in: 28..<44))) }
+        if token.count >= 16 { keys.append(("tok[last16]", Data(token.suffix(16)))) }
+        var ctrs: [(String, Data)] = [
+            ("nonce||seqBE", nonce + be(seq)),
+            ("nonce||seqLE", nonce + le(seq)),
+            ("nonce||0", nonce + Data([0, 0, 0, 0])),
+            ("seqBE||nonce", be(seq) + nonce),
+        ]
+        ctrs.removeAll { $0.1.count != 16 }
+        let probe = Data(ciphertext.prefix(64))
+        var hits = 0
+        for (kn, k) in keys {
+            guard let dec = try? BeeAudioDecryptor(key: k) else { continue }
+            for (cn, c) in ctrs {
+                guard let pt = try? dec.decrypt(probe, counter: c), let idx = adtsAt(pt) else { continue }
+                hits += 1
+                let h = pt.prefix(6).map { String(format: "%02x", $0) }.joined(separator: " ")
+                log("probe HIT: key=\(kn) ctr=\(cn) sync@\(idx) [\(h)]")
+            }
+        }
+        log("probe done (token \(token.count)B, nonce \(nonce.count)B, seq \(seq)): \(hits) hit(s).")
     }
 
     private func beginSpeechFeed() {
