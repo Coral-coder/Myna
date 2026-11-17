@@ -178,8 +178,15 @@ enum BeeAccountAuth {
 
     /// recovery passphrase + encrypted recovery blob → (proof, secret).
     static func deriveProofSecret(passphrase: String, recoveryBlob: Data) throws -> (proof: String, secret: String) {
-        let aesKey = try mnemonicAESKey(passphrase: passphrase)
-        let plaintext = try gcmOpen(recoveryBlob, key: aesKey)
+        // The Bee app picks modern vs legacy derivation by the mnemonic shape
+        // (hyphenated words = legacy). We don't need to guess: try modern first,
+        // then legacy, and use whichever actually opens the GCM box.
+        let normalized = normalizeMnemonic(passphrase)
+        var plaintext: Data?
+        for aesKey in [try modernAESKey(normalized), try legacyAESKey(normalized)] {
+            if let pt = try? gcmOpen(recoveryBlob, key: aesKey) { plaintext = pt; break }
+        }
+        guard let plaintext else { throw AuthError.decryptFailed }
         // The decrypted recovery blob is JSON that carries the account's proof and
         // secret directly (confirmed from the Bee app's MnemonicCryptoEngine):
         //   {"x-bee-proof":"…","x-bee-secret":"…","x-bee-ephemeral-token":"…",…}
@@ -192,20 +199,33 @@ enum BeeAccountAuth {
         return (proof, secret)
     }
 
-    /// Modern Bee derivation: PBKDF2-HMAC-SHA512 → HKDF-SHA256 → 32-byte AES key.
-    private static func mnemonicAESKey(passphrase: String) throws -> SymmetricKey {
-        let normalized = passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Bee's mnemonic normalization: trim, lowercase, collapse runs of
+    /// whitespace to single spaces.
+    static func normalizeMnemonic(_ passphrase: String) -> String {
+        passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" })
             .joined(separator: " ")
-        let pbkdf = try pbkdf2SHA512(password: normalized, salt: "bee-mnemonic-seed-v2", iterations: 210_000, keyLength: 64)
-        let hkdf = HKDF<SHA256>.deriveKey(
+    }
+
+    /// Modern Bee derivation: PBKDF2-HMAC-SHA512 (salt "bee-mnemonic-seed-v2",
+    /// 210k) → HKDF-SHA256 (salt "bee-hkdf-salt-v2", info "bee-aes-key-v2") →
+    /// 32-byte AES key. `normalized` is already normalizeMnemonic'd.
+    private static func modernAESKey(_ normalized: String) throws -> SymmetricKey {
+        let pbkdf = try pbkdf2(password: normalized, salt: "bee-mnemonic-seed-v2", iterations: 210_000, keyLength: 64, prf: kCCPRFHmacAlgSHA512)
+        return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: pbkdf),
             salt: Data("bee-hkdf-salt-v2".utf8),
             info: Data("bee-aes-key-v2".utf8),
             outputByteCount: 32
         )
-        return hkdf
+    }
+
+    /// Legacy Bee derivation: PBKDF2-HMAC-SHA256 (salt "bee-mnemonic-seed-v1",
+    /// 120k) → 32-byte AES key directly (no HKDF).
+    private static func legacyAESKey(_ normalized: String) throws -> SymmetricKey {
+        let pbkdf = try pbkdf2(password: normalized, salt: "bee-mnemonic-seed-v1", iterations: 120_000, keyLength: 32, prf: kCCPRFHmacAlgSHA256)
+        return SymmetricKey(data: pbkdf)
     }
 
     /// AES-256-GCM: blob = [12-byte IV][ciphertext][16-byte tag].
@@ -225,26 +245,83 @@ enum BeeAccountAuth {
 
     // MARK: - Helpers
 
+    /// Peel Bee's recovery wrapper down to the raw AES-GCM input `[IV|ct|tag]`.
+    ///
+    /// The server (or a pasted blob) wraps the ciphertext in one or more layers:
+    /// it may be base64 of a JSON object `{"cipherText":"<base64>","version":N}`,
+    /// where `cipherText` itself base64-decodes to `[12-byte IV | ciphertext |
+    /// 16-byte tag]`. Earlier builds grabbed the wrong layer (the JSON bytes, or
+    /// the outer base64 string) and fed that straight to AES-GCM, which failed
+    /// with a bad-tag error that looked exactly like a wrong passphrase. This
+    /// peels every layer — base64-of-JSON, the `cipherText` field, nested
+    /// base64 — until it reaches the GCM envelope.
     private static func extractBlob(from data: Data) -> Data? {
+        unwrapToGCM(data, depth: 0)
+    }
+
+    /// Known field names that carry the ciphertext envelope, best first.
+    private static let cipherFields = ["cipherText", "ciphertext", "cipher_text", "data", "blob", "recoveryBlob", "recovery_blob", "encrypted", "payload"]
+
+    private static func unwrapToGCM(_ data: Data, depth: Int) -> Data? {
+        guard depth < 6 else { return nil }
+
+        // 1) A JSON object/array: look for the ciphertext field, else the largest
+        //    base64-decodable string, and keep peeling.
         if let obj = try? JSONSerialization.jsonObject(with: data) {
-            var found: Data?
-            func consider(_ s: String) {
-                if let b = Data(base64Encoded: s.padding(toLength: ((s.count + 3) / 4) * 4, withPad: "=", startingAt: 0)), b.count > 28 {
-                    if found == nil || b.count > found!.count { found = b }
+            if let dict = obj as? [String: Any] {
+                for key in cipherFields {
+                    if let s = dict[key] as? String, let b = decodeBase64(s) {
+                        return unwrapToGCM(b, depth: depth + 1) ?? b
+                    }
                 }
             }
-            func walk(_ v: Any) {
-                if let s = v as? String { consider(s) }
-                else if let d = v as? [String: Any] { d.values.forEach(walk) }
-                else if let a = v as? [Any] { a.forEach(walk) }
+            if let best = largestBase64(in: obj) {
+                return unwrapToGCM(best, depth: depth + 1) ?? best
             }
-            walk(obj)
-            if let found { return found }
+            return nil
         }
+
+        // 2) Not JSON: the bytes may be an ASCII base64 string of a deeper layer.
+        if let s = String(data: data, encoding: .utf8),
+           let b = decodeBase64(s.trimmingCharacters(in: .whitespacesAndNewlines)), b != data {
+            if let peeled = unwrapToGCM(b, depth: depth + 1) { return peeled }
+            if b.count > 28 { return b }
+        }
+
+        // 3) Already raw `[IV|ct|tag]`.
         return data.count > 28 ? data : nil
     }
 
-    private static func pbkdf2SHA512(password: String, salt: String, iterations: Int, keyLength: Int) throws -> Data {
+    /// Lenient base64 decode: tolerates URL-safe alphabet and missing padding.
+    /// Returns nil for anything that isn't plausibly base64 (so binary GCM bytes
+    /// aren't mistaken for an encoded string).
+    private static func decodeBase64(_ s: String) -> Data? {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 16 else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_=")
+        guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        var t = trimmed.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        t.removeAll { $0 == "=" }
+        let pad = (4 - t.count % 4) % 4
+        t += String(repeating: "=", count: pad)
+        return Data(base64Encoded: t)
+    }
+
+    private static func largestBase64(in obj: Any) -> Data? {
+        var best: Data?
+        func consider(_ s: String) {
+            if let b = decodeBase64(s), b.count > 28, best == nil || b.count > best!.count { best = b }
+        }
+        func walk(_ v: Any) {
+            if let s = v as? String { consider(s) }
+            else if let d = v as? [String: Any] { d.values.forEach(walk) }
+            else if let a = v as? [Any] { a.forEach(walk) }
+        }
+        walk(obj)
+        return best
+    }
+
+    private static func pbkdf2(password: String, salt: String, iterations: Int, keyLength: Int, prf: Int) throws -> Data {
         #if canImport(CommonCrypto)
         var derived = Data(count: keyLength)
         let saltData = Data(salt.utf8)
@@ -256,7 +333,7 @@ enum BeeAccountAuth {
                         CCPBKDFAlgorithm(kCCPBKDF2),
                         passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self), passwordData.count,
                         saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self), saltData.count,
-                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA512),
+                        CCPseudoRandomAlgorithm(prf),
                         UInt32(iterations),
                         derivedBytes.baseAddress?.assumingMemoryBound(to: UInt8.self), keyLength
                     )
