@@ -35,9 +35,11 @@ enum BeeAccountAuth {
     // recovery) is served by api-3.ce-beeai-services.com; auth.beeai-services.com
     // handles /users/sessions/token (session exchange). Try the API host first.
     static let apiHostCandidates = ["api-3.ce-beeai-services.com", "auth.beeai-services.com"]
-    /// Candidate recovery-blob endpoints (the exact path is built at runtime in
-    /// the app; these are the observed `/encryption/*` surface).
-    static let recoveryPaths = ["/encryption/recovery", "/encryption/recovery-blob", "/users/me/recovery", "/encryption/recovery-key"]
+    /// The recovery-blob endpoint. The Bee RN app fetches the mnemonic-encrypted
+    /// account keys with GET /encryption/recovery (Accept: application/json),
+    /// returning {"cipherText": "...", "version": N}. This is the only real path
+    /// (confirmed in the app bundle), tried across the api/auth bases.
+    static let recoveryPaths = ["/encryption/recovery"]
 
     enum AuthError: LocalizedError {
         case http(String, Int, String)
