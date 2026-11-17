@@ -202,17 +202,35 @@ jobs:
           </plist>
           PLIST
           set -o pipefail
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            2>&1 | tee export.log
-          echo "### Uploaded Myna build $BUILD_NUMBER to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
-          echo "It appears in TestFlight once Apple finishes processing (usually 5–30 minutes)." >> "$GITHUB_STEP_SUMMARY"
+          # The exportArchive upload fetches app info from App Store Connect, which
+          # intermittently fails ("Error Downloading App Information"). The archive
+          # is already built, so retry just the upload a few times before giving up.
+          max=4
+          for attempt in $(seq 1 "$max"); do
+            echo "=== Export/upload attempt $attempt/$max ==="
+            rm -rf "$RUNNER_TEMP/export"
+            if xcodebuild -exportArchive \
+              -archivePath "$RUNNER_TEMP/Myna.xcarchive" \
+              -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+              -exportPath "$RUNNER_TEMP/export" \
+              -allowProvisioningUpdates \
+              -authenticationKeyPath "$KEY_PATH" \
+              -authenticationKeyID "$ASC_KEY_ID" \
+              -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+              2>&1 | tee export.log; then
+              echo "Upload succeeded on attempt $attempt."
+              echo "### Uploaded Myna build $BUILD_NUMBER to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
+              echo "It appears in TestFlight once Apple finishes processing (usually 5–30 minutes)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt failed."
+            if [ "$attempt" -lt "$max" ]; then
+              echo "Retrying in $((attempt * 30))s (likely a transient App Store Connect error)…"
+              sleep $((attempt * 30))
+            fi
+          done
+          echo "::error::Export/upload to App Store Connect failed after $max attempts — likely an App Store Connect outage. The archive built fine; re-run the workflow."
+          exit 1
 
       - name: Keep logs
         if: always()
