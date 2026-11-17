@@ -311,16 +311,16 @@ final class BeeManager: ObservableObject {
                 // Already sealed with a key we hold — reuse it.
                 key = heldKey
                 installDecryptor()
-                log("Reusing stored key. Starting a fresh session…")
-                requestFreshSession()
+                log("Reusing stored key. Fetching the session nonce…")
+                requestSessionNonce()
             } else if let capturedToken, let ctr = BeeCloudAPI.ctrKey(fromToken: capturedToken) {
                 // Sealed with the key this token carries (Bee installed it, we
                 // captured it): decrypt with the token's key, no re-install.
                 key = ctr
                 BeeKeyVault.store(ctr, deviceID: deviceID)
                 installDecryptor()
-                log("Using captured key. Starting a fresh session…")
-                requestFreshSession()
+                log("Using captured key. Fetching the session nonce…")
+                requestSessionNonce()
             } else {
                 log("Sealed with a key Myna doesn't hold → capture the key or factory reset.")
                 pairing = .needsFactoryReset
@@ -602,29 +602,28 @@ final class BeeManager: ObservableObject {
         switch result {
         case .installed:
             if let key { BeeKeyVault.store(key, deviceID: deviceID) }
-            log("Key installed. Starting a fresh session…")
-            requestFreshSession()
+            log("Key installed. Fetching the session nonce…")
+            requestSessionNonce()
         case .alreadySet:
             // We just installed a freshly fetched key; the bracelet reports it
             // already had one. Persist and continue — if it was a different key,
             // decryption simply yields nothing and the log shows no audio.
             if let key { BeeKeyVault.store(key, deviceID: deviceID) }
-            log("Key already set. Starting a fresh session…")
-            requestFreshSession()
+            log("Key already set. Fetching the session nonce…")
+            requestSessionNonce()
         case .unknown(let code):
             log("Key reply code \(code) (unrecognized).")
             pairing = .error("The bracelet rejected the key (code \(code)).")
         }
     }
 
-    /// Begin a fresh encrypted audio session. Bee latches the session nonce at
-    /// the next mute→record transition and resets the packet sequence to 0, so
-    /// the key stream Myna decrypts lines up only if recording STARTS after the
-    /// nonce is fetched. Mute first (stop any in-flight stream), then fetch the
-    /// nonce; recording is (re)started once the nonce arrives, in handleNonce.
-    private func requestFreshSession() {
-        central.writeControl(BeeCommand.setDeviceState.frame(payload: [0x00])) // mute (STATE_MUTE)
-        central.writeControl(BeeCommand.getSessionNonce.frame())               // latch a fresh nonce
+    /// Ask the bracelet for its current session nonce. This is the whole secure
+    /// handshake step the Bee app does once the key is set (ConnectionGuard
+    /// requestSessionNonce → SessionNonce → configureDecryptor). We do NOT mute
+    /// or force a record: the nonce is for the live session and AES-CTR decrypts
+    /// the ongoing stream at any sequence. Muting here was what desynced it.
+    private func requestSessionNonce() {
+        central.writeControl(BeeCommand.getSessionNonce.frame())
     }
 
     private func handleNonce(_ value: Data) {
@@ -639,14 +638,13 @@ final class BeeManager: ObservableObject {
         }
         // Bee subscribes to audio only once the key and nonce are in place.
         central.startAudioNotifications()
-        // Start recording now that the nonce is latched — the mute→record
-        // transition begins a fresh seq-0 stream encrypted under THIS nonce, so
-        // decryption lines up. (We muted in requestFreshSession just before.)
-        // Send it raw so the isReadyForControl guard can't leave us muted.
-        autoRecordTried = true
-        lastRecordingSet = .now
-        log("Starting recording under the fresh nonce (seq 0)…")
-        central.writeControl(BeeCommand.setDeviceState.frame(payload: [0x01])) // record (STATE_RECORDING)
+        // Nothing else to send: the nonce we just read belongs to the bracelet's
+        // live session, and AES-CTR is seekable — every packet carries its own
+        // sequence number, so the decryptor lines up on the ongoing stream from
+        // whatever sequence it's currently at. This mirrors the Bee app exactly
+        // (ConnectionGuard: SetEncryptionKey → SessionNonce → configure, no
+        // device-state change). If the bracelet is muted, handleDeviceState asks
+        // it to record — that's orthogonal and never re-latches the nonce.
         scheduleAudioWatchdog(handshakeToken)
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
