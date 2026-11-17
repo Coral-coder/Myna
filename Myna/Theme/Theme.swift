@@ -1,15 +1,24 @@
 import SwiftUI
+import UIKit
 
-/// The three selectable looks. They share one palette and layout; what changes
-/// is the *chrome* — background, card edges, and heading treatment — from the
-/// full neon Grid down to a flat, quiet minimal.
-enum MynaThemeStyle: String, CaseIterable, Identifiable {
-    case grid       // the original Tron Grid: animated grid, glowing cards
-    case calm       // same identity, glows and uppercase stripped, flat cards
-    case minimal    // near-flat, quiet, almost no chrome
+/// The mood toggle — Daylight (neutral white) and Dusk (near-black). This is
+/// Myna's own light/dark switch, independent of the host OS appearance, driving
+/// every dynamic token below and the app's `preferredColorScheme`.
+enum MynaMood: String, CaseIterable, Identifiable {
+    case daylight
+    case dusk
 
     var id: String { rawValue }
+    var label: String { self == .daylight ? "Daylight" : "Dusk" }
+    var scheme: ColorScheme { self == .dusk ? .dark : .light }
+}
 
+/// Kept only so older chrome checks (`MynaTheme.style == .grid`, etc.) still
+/// compile. The three looks now resolve to the one liminal surface; the real
+/// knob is `MynaMood`.
+enum MynaThemeStyle: String, CaseIterable, Identifiable {
+    case grid, calm, minimal
+    var id: String { rawValue }
     var label: String {
         switch self {
         case .grid: return "Grid"
@@ -17,179 +26,193 @@ enum MynaThemeStyle: String, CaseIterable, Identifiable {
         case .minimal: return "Minimal"
         }
     }
-
-    var blurb: String {
-        switch self {
-        case .grid: return "The original — animated grid, glowing panels, wide uppercase labels."
-        case .calm: return "Same look, dialled down: no glow, flat panels, normal headings."
-        case .minimal: return "Quiet and flat. Almost no chrome — just your content."
-        }
-    }
+    var blurb: String { "" }
 }
 
-/// Holds the chosen look and republishes it so the UI re-renders on change.
-/// `MynaTheme` reads `ThemeStore.currentStyle` (a plain static) from inside its
-/// chrome, so a top-level `.id(style)` rebuild picks up the new look everywhere.
+/// Holds the chosen mood and republishes it so the UI re-renders on change.
+/// `MynaTheme`'s dynamic colours resolve against the view's `colorScheme`, which
+/// `MynaApp` drives from `mood`, so a top-level `.id(mood)` rebuild flips the
+/// whole interface between Daylight and Dusk at once.
 final class ThemeStore: ObservableObject {
-    static let key = "myna.theme"
-    static private(set) var currentStyle: MynaThemeStyle =
-        MynaThemeStyle(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .grid
+    static let moodKey = "myna.mood"
+    static let styleKey = "myna.theme"
 
-    @Published var style: MynaThemeStyle {
-        didSet {
-            ThemeStore.currentStyle = style
-            UserDefaults.standard.set(style.rawValue, forKey: Self.key)
-        }
+    @Published var mood: MynaMood {
+        didSet { UserDefaults.standard.set(mood.rawValue, forKey: Self.moodKey) }
     }
 
-    init() { style = ThemeStore.currentStyle }
+    /// Retained for source compatibility with screens that still read it.
+    @Published var style: MynaThemeStyle {
+        didSet { UserDefaults.standard.set(style.rawValue, forKey: Self.styleKey) }
+    }
+
+    init() {
+        mood = MynaMood(rawValue: UserDefaults.standard.string(forKey: Self.moodKey) ?? "") ?? .daylight
+        style = MynaThemeStyle(rawValue: UserDefaults.standard.string(forKey: Self.styleKey) ?? "") ?? .minimal
+    }
 }
 
-/// Myna's visual language — "Tron Legacy meets future tech": a near-black grid,
-/// electric-cyan light, a single amber accent, sharp panels edged in glowing
-/// hairlines, and wide, high-contrast type. Restrained and businesslike.
+/// Builds a colour that resolves itself per light/dark appearance — so one token
+/// serves both Daylight and Dusk.
+private func dyn(_ light: UIColor, _ dark: UIColor) -> Color {
+    Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? dark : light
+    })
+}
+
+private extension UIColor {
+    convenience init(hex: UInt32) {
+        self.init(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+    static func white(_ a: CGFloat) -> UIColor { UIColor(white: 1, alpha: a) }
+    static func black(_ a: CGFloat) -> UIColor { UIColor(white: 0, alpha: a) }
+}
+
+/// Myna's visual language — "a quiet operator console." One luminous neutral
+/// ground, flat frosted-glass panels, hairline structure, thin type, almost no
+/// icons; a single desaturated steel for the rare live signal. No colour.
 ///
-/// The token names are kept from the old aurora theme so every screen reskins
-/// at once; their values are remapped to the Tron palette (e.g. `magenta` is now
-/// the secondary electric blue, `gold` the amber accent).
+/// The old aurora/Tron token names are kept so every screen reskins at once;
+/// their values are remapped to the liminal palette (the bright accents all
+/// collapse onto `ink`/`signal`, the dark canvas becomes `paper`).
 enum MynaTheme {
-    /// The canvas: black with a faint blue cast.
-    static let void = Color(red: 0.016, green: 0.027, blue: 0.043)
-    /// Panel and grid blues.
-    static let nebula = Color(red: 0.04, green: 0.07, blue: 0.11)
-    static let indigo = Color(red: 0.10, green: 0.18, blue: 0.30)
-    /// Primary light — electric cyan.
-    static let cyan = Color(red: 0.33, green: 0.82, blue: 0.98)
-    /// Secondary — electric blue (was magenta).
-    static let magenta = Color(red: 0.30, green: 0.56, blue: 1.0)
-    /// The one warm accent — amber (the Grid's adversary colour).
-    static let gold = Color(red: 1.0, green: 0.68, blue: 0.24)
-    /// Positive / live — cyan-teal.
-    static let mint = Color(red: 0.36, green: 0.96, blue: 0.82)
+    // MARK: Liminal palette (semantic names)
 
-    /// Dark glassy fill for panels.
-    static let panelFill = Color(red: 0.03, green: 0.05, blue: 0.08)
+    /// The canvas. Neutral white in Daylight, near-black in Dusk.
+    static let paper = dyn(UIColor(hex: 0xE7E7E4), UIColor(hex: 0x141517))
+    /// A lifted ground tone for gradients and wells.
+    static let paper2 = dyn(UIColor(hex: 0xF1F1EE), UIColor(hex: 0x191B1D))
+    /// Primary text / foreground — near-black in Daylight, off-white in Dusk.
+    static let ink = dyn(UIColor(hex: 0x1B1C1D), UIColor(hex: 0xE9E9E6))
+    /// Secondary text.
+    static let muted = dyn(UIColor(hex: 0x6C6D6B), UIColor(hex: 0x9B9D9E))
+    /// Tertiary text — timestamps, captions.
+    static let faint = dyn(UIColor(hex: 0x9B9C99), UIColor(hex: 0x6A6C6E))
+    /// The one desaturated steel, for the live signal only.
+    static let signal = dyn(UIColor(hex: 0x3F484C), UIColor(hex: 0xC7D0D4))
 
-    /// Two-tone cyan→blue — deliberately not a rainbow, to read professional.
+    /// Hairline structure and faint translucent fills.
+    static let hair = dyn(.black(0.12), .white(0.12))
+    static let hairSoft = dyn(.black(0.07), .white(0.06))
+    static let veil = dyn(.white(0.55), .white(0.03))
+    static let glassEdge = dyn(.white(0.70), .white(0.14))
+    /// Subtle panel fill when material isn't used.
+    static let glassFill = dyn(.white(0.42), .white(0.045))
+
+    // MARK: Compatibility aliases (old names → liminal tokens)
+
+    static let void = paper
+    static let nebula = paper2
+    static let indigo = signal
+    static let cyan = signal
+    static let magenta = signal
+    static let gold = signal
+    static let mint = signal
+    static let panelFill = glassFill
+
+    /// Was a cyan→magenta gradient; now a flat ink block used for headings
+    /// (ink text) and primary buttons (ink fill with `void`/paper labels).
     static let auroraGradient = LinearGradient(
-        colors: [cyan, magenta],
+        colors: [ink, ink.opacity(0.86)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
 
+    /// The listening orb — a quiet steel sweep, no rainbow.
     static let orbGradient = AngularGradient(
-        colors: [cyan, magenta, cyan, gold, cyan],
+        colors: [signal.opacity(0.25), signal.opacity(0.75), faint.opacity(0.4), signal.opacity(0.25)],
         center: .center
     )
 
-    /// Wide, expanded type — the Tron "Eurostile" feel, clean enough for business.
-    static func display(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .default).width(.expanded)
+    /// Headings — a thin, unexpanded grotesque feel. Callers' explicit weights
+    /// are honoured; the old `.width(.expanded)` is dropped for the quiet look.
+    static func display(_ size: CGFloat, weight: Font.Weight = .light) -> Font {
+        .system(size: size, weight: weight, design: .default)
     }
 
-    /// Monospaced, for data and readouts.
-    static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
+    /// Monospaced — timestamps, device data, the operator-console detail.
+    static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
 
-    /// The currently selected look. Chrome (cards, headings, background) reads
-    /// this to decide how loud to be.
-    static var style: MynaThemeStyle { ThemeStore.currentStyle }
+    /// Retained for compatibility; the single liminal surface no longer branches.
+    static var style: MynaThemeStyle { .minimal }
 }
 
-/// A sharp "circuit panel": dark glass, a glowing hairline edge, a faint outer
-/// bloom. Replaces the old frosted card.
+/// A flat frosted-glass panel: translucent material, a 1px hairline edge, no
+/// shadow and no glow. Depth comes from light and blur, not elevation.
 struct GlassCard: ViewModifier {
-    var cornerRadius: CGFloat = 12
-    var glow: Color = MynaTheme.cyan
+    var cornerRadius: CGFloat = 14
+    var glow: Color = MynaTheme.signal   // ignored; kept for source compatibility
 
     func body(content: Content) -> some View {
-        content.background { cardBackground }
-    }
-
-    @ViewBuilder private var cardBackground: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        switch MynaTheme.style {
-        case .grid:
+        content.background {
             shape
                 .fill(.ultraThinMaterial)
-                .overlay { shape.fill(MynaTheme.panelFill.opacity(0.55)) }
-                .overlay {
-                    shape.strokeBorder(
-                        LinearGradient(
-                            colors: [glow.opacity(0.7), glow.opacity(0.18)],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-                }
-                .shadow(color: glow.opacity(0.22), radius: 12, y: 0)
-        case .calm:
-            shape
-                .fill(MynaTheme.panelFill.opacity(0.72))
-                .overlay { shape.strokeBorder(glow.opacity(0.22), lineWidth: 1) }
-        case .minimal:
-            shape
-                .fill(.white.opacity(0.05))
-                .overlay { shape.strokeBorder(.white.opacity(0.09), lineWidth: 1) }
+                .overlay { shape.fill(MynaTheme.veil) }
+                .overlay { shape.strokeBorder(MynaTheme.hair, lineWidth: 1) }
         }
     }
 }
 
 extension View {
-    func glassCard(cornerRadius: CGFloat = 12, glow: Color = MynaTheme.cyan) -> some View {
+    func glassCard(cornerRadius: CGFloat = 14, glow: Color = MynaTheme.signal) -> some View {
         modifier(GlassCard(cornerRadius: cornerRadius, glow: glow))
     }
 
-    /// Gradient-tinted text used for headings and the wordmark.
+    /// Heading / wordmark text — flat ink in the liminal language.
     func auroraText() -> some View {
-        foregroundStyle(MynaTheme.auroraGradient)
+        foregroundStyle(MynaTheme.ink)
     }
 }
 
-/// Section heading — an SF Symbol node plus a wide, tracked, uppercase label.
+/// Section heading — a small mono eyebrow in faint ink, optional hairline icon.
+/// No glow, no wide uppercase chrome.
 struct SectionHeading: View {
     let icon: String
     let title: String
-    var tint: Color = MynaTheme.cyan
+    var tint: Color = MynaTheme.signal
 
     var body: some View {
-        let style = MynaTheme.style
-        return HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(style == .minimal ? .white.opacity(0.6) : tint)
-                .shadow(color: style == .grid ? tint.opacity(0.8) : .clear, radius: style == .grid ? 6 : 0)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(MynaTheme.faint)
             Text(title)
-                .font(style == .grid ? MynaTheme.display(14, weight: .semibold)
-                                     : .system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(style == .minimal ? 0.8 : 0.92))
-                .tracking(style == .grid ? 3 : 0)
-                .textCase(style == .grid ? .uppercase : nil)
+                .font(MynaTheme.mono(11))
+                .tracking(2)
+                .textCase(.uppercase)
+                .foregroundStyle(MynaTheme.faint)
             Spacer()
         }
     }
 }
 
-/// Small glowing readout chip — a sharp rectangle edged in light.
+/// Small readout chip — a hairline pill with faint mono text on a veil.
 struct GlowChip: View {
     let text: String
     var icon: String?
-    var tint: Color = MynaTheme.cyan
+    var tint: Color = MynaTheme.signal
 
     var body: some View {
         HStack(spacing: 5) {
             if let icon {
-                Image(systemName: icon).font(.system(size: 10, weight: .bold))
+                Image(systemName: icon).font(.system(size: 10, weight: .regular))
             }
             Text(text)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(MynaTheme.mono(11))
                 .tracking(0.5)
         }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 10)
+        .foregroundStyle(MynaTheme.muted)
+        .padding(.horizontal, 11)
         .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(tint.opacity(0.1)))
-        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(tint.opacity(0.5), lineWidth: 1))
+        .background(Capsule().fill(MynaTheme.veil))
+        .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
     }
 }

@@ -78,7 +78,7 @@ struct DashboardView: View {
                 .shadow(color: MynaTheme.cyan.opacity(0.6), radius: 14)
             Text(Date.now.formatted(date: .complete, time: .omitted))
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(MynaTheme.ink.opacity(0.5))
                 .tracking(1.5)
         }
         .frame(maxWidth: .infinity)
@@ -88,12 +88,12 @@ struct DashboardView: View {
         VStack(spacing: 6) {
             Text(statusTitle)
                 .font(MynaTheme.display(19, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
                 .contentTransition(.opacity)
                 .animation(.easeInOut, value: statusTitle)
             Text(statusSubtitle)
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MynaTheme.ink.opacity(0.55))
                 .multilineTextAlignment(.center)
         }
     }
@@ -143,24 +143,24 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("“\(exchange.heard)”")
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         .lineLimit(2)
                     Text(exchange.reply)
                         .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(MynaTheme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             } else {
                 Text("Try “Myna, add eggs to the shopping list”, “remind me to call Mom at 6”, “what's on my calendar tomorrow?” or ask about any conversation.")
                     .font(.system(size: 13, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.55))
             }
 
             HStack(spacing: 10) {
                 TextField("Type to Myna…", text: $question)
                     .font(.system(size: 15, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .focused($askFocused)
                     .submitLabel(.send)
                     .onSubmit(sendQuestion)
@@ -176,7 +176,7 @@ struct DashboardView: View {
                 }
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -198,7 +198,7 @@ struct DashboardView: View {
                 ForEach(pilot.liveTranscriptTail) { line in
                     Text(line.text)
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.55))
                         .lineLimit(2)
                 }
                 if !listener.liveTranscript.isEmpty {
@@ -211,7 +211,7 @@ struct DashboardView: View {
                 if pilot.liveTranscriptTail.isEmpty && listener.liveTranscript.isEmpty {
                     Text("Waiting for voices…")
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.35))
                         .italic()
                 }
             }
@@ -230,10 +230,10 @@ struct DashboardView: View {
                 .symbolEffect(.pulse)
             Text("Install your AI scribe")
                 .font(MynaTheme.display(16, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
             Text("Myna needs a local model before it can compose notes and answer questions. Head to the Neural Core tab and download \(ModelCatalog.model(withID: ModelCatalog.recommendedID)?.displayName ?? "a model") — it's a one-time download. Voice commands and lists already work.")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(MynaTheme.ink.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
         .padding(20)
@@ -263,15 +263,15 @@ struct DashboardView: View {
                 .foregroundStyle(tint)
             Text(value)
                 .font(MynaTheme.display(21, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
             Text(label.uppercased())
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
                 .tracking(1.2)
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(MynaTheme.ink.opacity(0.45))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MynaTheme.ink.opacity(0.05)))
     }
 
     private var isLive: Bool { pilot.phase == .listening || listener.usingExternalSource }
@@ -317,12 +317,12 @@ struct DashboardView: View {
                 if !pilot.segmentLines.isEmpty {
                     Text("Note taking shape · \(pilot.segmentLines.count) line\(pilot.segmentLines.count == 1 ? "" : "s")")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.4))
                 }
                 ForEach(pilot.liveTranscriptTail) { line in
                     Text(line.text)
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.55))
                         .lineLimit(2)
                 }
                 if !listener.liveTranscript.isEmpty {
@@ -336,28 +336,28 @@ struct DashboardView: View {
         } else if isLive {
             Text("Listening… say something and it'll appear here.")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(MynaTheme.ink.opacity(0.45))
                 .italic()
         } else if let last = latestNote {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Last note")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.4))
                 Text(last.title)
                     .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .lineLimit(1)
                 if !last.overview.isEmpty {
                     Text(last.overview)
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         .lineLimit(2)
                 }
             }
         } else {
             Text("Tap the orb to start. What you say turns into notes right here.")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(MynaTheme.ink.opacity(0.45))
         }
     }
 
@@ -368,7 +368,7 @@ struct DashboardView: View {
         } else if pilot.phase == .listening {
             liveBadge("Mic", "mic.fill", MynaTheme.mint)
         } else {
-            liveBadge("Idle", "pause.circle", .white.opacity(0.4))
+            liveBadge("Idle", "pause.circle", MynaTheme.ink.opacity(0.4))
         }
     }
 
@@ -397,11 +397,11 @@ struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(note.title.isEmpty ? "Untitled note" : note.title)
                             .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MynaTheme.ink)
                             .lineLimit(1)
                         Text(note.createdAt.formatted(date: .abbreviated, time: .shortened))
                             .font(.system(size: 11, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.4))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

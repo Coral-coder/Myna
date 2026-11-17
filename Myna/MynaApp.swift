@@ -20,7 +20,7 @@ struct MynaApp: App {
                 .environmentObject(services.beeCloud)
                 .environmentObject(services.whisper)
                 .environmentObject(services.neuralVoice)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(themeStore.mood.scheme)
         }
         .modelContainer(services.container)
         .onChange(of: scenePhase) { _, phase in

@@ -35,7 +35,7 @@ struct ModelHubView: View {
                 .auroraText()
             Text("Choose the mind behind Myna. Apple Intelligence is built in; the others download once from Hugging Face and run on this iPhone's GPU — offline, private, yours.")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(MynaTheme.ink.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
     }
@@ -46,7 +46,7 @@ struct ModelHubView: View {
                 .foregroundStyle(MynaTheme.gold)
             Text("On-device model storage: \(ByteCountFormatter.string(fromByteCount: modelManager.totalBytesOnDisk, countStyle: .file))")
                 .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(MynaTheme.ink.opacity(0.6))
             Spacer()
         }
         .padding(16)
@@ -73,10 +73,10 @@ private struct ModelCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.displayName)
                         .font(MynaTheme.display(17, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(MynaTheme.ink)
                     Text(model.family)
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                 }
                 Spacer()
                 if let badge = model.badge {
@@ -86,7 +86,7 @@ private struct ModelCard: View {
 
             Text(model.blurb)
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.65))
+                .foregroundStyle(MynaTheme.ink.opacity(0.65))
                 .lineSpacing(2)
 
             HStack(spacing: 8) {

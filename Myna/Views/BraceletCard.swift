@@ -102,24 +102,24 @@ struct BraceletCard: View {
                     Text("Key held: \(bee.exportableKeyLabel)").braceletCaption()
                     Text(keyHex)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.75))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button("Copy key") { UIPasteboard.general.string = keyHex }
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .tint(MynaTheme.cyan)
-                    Divider().overlay(.white.opacity(0.1))
+                    Divider().overlay(MynaTheme.ink.opacity(0.1))
                 }
                 Text("Paste the bytes from the bracelet's SetEncryptionKey write (the value after 18 C0, 108 bytes as hex). Myna stores it on-device and uses it to decrypt audio — no Bee server.")
                     .braceletCaption()
                 TextField("18c0… or the 108-byte hex", text: $pastedKey, axis: .vertical)
                     .lineLimit(2...4)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
                 Button("Save key & reconnect") {
                     bee.setCapturedKeyToken(pastedKey)
                     pastedKey = ""
@@ -132,7 +132,7 @@ struct BraceletCard: View {
         } label: {
             Text("Advanced: paste captured key").braceletLabel()
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     /// The full in-app path: Myna reproduces the Bee app's account auth from a
@@ -178,7 +178,7 @@ struct BraceletCard: View {
         } label: {
             Text("Advanced: fetch key with Bee login").braceletLabel()
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     private var accountFetchDisabled: Bool {
@@ -221,7 +221,7 @@ struct BraceletCard: View {
         } label: {
             Text("Advanced: fetch key from Bee server").braceletLabel()
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     /// Developer reconnaissance of the bracelet firmware: enumerate its full GATT
@@ -256,18 +256,18 @@ struct BraceletCard: View {
         } label: {
             Text("Developer: bracelet lab").braceletLabel()
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     private func fetchField(_ placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text, axis: .vertical)
             .lineLimit(1...3)
             .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.white)
+            .foregroundStyle(MynaTheme.ink)
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
             .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
     }
 
     private var deviceLog: some View {
@@ -276,7 +276,7 @@ struct BraceletCard: View {
                 ForEach(Array(bee.diagnostics.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.6))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -294,12 +294,12 @@ struct BraceletCard: View {
         } label: {
             Text("Device log").braceletLabel()
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     private var controlsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Divider().overlay(.white.opacity(0.1))
+            Divider().overlay(MynaTheme.ink.opacity(0.1))
             HStack {
                 Text("Controls").braceletLabel()
                 Spacer()
@@ -360,7 +360,7 @@ struct BraceletCard: View {
             if let battery = bee.batteryLevel {
                 Label("\(battery)%", systemImage: bee.isCharging ? "battery.100.bolt" : "battery.75")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(bee.isCharging ? MynaTheme.mint : .white.opacity(0.7))
+                    .foregroundStyle(bee.isCharging ? MynaTheme.mint : MynaTheme.ink.opacity(0.7))
             }
         }
     }
@@ -396,7 +396,7 @@ struct BraceletCard: View {
         }
     }
 
-    private func detailRow(icon: String, text: String, tint: Color = .white.opacity(0.6)) -> some View {
+    private func detailRow(icon: String, text: String, tint: Color = MynaTheme.ink.opacity(0.6)) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: icon).font(.system(size: 12)).foregroundStyle(tint)
             Text(text).braceletCaption()
@@ -423,7 +423,7 @@ struct BraceletCard: View {
         case .streaming: return MynaTheme.mint
         case .scanning, .connecting, .provisioning: return MynaTheme.gold
         case .error, .needsFactoryReset, .bluetoothOff, .unauthorized, .audioUnavailable: return MynaTheme.magenta
-        case .off: return .white.opacity(0.3)
+        case .off: return MynaTheme.ink.opacity(0.3)
         }
     }
 }
@@ -431,11 +431,11 @@ struct BraceletCard: View {
 private extension Text {
     func braceletLabel() -> Text {
         font(.system(size: 14, weight: .medium, design: .rounded))
-            .foregroundColor(.white.opacity(0.9))
+            .foregroundColor(MynaTheme.ink.opacity(0.9))
     }
 
     func braceletCaption() -> Text {
         font(.system(size: 12, design: .rounded))
-            .foregroundColor(.white.opacity(0.5))
+            .foregroundColor(MynaTheme.ink.opacity(0.5))
     }
 }

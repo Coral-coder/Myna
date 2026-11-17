@@ -73,12 +73,12 @@ struct ListsView: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
-                    .foregroundStyle(option == kind ? AnyShapeStyle(MynaTheme.auroraGradient) : AnyShapeStyle(.white.opacity(0.5)))
+                    .foregroundStyle(option == kind ? AnyShapeStyle(MynaTheme.auroraGradient) : AnyShapeStyle(MynaTheme.ink.opacity(0.5)))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(.white.opacity(option == kind ? 0.09 : 0.03))
+                            .fill(MynaTheme.ink.opacity(option == kind ? 0.09 : 0.03))
                     )
                 }
                 .buttonStyle(.plain)
@@ -93,7 +93,7 @@ struct ListsView: View {
                 .foregroundStyle(MynaTheme.auroraGradient)
             TextField(placeholder, text: $draft)
                 .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
                 .focused($draftFocused)
                 .submitLabel(.done)
                 .onSubmit(addDraft)
@@ -126,10 +126,10 @@ struct ListsView: View {
                 .foregroundStyle(MynaTheme.auroraGradient)
             Text(emptyTitle)
                 .font(MynaTheme.display(16, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
             Text(emptyHint)
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MynaTheme.ink.opacity(0.55))
                 .multilineTextAlignment(.center)
         }
         .padding(.vertical, 40)
@@ -162,10 +162,10 @@ struct ListsView: View {
                     HStack {
                         Text("Completed · \(done.count)")
                             .font(MynaTheme.display(13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.55))
                         Image(systemName: showDone ? "chevron.up" : "chevron.down")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.4))
                     }
                 }
                 .buttonStyle(.plain)
@@ -223,7 +223,7 @@ private struct ItemRow: View {
                 } label: {
                     Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 20))
-                        .foregroundStyle(item.isDone ? MynaTheme.mint : .white.opacity(0.45))
+                        .foregroundStyle(item.isDone ? MynaTheme.mint : MynaTheme.ink.opacity(0.45))
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
@@ -232,22 +232,22 @@ private struct ItemRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.text)
                     .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(item.isDone ? .white.opacity(0.4) : .white)
-                    .strikethrough(item.isDone, color: .white.opacity(0.4))
+                    .foregroundStyle(item.isDone ? MynaTheme.ink.opacity(0.4) : MynaTheme.ink)
+                    .strikethrough(item.isDone, color: MynaTheme.ink.opacity(0.4))
                 HStack(spacing: 8) {
                     if let due = item.dueDate {
                         Label(due.formatted(date: .abbreviated, time: .shortened), systemImage: "bell.fill")
                             .foregroundStyle(due < .now && !item.isDone ? MynaTheme.magenta : MynaTheme.gold)
                     }
                     Label(sourceLabel, systemImage: item.source.icon)
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.4))
                 }
                 .font(.system(size: 11, design: .rounded))
                 .labelStyle(.titleAndIcon)
                 if !item.detail.isEmpty {
                     Text(item.detail)
                         .font(.system(size: 11, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.4))
                         .lineLimit(2)
                 }
             }

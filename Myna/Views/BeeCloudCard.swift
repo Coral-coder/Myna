@@ -91,7 +91,7 @@ struct BeeCloudCard: View {
                     Button("Cancel") { importer.pairing.cancel() }
                         .buttonStyle(.plain)
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.6))
                 }
             }
         case .failed(let message):
@@ -129,7 +129,7 @@ struct BeeCloudCard: View {
                         }
                     }
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
 
@@ -137,10 +137,10 @@ struct BeeCloudCard: View {
                         Image(systemName: tokenVisible ? "eye.slash" : "eye").font(.system(size: 13))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.5))
                 }
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
 
                 Button("Save token") {
                     importer.saveToken(token)
@@ -156,9 +156,9 @@ struct BeeCloudCard: View {
         } label: {
             Text("Enter a token manually")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(MynaTheme.ink.opacity(0.6))
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
     }
 
     @ViewBuilder
@@ -195,9 +195,9 @@ struct BeeCloudCard: View {
 
 private extension Text {
     func cloudLabel() -> Text {
-        font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(.white.opacity(0.9))
+        font(.system(size: 14, weight: .medium, design: .rounded)).foregroundColor(MynaTheme.ink.opacity(0.9))
     }
     func cloudCaption() -> Text {
-        font(.system(size: 12, design: .rounded)).foregroundColor(.white.opacity(0.5))
+        font(.system(size: 12, design: .rounded)).foregroundColor(MynaTheme.ink.opacity(0.5))
     }
 }

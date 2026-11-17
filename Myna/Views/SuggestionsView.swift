@@ -32,7 +32,7 @@ struct SuggestionsView: View {
                 } else {
                     Text(pending.count == 1 ? "1 suggestion from your Bee" : "\(pending.count) suggestions from your Bee")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     ForEach(pending) { suggestion in
@@ -91,12 +91,12 @@ struct SuggestionsView: View {
                 .foregroundStyle(MynaTheme.auroraGradient)
             Text(beeCloud.hasToken ? "Inbox zero" : "Connect your Bee")
                 .font(MynaTheme.display(17, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
             Text(beeCloud.hasToken
                  ? "Nothing waiting. New things to buy, do and remember land here as Myna hears them."
                  : "Myna reads your Bee conversations and turns them into suggestions. Connect your Bee account in Backstage to begin.")
                 .font(.system(size: 13))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MynaTheme.ink.opacity(0.55))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 12)
         }
@@ -112,7 +112,7 @@ struct SuggestionsView: View {
     private var liveStatusStrip: some View {
         HStack(spacing: 10) {
             ZStack {
-                Circle().fill((isLive ? MynaTheme.mint : .white.opacity(0.25)))
+                Circle().fill((isLive ? MynaTheme.mint : MynaTheme.ink.opacity(0.25)))
                     .frame(width: 8, height: 8)
                 if isLive {
                     Circle().stroke(MynaTheme.mint.opacity(0.5), lineWidth: 1)
@@ -121,12 +121,12 @@ struct SuggestionsView: View {
             }
             Text(statusText)
                 .font(.system(size: 12.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(MynaTheme.ink.opacity(0.7))
             Spacer()
             if bee.pairing == .streaming {
                 Text("\(bee.packetsDecoded) pkts")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.4))
             }
         }
         .padding(.horizontal, 14)
@@ -171,12 +171,12 @@ struct SuggestionsView: View {
                             .frame(width: 20)
                         Text(CommandParser.capitalizeFirst(s.text))
                             .font(.system(size: 13, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.85))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.85))
                             .lineLimit(1)
                         Spacer()
                         Text(s.createdAt.formatted(date: .omitted, time: .shortened))
                             .font(.system(size: 10.5, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.35))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.35))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -189,12 +189,12 @@ struct SuggestionsView: View {
                 SectionHeading(icon: "note.text", title: "Latest note", tint: MynaTheme.cyan)
                 Text(lastNote.title.isEmpty ? "Untitled note" : lastNote.title)
                     .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .lineLimit(1)
                 if !lastNote.overview.isEmpty {
                     Text(lastNote.overview)
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         .lineLimit(3)
                 }
             }
@@ -207,15 +207,15 @@ struct SuggestionsView: View {
     private func miniStat(_ value: String, _ label: String, _ icon: String, _ tint: Color) -> some View {
         VStack(spacing: 5) {
             Image(systemName: icon).font(.system(size: 13)).foregroundStyle(tint)
-            Text(value).font(MynaTheme.display(19, weight: .bold)).foregroundStyle(.white)
+            Text(value).font(MynaTheme.display(19, weight: .bold)).foregroundStyle(MynaTheme.ink)
             Text(label.uppercased())
                 .font(.system(size: 8.5, weight: .semibold, design: .rounded))
                 .tracking(1.1)
-                .foregroundStyle(.white.opacity(0.42))
+                .foregroundStyle(MynaTheme.ink.opacity(0.42))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MynaTheme.ink.opacity(0.05)))
     }
 }
 
@@ -235,7 +235,7 @@ private struct SuggestionRow: View {
                 Text(suggestion.kind.title.uppercased())
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(2)
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.45))
                 Spacer()
                 if let date = suggestion.date {
                     Text(date.formatted(date: .abbreviated, time: .shortened))
@@ -246,13 +246,13 @@ private struct SuggestionRow: View {
 
             Text(CommandParser.capitalizeFirst(suggestion.text))
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !suggestion.detail.isEmpty, suggestion.detail != suggestion.text {
                 Text("“\(suggestion.detail)”")
                     .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.45))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -260,7 +260,7 @@ private struct SuggestionRow: View {
             if !suggestion.sourceTitle.isEmpty {
                 Label(suggestion.sourceTitle, systemImage: "bubble.left.and.bubble.right")
                     .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.35))
                     .lineLimit(1)
             }
 
@@ -285,9 +285,9 @@ private struct SuggestionRow: View {
                         .padding(.vertical, 9)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(.white.opacity(0.06))
+                                .fill(MynaTheme.ink.opacity(0.06))
                         )
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.7))
                 }
                 .buttonStyle(.plain)
             }

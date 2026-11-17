@@ -100,44 +100,48 @@ struct SettingsView: View {
 
     private var appearanceCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeading(icon: "paintbrush.pointed.fill", title: "Appearance", tint: MynaTheme.cyan)
-            Text("Pick how loud Myna looks.")
+            SectionHeading(icon: "circle.lefthalf.filled", title: "Mood", tint: MynaTheme.signal)
+            Text("One quiet monochrome surface, two moods.")
                 .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(MynaTheme.muted)
             HStack(spacing: 10) {
-                ForEach(MynaThemeStyle.allCases) { style in
+                ForEach(MynaMood.allCases) { mood in
                     Button {
-                        withAnimation(.easeInOut(duration: 0.25)) { themeStore.style = style }
+                        withAnimation(.easeInOut(duration: 0.4)) { themeStore.mood = mood }
                     } label: {
                         VStack(spacing: 6) {
-                            Text(style.label)
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            Text(mood.label)
+                                .font(MynaTheme.mono(12))
+                                .tracking(1)
+                                .textCase(.uppercase)
                             Circle()
-                                .fill(themeStore.style == style ? MynaTheme.cyan : .white.opacity(0.25))
+                                .fill(themeStore.mood == mood ? MynaTheme.signal : MynaTheme.ink.opacity(0.2))
                                 .frame(width: 6, height: 6)
                         }
-                        .foregroundStyle(themeStore.style == style ? .white : .white.opacity(0.55))
+                        .foregroundStyle(themeStore.mood == mood ? MynaTheme.ink : MynaTheme.muted)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 14)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(themeStore.style == style ? MynaTheme.cyan.opacity(0.12) : .white.opacity(0.05))
+                                .fill(themeStore.mood == mood ? MynaTheme.veil : MynaTheme.ink.opacity(0.04))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .strokeBorder(themeStore.style == style ? MynaTheme.cyan.opacity(0.5) : .clear, lineWidth: 1)
+                                        .strokeBorder(themeStore.mood == mood ? MynaTheme.glassEdge : .clear, lineWidth: 1)
                                 )
                         )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            Text(themeStore.style.blurb)
+            Text(themeStore.mood == .daylight
+                 ? "Daylight — neutral white, hairline structure, unhurried."
+                 : "Dusk — near-black console, the same quiet light.")
                 .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(MynaTheme.faint)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard(glow: MynaTheme.cyan)
+        .glassCard()
     }
 
     private var naturalVoicesCard: some View {
@@ -167,7 +171,7 @@ struct SettingsView: View {
             if neuralVoice.isActive {
                 Button("Use the system voice instead") { neuralVoice.setSelected("") }
                     .font(.system(size: 13, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.6))
             }
         }
         .padding(18)
@@ -204,10 +208,10 @@ struct SettingsView: View {
                 Text("Your name").settingsLabel()
                 TextField("So Myna knows which tasks are yours", text: $userName)
                     .font(.system(size: 14, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .textContentType(.givenName)
                     .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
             }
 
             Toggle(isOn: $micEnabled) {
@@ -244,11 +248,11 @@ struct SettingsView: View {
                     Text("Custom wake word").settingsLabel()
                     TextField("Myna", text: $customWakeWord)
                         .font(.system(size: 14, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(MynaTheme.ink)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .padding(10)
-                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
                         .onChange(of: customWakeWord) { _, _ in AppServices.applyCustomWakeWords() }
                     Text("Leave blank to use “Myna”. Set your own word or short phrase (e.g. your name, or “hey scribe”). Pick something distinct and two or more syllables so it’s easy to hear; separate several with commas. Your word is used alongside “Myna”. This is also the name it answers to.").settingsCaption()
                 }
@@ -259,9 +263,9 @@ struct SettingsView: View {
                 TextField("Describe its personality and how it should treat you…", text: $agentPrompt, axis: .vertical)
                     .lineLimit(3...6)
                     .font(.system(size: 14, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
                 Text("Optional. Shapes its personality and tone — it keeps its name, its skills and the way it takes actions, this just changes how it feels to talk to. Leave blank for the default.").settingsCaption()
             }
 
@@ -308,7 +312,7 @@ struct SettingsView: View {
                             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                         }
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.6))
                     }
                     Text("For the most natural, Siri-quality sound, download a Premium or Enhanced voice in Settings → Accessibility → Spoken Content → Voices, then pick it here.").settingsCaption()
                 }
@@ -518,11 +522,11 @@ struct SettingsView: View {
 private extension Text {
     func settingsLabel() -> Text {
         font(.system(size: 14, weight: .medium, design: .rounded))
-            .foregroundColor(.white.opacity(0.9))
+            .foregroundColor(MynaTheme.ink.opacity(0.9))
     }
 
     func settingsCaption() -> Text {
         font(.system(size: 12, design: .rounded))
-            .foregroundColor(.white.opacity(0.5))
+            .foregroundColor(MynaTheme.ink.opacity(0.5))
     }
 }
