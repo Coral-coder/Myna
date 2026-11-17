@@ -61,7 +61,10 @@ struct BeeADTSAssembler {
     private var buffer: [UInt8] = []
     private var warmup: Int
 
-    init(warmup: Int = 3) {
+    // No warm-up drop by default: decode every valid ADTS frame from the start.
+    // Apple's AAC decoder has its own priming delay, so the very first frame may
+    // still yield no PCM, but nothing useful is thrown away.
+    init(warmup: Int = 0) {
         self.warmup = warmup
     }
 
@@ -112,6 +115,6 @@ struct BeeADTSAssembler {
 
     mutating func reset() {
         buffer.removeAll()
-        warmup = 3
+        warmup = 0
     }
 }
