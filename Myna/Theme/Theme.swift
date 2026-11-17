@@ -33,7 +33,7 @@ enum MynaThemeStyle: String, CaseIterable, Identifiable {
 final class ThemeStore: ObservableObject {
     static let key = "myna.theme"
     static private(set) var currentStyle: MynaThemeStyle =
-        MynaThemeStyle(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .grid
+        MynaThemeStyle(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .minimal
 
     @Published var style: MynaThemeStyle {
         didSet {
