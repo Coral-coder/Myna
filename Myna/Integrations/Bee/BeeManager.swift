@@ -478,6 +478,7 @@ final class BeeManager: ObservableObject {
                 self.retry()
             } catch {
                 guard let self else { return }
+                BeeTLSDelegate.drain().forEach { self.log($0) }
                 self.log("Bee account key fetch failed: \(error.localizedDescription)")
                 self.pairing = .error("Couldn't fetch the key: \(error.localizedDescription)")
             }
@@ -515,6 +516,7 @@ final class BeeManager: ObservableObject {
                 self.retry()
             } catch {
                 guard let self else { return }
+                BeeTLSDelegate.drain().forEach { self.log($0) }
                 self.log("Bee account key fetch failed: \(error.localizedDescription)")
                 self.pairing = .error("Couldn't fetch the key: \(error.localizedDescription)")
             }

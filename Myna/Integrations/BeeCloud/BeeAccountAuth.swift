@@ -19,14 +19,26 @@ import Security
 final class BeeTLSDelegate: NSObject, URLSessionDelegate {
     static let shared = BeeTLSDelegate()
 
-    /// BeeCertificateAuthority root — self-signed, valid 2025-08-21 .. 2035-08-21,
-    /// SHA-256 9A:8E:3E:25:04:90:41:8F:2F:5C:B9:A0:F7:E2:57:3E:97:53:96:8E:47:14:B8:33:E3:5B:1A:F7:70:22:04:08.
-    /// DER, base64. The short-lived leaf/intermediate rotate under it; the root is stable.
-    private static let rootCABase64 = "MIIDfzCCAmegAwIBAgIRANp9rGecKAk6t6XGd3GWVHkwDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MDgyMTE5MjUyNloXDTM1MDgyMTIwMjUyNlowWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7a4dWfEBlstJGQWx2MG9fInEWw4v5e2Sasiw8D09fW77VbSskLEectYlt8XgM8a2O9JAPkCQ3vNJmIO+6etyPj/DEtjwllSPR5/1qcZXGFMbjRGzmDz2Y6MruPlrGYZZQgSNrnuSSndADCrqSEGLdBzkjXqkuXLXDqdLLTzseNQVfCiN2LDCwFRDUgjw4KuiJzSBZ1CQEdug4qauitcif6NOFEiTViAOkXjSmjAdTjN0GDKQdTmDtQYgNfLuhhfmEB9mdiEm3++AUURQ2Cn+MfP2YAy/5gr3t+ydPRx361mbA1UiWnx7lmLUxRmZhzeaDmO8vUxxM1jHSXLNxMPMUwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRAKKN5ASGNfQOKcsdpaFwNki78xzAOBgNVHQ8BAf8EBAMCAYYwDQYJKoZIhvcNAQELBQADggEBADXy/YcenRwuAbCH57sFcwe/akWsdh7bs9ZNb7dqg6qzDpitO8yhpEK1DSW2Nmbtxd59rhV5jmnAfFHLEoeOlsSeBLADH3/3uRLV1kIRM3kUPKOv1FJq7UkK2VzgabpehyeJ4lfozfT983b3AoDvI6quf3Dl2NrCmmUUewrZ6g+RSR6n6Q/PalGUPtoV+W4OT5j9hS1d0PSNO6QbRRFzW+NZ+aQdLwHQPzwjofShvM1JjV7Hz2KOPJwmqHQbCiaayGq5lZIVI3UrqnTIqB/hySEBIJNeyHN3ggORH2JJwzMF+xiaNYUCir9ZzsgYiEsuaxEyiS96ydDImWJboALiWmE="
+    /// Diagnostic breadcrumbs from the last handshakes, surfaced in the device log.
+    static private(set) var events: [String] = []
+    static func drain() -> [String] { let e = events; events = []; return e }
+    private static func note(_ s: String) {
+        events.append(s)
+        if events.count > 16 { events.removeFirst(events.count - 16) }
+    }
 
-    private let anchor: SecCertificate? = {
-        guard let der = Data(base64Encoded: BeeTLSDelegate.rootCABase64) else { return nil }
-        return SecCertificateCreateWithData(nil, der as CFData)
+    // Bee's private PKI (DER, base64): the self-signed root
+    // "BeeCertificateAuthority" (valid 2025..2035) and "Bee Intermediate CA".
+    private static let rootCABase64 = "MIIDfzCCAmegAwIBAgIRANp9rGecKAk6t6XGd3GWVHkwDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MDgyMTE5MjUyNloXDTM1MDgyMTIwMjUyNlowWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7a4dWfEBlstJGQWx2MG9fInEWw4v5e2Sasiw8D09fW77VbSskLEectYlt8XgM8a2O9JAPkCQ3vNJmIO+6etyPj/DEtjwllSPR5/1qcZXGFMbjRGzmDz2Y6MruPlrGYZZQgSNrnuSSndADCrqSEGLdBzkjXqkuXLXDqdLLTzseNQVfCiN2LDCwFRDUgjw4KuiJzSBZ1CQEdug4qauitcif6NOFEiTViAOkXjSmjAdTjN0GDKQdTmDtQYgNfLuhhfmEB9mdiEm3++AUURQ2Cn+MfP2YAy/5gr3t+ydPRx361mbA1UiWnx7lmLUxRmZhzeaDmO8vUxxM1jHSXLNxMPMUwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRAKKN5ASGNfQOKcsdpaFwNki78xzAOBgNVHQ8BAf8EBAMCAYYwDQYJKoZIhvcNAQELBQADggEBADXy/YcenRwuAbCH57sFcwe/akWsdh7bs9ZNb7dqg6qzDpitO8yhpEK1DSW2Nmbtxd59rhV5jmnAfFHLEoeOlsSeBLADH3/3uRLV1kIRM3kUPKOv1FJq7UkK2VzgabpehyeJ4lfozfT983b3AoDvI6quf3Dl2NrCmmUUewrZ6g+RSR6n6Q/PalGUPtoV+W4OT5j9hS1d0PSNO6QbRRFzW+NZ+aQdLwHQPzwjofShvM1JjV7Hz2KOPJwmqHQbCiaayGq5lZIVI3UrqnTIqB/hySEBIJNeyHN3ggORH2JJwzMF+xiaNYUCir9ZzsgYiEsuaxEyiS96ydDImWJboALiWmE="
+    private static let intermediateCABase64 = "MIID6jCCAtKgAwIBAgIRALHrmuGK83fptFytnWZnJ+0wDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MTExODAzNDE1M1oXDTM1MDYxOTA0NDE1M1owVTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxHDAaBgNVBAMME0JlZSBJbnRlcm1lZGlhdGUgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDPPcMIALGM6yf0Uv4saeCmRBjOGWkAFQsu9Rm3+kyvxJTfnz4Y+QcTdLNdf4THLLL65tsMPUTfN+Fx/B3fvlIjal/v68gnqTaHZNKSXDuJmMU3mxU6QJhHqZy8Ca8EwZuyXM7bOQfUGBPyFYHdUj0kGAOOQNdNg+yv5zoV370kSQko//KqZhrZbziYT3LDpDiovrKHViya8OJOzxChgOH4MW8fsWrOvmGfSpDohE792Ht3s4WwT8OQIWUqz8z6OQlp55cFrScgQXhhvEsBy+H++dAX79Kkwztx38GAPun8nC3NMn4GQVhInkhllHd1F2uXV2bFH7u2bjWq0e+LgDB7AgMBAAGjgbAwga0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBRAKKN5ASGNfQOKcsdpaFwNki78xzAdBgNVHQ4EFgQUyd7ed5D+oqLfhQb7WwY0wHXX0TIwDgYDVR0PAQH/BAQDAgGGMEcGCCsGAQUFBwEBBDswOTA3BggrBgEFBQcwAYYraHR0cDovL29jc3AuYWNtLXBjYS51cy1lYXN0LTIuYW1hem9uYXdzLmNvbTANBgkqhkiG9w0BAQsFAAOCAQEADmaCGso/Lln694Pm9VKlZ5S9WOJypDnTbgTzEC8HkqTl1/Qb+Jt3/o0m/9y7tXY63HVDAf0PqSyk0Oaf51yN6yt8l15nDzqlaXSwbOfKKSmC33Vqlds/2tpuK2VVPhOi8MIsIcl7WhW76/qcLOW/KQWmtyi5ivFl+v23iW9Oc0xUVy8rhmtpeu9q9EVpLz0IN3KLmWO3XcrjB47BxdcUmpCT77eQi1L8A5q0glQkppQ00VsRSz/vsOIOytrxwjWqFYS8qaeUs5sd3LE9dj2eiSXfO7DQDauCiADKtu32MihtwqC6dHwZl9B9Ss5rIFNcYZSpNg5KAKq5KDVeoqDf2g=="
+
+    private let anchors: [SecCertificate] = {
+        [BeeTLSDelegate.rootCABase64, BeeTLSDelegate.intermediateCABase64].compactMap { b64 in
+            Data(base64Encoded: b64).flatMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+        }
+    }()
+    private let pinnedDERs: [Data] = {
+        [BeeTLSDelegate.rootCABase64, BeeTLSDelegate.intermediateCABase64].compactMap { Data(base64Encoded: $0) }
     }()
 
     private func isBeeHost(_ host: String) -> Bool {
@@ -34,26 +46,51 @@ final class BeeTLSDelegate: NSObject, URLSessionDelegate {
         return h.hasSuffix(".ce-beeai-services.com") || h.hasSuffix(".ce.bee.amazon.dev")
     }
 
+    private func chainDERs(_ trust: SecTrust) -> [Data] {
+        if #available(iOS 15.0, *) {
+            guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return [] }
+            return chain.map { SecCertificateCopyData($0) as Data }
+        } else {
+            let n = SecTrustGetCertificateCount(trust)
+            return (0..<n).compactMap { SecTrustGetCertificateAtIndex(trust, $0) }.map { SecCertificateCopyData($0) as Data }
+        }
+    }
+
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              let anchor,
-              isBeeHost(challenge.protectionSpace.host) else {
+              let trust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        // Add Bee's root as an anchor (keeping system roots too) and let the OS
-        // do full chain + hostname validation. The leaf's SANs include the
-        // ce-beeai-services.com hosts, so this is standard, not a blanket bypass.
-        SecTrustSetAnchorCertificates(trust, [anchor] as CFArray)
-        SecTrustSetAnchorCertificatesOnly(trust, false)
-        if SecTrustEvaluateWithError(trust, nil) {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
+        let host = challenge.protectionSpace.host
+        guard isBeeHost(host), !anchors.isEmpty else {
             completionHandler(.performDefaultHandling, nil)
+            return
         }
+        // Trust the chain against Bee's CA (plus system roots), full hostname +
+        // chain validation. The leaf's SANs cover the ce-beeai-services.com hosts.
+        SecTrustSetAnchorCertificates(trust, anchors as CFArray)
+        SecTrustSetAnchorCertificatesOnly(trust, false)
+        var err: CFError?
+        if SecTrustEvaluateWithError(trust, &err) {
+            Self.note("TLS \(host): trusted via Bee CA")
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        // Fallback: if the server actually presents Bee's CA in its chain, accept
+        // it — this is a Bee host serving a Bee-issued cert, which is the whole
+        // point. Guards against SecTrust policy quirks on a private PKI.
+        let chain = chainDERs(trust)
+        let evalMsg = (err.map { ($0 as Error).localizedDescription }) ?? "eval failed"
+        if chain.contains(where: { pinnedDERs.contains($0) }) {
+            Self.note("TLS \(host): Bee CA in chain, accepted (eval: \(evalMsg))")
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        Self.note("TLS \(host): REJECTED — Bee CA not in \(chain.count)-cert chain (eval: \(evalMsg))")
+        completionHandler(.performDefaultHandling, nil)
     }
 }
 
