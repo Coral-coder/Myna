@@ -180,15 +180,16 @@ enum BeeAccountAuth {
     static func deriveProofSecret(passphrase: String, recoveryBlob: Data) throws -> (proof: String, secret: String) {
         let aesKey = try mnemonicAESKey(passphrase: passphrase)
         let plaintext = try gcmOpen(recoveryBlob, key: aesKey)
-
-        // The decrypted material is either the raw 64-byte account key, or the
-        // 161-byte serialized key blob (possibly base64-wrapped). Handle all.
-        if let (proof, secret) = proofSecretFromSerialized(plaintext) { return (proof, secret) }
-        if plaintext.count == 64 { return proofSecret(fromAccountKey: plaintext) }
-        if let inner = Data(base64Encoded: plaintext), inner.count == 64 { return proofSecret(fromAccountKey: inner) }
-        // Last resort: treat whatever we got as the seed.
-        guard plaintext.count >= 32 else { throw AuthError.decryptFailed }
-        return proofSecret(fromAccountKey: plaintext)
+        // The decrypted recovery blob is JSON that carries the account's proof and
+        // secret directly (confirmed from the Bee app's MnemonicCryptoEngine):
+        //   {"x-bee-proof":"…","x-bee-secret":"…","x-bee-ephemeral-token":"…",…}
+        guard let obj = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+              let proof = (obj["x-bee-proof"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let secret = (obj["x-bee-secret"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !proof.isEmpty, !secret.isEmpty else {
+            throw AuthError.decryptFailed
+        }
+        return (proof, secret)
     }
 
     /// Modern Bee derivation: PBKDF2-HMAC-SHA512 → HKDF-SHA256 → 32-byte AES key.
@@ -221,39 +222,6 @@ enum BeeAccountAuth {
         }
     }
 
-    /// 64-byte account key → proof/secret via Bee's BIP32-style HMAC-SHA512 tree.
-    private static func proofSecret(fromAccountKey accountKey: Data) -> (proof: String, secret: String) {
-        let root = deriveRoot(seed: accountKey)
-        let account = deriveChild(chainCode: root.chain, index: "account")
-        let server = deriveChild(chainCode: root.chain, index: "server")
-        return (account.key.base64EncodedString(), server.chain.base64EncodedString())
-    }
-
-    /// If the plaintext is the already-serialized 161-byte blob (raw or base64):
-    /// proof = bytes[129..161], secret = bytes[33..65].
-    private static func proofSecretFromSerialized(_ data: Data) -> (proof: String, secret: String)? {
-        let bytes: Data
-        if data.count == 161 { bytes = data }
-        else if let inner = Data(base64Encoded: data), inner.count == 161 { bytes = inner }
-        else { return nil }
-        let proof = bytes.subdata(in: 129..<161)
-        let secret = bytes.subdata(in: 33..<65)
-        return (proof.base64EncodedString(), secret.base64EncodedString())
-    }
-
-    private static func deriveRoot(seed: Data) -> (key: Data, chain: Data) {
-        let mac = HMAC<SHA512>.authenticationCode(for: seed, using: SymmetricKey(data: Data("Bee Account Root Master Seed".utf8)))
-        let out = Data(mac)
-        return (out.prefix(32), out.suffix(32))
-    }
-
-    private static func deriveChild(chainCode: Data, index: String) -> (key: Data, chain: Data) {
-        var message = Data([0x00])
-        message.append(Data(index.utf8))
-        let mac = HMAC<SHA512>.authenticationCode(for: message, using: SymmetricKey(data: chainCode))
-        let out = Data(mac)
-        return (out.prefix(32), out.suffix(32))
-    }
 
     // MARK: - Helpers
 
