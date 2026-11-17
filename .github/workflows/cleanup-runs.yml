@@ -1,0 +1,48 @@
+name: Cleanup workflow runs
+
+# Deletes old Actions *run* records (the run history in the Actions tab), not
+# just their artifacts — cleanup-artifacts.yml handles artifacts. Runs nightly;
+# dispatch manually to purge on demand with a custom retention window. Never
+# touches runs that are still in progress or queued.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: 'Delete completed runs older than this many days (0 = everything completed before now)'
+        default: '7'
+  schedule:
+    - cron: '42 4 * * *'   # nightly, 04:42 UTC
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs past the retention window
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_DAYS: ${{ inputs.keep_days || '7' }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${KEEP_DAYS} days" +%s)
+          # Collect IDs first, then delete, so pagination doesn't shift under
+          # the loop. Only completed runs older than the cutoff; in-progress
+          # and queued runs (including this one) are left alone.
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" --paginate \
+                --jq ".workflow_runs[]
+                      | select(.status == \"completed\")
+                      | select((.created_at | fromdateiso8601) < ${cutoff})
+                      | .id")
+          count=$(printf '%s\n' "$ids" | grep -c . || true)
+          echo "Deleting ${count} completed workflow runs older than ${KEEP_DAYS} day(s)..."
+          printf '%s\n' "$ids" | xargs -r -P 8 -I {} sh -c \
+            'gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/{}" >/dev/null \
+               && echo "deleted {}" || echo "FAILED {}"'
+          echo "Done: processed ${count} run(s)."
