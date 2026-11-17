@@ -145,9 +145,22 @@ final class BeeAudioDecoder {
 
         let ch = UInt32(min(2, max(1, Int(frame.channels))))
         let sr = frame.sampleRate
+        // For kAudioFormatMPEG4AAC the input ASBD's mFormatFlags carries the
+        // MPEG-4 audio object type. It MUST be set — with 0 the converter is
+        // created but has no profile, so it decodes nothing (the long-standing
+        // "initialised but emitted no PCM"). Map the ADTS object type to the
+        // CoreAudio MPEG4ObjectID; default to AAC-LC, which is what Bee sends.
+        let objectID: UInt32
+        switch frame.objectType {
+        case 2: objectID = UInt32(kMPEG4Object_AAC_LC)
+        case 5: objectID = UInt32(kMPEG4Object_AAC_SBR)
+        case 4: objectID = UInt32(kMPEG4Object_AAC_LTP)
+        case 3: objectID = UInt32(kMPEG4Object_AAC_SSR)
+        default: objectID = UInt32(kMPEG4Object_AAC_LC)
+        }
         var inASBD = AudioStreamBasicDescription(
             mSampleRate: sr, mFormatID: kAudioFormatMPEG4AAC,
-            mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket,
+            mFormatFlags: objectID, mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket,
             mBytesPerFrame: 0, mChannelsPerFrame: ch, mBitsPerChannel: 0, mReserved: 0)
         var outASBD = AudioStreamBasicDescription(
             mSampleRate: sr, mFormatID: kAudioFormatLinearPCM,
@@ -161,19 +174,18 @@ final class BeeAudioDecoder {
             fail("iOS wouldn't start the AAC decoder (status \(st)).")
             return
         }
-        // AudioSpecificConfig: 5 bits objectType, 4 bits sampleRateIndex,
-        // 4 bits channelConfig, 3 bits zero → 2 bytes. Same as Bee's csd-0.
+        // The magic cookie (AudioSpecificConfig) is OPTIONAL for raw AAC-LC once
+        // mFormatFlags names the object type — Apple's own sample treats a cookie
+        // error as "this format has no cookie, carry on." So set it best-effort
+        // and NEVER fail the decoder on it (the bare 2-byte ASC is not the
+        // ESDS-form cookie AudioConverter expects, which is what returned '!dat'
+        // and blocked decoding on every prior build).
         let cookie: [UInt8] = [
             UInt8((frame.objectType << 3) | (frame.sampleRateIndex >> 1)),
             UInt8(((frame.sampleRateIndex & 1) << 7) | (Int(ch) << 3))
         ]
-        let cookieStatus = cookie.withUnsafeBytes {
+        _ = cookie.withUnsafeBytes {
             AudioConverterSetProperty(conv, kAudioConverterDecompressionMagicCookie, UInt32($0.count), $0.baseAddress!)
-        }
-        guard cookieStatus == noErr else {
-            AudioConverterDispose(conv)
-            fail("iOS rejected the AAC config (status \(cookieStatus)).")
-            return
         }
 
         releaseAAC()
