@@ -48,3 +48,55 @@ enum BeeKeyVault {
         Keychain.delete(tokenAccount(for: deviceID))
     }
 }
+
+/// The Bee account login Myna keeps so it can re-mint a bracelet key on its own.
+///
+/// To fetch a sealed key, Myna needs the account's durable **session token**
+/// (x-bee-token) plus either the **recovery passphrase** or a captured
+/// **proof/secret** pair. These are account-wide (not per bracelet), so once the
+/// user enters them Myna stores them here — Keychain, this device only — and
+/// reuses them to mint a fresh key automatically on the next connect. The
+/// passphrase/proof/secret are durable; only the session token can expire, in
+/// which case Myna asks for a fresh one but keeps everything else.
+enum BeeAccountVault {
+    private static let key = "bee.account.login"
+
+    struct Credentials: Codable, Equatable {
+        var sessionToken: String = ""
+        var passphrase: String = ""
+        var proof: String = ""
+        var secret: String = ""
+
+        var hasSecret: Bool {
+            !passphrase.trimmed.isEmpty || (!proof.trimmed.isEmpty && !secret.trimmed.isEmpty)
+        }
+        /// Enough to attempt an automatic fetch: a session token plus a secret.
+        var canAutoFetch: Bool { !sessionToken.trimmed.isEmpty && hasSecret }
+    }
+
+    static func load() -> Credentials {
+        Keychain.value(Credentials.self, for: key) ?? Credentials()
+    }
+
+    static func save(_ credentials: Credentials) {
+        try? Keychain.set(credentials, for: key)
+    }
+
+    /// Merge in whatever the user just supplied, keeping any field they left blank.
+    static func remember(sessionToken: String? = nil, passphrase: String? = nil, proof: String? = nil, secret: String? = nil) {
+        var creds = load()
+        if let sessionToken, !sessionToken.trimmed.isEmpty { creds.sessionToken = sessionToken.trimmed }
+        if let passphrase, !passphrase.trimmed.isEmpty { creds.passphrase = passphrase.trimmed }
+        if let proof, !proof.trimmed.isEmpty { creds.proof = proof.trimmed }
+        if let secret, !secret.trimmed.isEmpty { creds.secret = secret.trimmed }
+        save(creds)
+    }
+
+    static func clear() {
+        Keychain.delete(key)
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}

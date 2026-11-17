@@ -328,14 +328,44 @@ final class BeeManager: ObservableObject {
         // Bee account rather than jamming a key the firmware will reject.
         if let capturedToken, capturedToken.count >= 44 {
             installToken(capturedToken, deviceID: deviceID, source: "captured")
+        } else if attemptAutoAccountFetch() {
+            // Saved Bee login on file — re-mint the key automatically.
         } else {
-            // No installable token yet. The connect-time Bearer fetch can't
-            // authenticate — the key requires the account session token + recovery
-            // passphrase — so DON'T attempt it and DON'T remove the bracelet.
-            // Leave it connected and point the user at the manual account login.
-            log("Unsealed — no key yet. In Backstage → Bee, open ‘Advanced: fetch key with Bee login’, paste your x-bee-token + recovery passphrase, and tap Fetch.")
-            pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, paste your x-bee-token and recovery passphrase, then tap Fetch.")
+            // No installable token and no saved login. Point the user at the
+            // manual account login (which, once used, is remembered for next time).
+            log("Unsealed — no key yet. In Backstage → Bee, open ‘Advanced: fetch key with Bee login’, paste your x-bee-token + recovery passphrase, and tap Fetch. Myna remembers it after the first time.")
+            pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, paste your x-bee-token and recovery passphrase, then tap Fetch. Myna remembers it for next time.")
         }
+    }
+
+    /// If a Bee login is saved, re-mint the bracelet key with it automatically —
+    /// once per connection. Returns true when a fetch was kicked off.
+    @discardableResult
+    private func attemptAutoAccountFetch() -> Bool {
+        guard !autoAccountFetchTried else { return false }
+        let creds = BeeAccountVault.load()
+        guard creds.canAutoFetch, !deviceID.isEmpty else { return false }
+        autoAccountFetchTried = true
+        log("Unsealed — using your saved Bee login to fetch the key…")
+        pairing = .provisioning
+        if !creds.passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fetchKeyFromBeeAccount(sessionToken: creds.sessionToken, passphrase: creds.passphrase)
+        } else {
+            fetchKeyFromBeeAccount(sessionToken: creds.sessionToken, proof: creds.proof, secret: creds.secret)
+        }
+        return true
+    }
+
+    /// Whether Myna has a saved Bee login it can re-mint keys with.
+    var hasSavedBeeLogin: Bool { BeeAccountVault.load().canAutoFetch }
+
+    /// The saved Bee login, for prefilling the Backstage fields.
+    var savedBeeLogin: BeeAccountVault.Credentials { BeeAccountVault.load() }
+
+    /// Forget the saved Bee login (stops automatic key fetches).
+    func forgetBeeAccount() {
+        BeeAccountVault.clear()
+        log("Forgot the saved Bee login.")
     }
 
     /// Install a full Bee-signed key token on the bracelet and keep its AES key.
@@ -389,6 +419,9 @@ final class BeeManager: ObservableObject {
             pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
             return
         }
+        // Remember the login so the next connect can re-mint the key with no
+        // paste. The passphrase is durable; the session token may later expire.
+        BeeAccountVault.remember(sessionToken: sessionToken, passphrase: passphrase)
         log("Deriving your Bee account keys from the recovery passphrase…")
         Task { [weak self] in
             do {
@@ -422,6 +455,9 @@ final class BeeManager: ObservableObject {
             pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
             return
         }
+        // Remember the login so the next connect can re-mint the key with no
+        // paste. proof/secret are durable; the session token may later expire.
+        BeeAccountVault.remember(sessionToken: sessionToken, proof: proof, secret: secret)
         log("Minting a fresh token and fetching your bracelet key from Bee…")
         Task { [weak self] in
             do {
@@ -592,6 +628,10 @@ final class BeeManager: ObservableObject {
     /// Reset when a connection ends so the next one tries auto-record again.
     private var autoRecordTried = false
 
+    /// So we attempt the automatic account key fetch at most once per connection
+    /// (a failure must not loop into a fetch storm).
+    private var autoAccountFetchTried = false
+
     private func installDecryptor() {
         guard let key else { return }
         decryptor = try? BeeAudioDecryptor(key: key)
@@ -740,6 +780,7 @@ extension BeeManager: BeeCentralDelegate {
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
         endSpeechFeed()
         autoRecordTried = false
+        autoAccountFetchTried = false
         audioDropReasonLogged = false
         reset()
         if isEnabled { pairing = .scanning }

@@ -77,6 +77,17 @@ struct BraceletCard: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(glow: MynaTheme.cyan)
+        .onAppear(perform: prefillSavedLogin)
+    }
+
+    /// Show the Bee login Myna already has saved, so the user can see it's
+    /// remembered and re-fetch or edit it without re-typing everything.
+    private func prefillSavedLogin() {
+        let saved = bee.savedBeeLogin
+        if acctSessionToken.isEmpty { acctSessionToken = saved.sessionToken }
+        if acctPassphrase.isEmpty { acctPassphrase = saved.passphrase }
+        if acctProof.isEmpty { acctProof = saved.proof }
+        if acctSecret.isEmpty { acctSecret = saved.secret }
     }
 
     /// Paste a Bee-signed key token captured from the bracelet's BLE pairing
@@ -130,15 +141,18 @@ struct BraceletCard: View {
     private var accountFetchSection: some View {
         DisclosureGroup(isExpanded: $showAccountFetch) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Myna makes the exact call the Bee app does. Paste your real session token — the x-bee-token header from a Bee app request (the one whose POST /users/sessions/token returns 200) — plus your recovery passphrase, then tap Fetch. Everything stays on-device.")
+                Text("Myna makes the exact call the Bee app does. Paste your real session token — the x-bee-token header from a Bee app request (the one whose POST /users/sessions/token returns 200) — plus your recovery passphrase, then tap Fetch. Everything stays on-device, and Myna remembers it so it re-fetches the key automatically next time. If the session token expires, just paste a fresh one — your passphrase stays saved.")
                     .braceletCaption()
+                if bee.hasSavedBeeLogin {
+                    detailRow(icon: "checkmark.seal.fill", text: "Bee login saved — Myna fetches the key automatically on connect.", tint: MynaTheme.cyan)
+                }
                 fetchField("x-bee-token (paste from a Bee app request)", text: $acctSessionToken)
                 Text("Option A — recovery passphrase:").braceletCaption()
                 fetchField("recovery passphrase (your BIP39 words)", text: $acctPassphrase)
                 Text("Option B — paste proof + secret from the same request:").braceletCaption()
                 fetchField("x-bee-proof", text: $acctProof)
                 fetchField("x-bee-secret", text: $acctSecret)
-                Button("Fetch key with my Bee login") {
+                Button("Save & fetch key with my Bee login") {
                     if !acctPassphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         bee.fetchKeyFromBeeAccount(sessionToken: acctSessionToken, passphrase: acctPassphrase)
                     } else {
@@ -148,6 +162,14 @@ struct BraceletCard: View {
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .tint(MynaTheme.cyan)
                 .disabled(accountFetchDisabled)
+                if bee.hasSavedBeeLogin {
+                    Button("Forget saved Bee login") {
+                        bee.forgetBeeAccount()
+                        acctSessionToken = ""; acctPassphrase = ""; acctProof = ""; acctSecret = ""
+                    }
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.gold)
+                }
             }
             .padding(.top, 6)
         } label: {
