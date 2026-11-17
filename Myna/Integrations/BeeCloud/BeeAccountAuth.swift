@@ -40,7 +40,7 @@ enum BeeAccountAuth {
     static let recoveryPaths = ["/encryption/recovery", "/encryption/recovery-blob", "/users/me/recovery", "/encryption/recovery-key"]
 
     enum AuthError: LocalizedError {
-        case http(String, Int)
+        case http(String, Int, String)
         case malformed(String)
         case noEphemeral
         case noRecoveryBlob
@@ -50,7 +50,9 @@ enum BeeAccountAuth {
 
         var errorDescription: String? {
             switch self {
-            case .http(let what, let code): return "Bee \(what) returned HTTP \(code)."
+            case .http(let what, let code, let body):
+                let detail = body.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120)
+                return detail.isEmpty ? "Bee \(what) returned HTTP \(code)." : "Bee \(what) returned HTTP \(code): \(detail)"
             case .malformed(let what): return "Bee's \(what) response was unreadable."
             case .noEphemeral: return "Couldn't mint a session token — the captured token may be expired. Grab a fresh one."
             case .noRecoveryBlob: return "Couldn't find your recovery blob on Bee's server. Make sure you've set up a recovery passphrase in the Bee app."
@@ -95,7 +97,7 @@ enum BeeAccountAuth {
     /// token each time, so the stored credentials never expire.
     static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
-        var lastError: Error = AuthError.http("secure-key", 0)
+        var lastError: Error = AuthError.http("secure-key", 0, "")
         for apiHost in apiHostCandidates {
             do {
                 let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
@@ -119,7 +121,7 @@ enum BeeAccountAuth {
         request.httpBody = Data("{}".utf8)
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else { throw AuthError.http("session exchange", code) }
+        guard (200..<300).contains(code) else { throw AuthError.http("session exchange", code, String(data: data, encoding: .utf8) ?? "") }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = obj["token"] as? String, !token.isEmpty else { throw AuthError.noEphemeral }
         return token
@@ -166,7 +168,7 @@ enum BeeAccountAuth {
         request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else { throw AuthError.http("secure-key", code) }
+        guard (200..<300).contains(code) else { throw AuthError.http("secure-key", code, String(data: data, encoding: .utf8) ?? "") }
         guard let token = BeeCloudAPI.braceletToken(fromResponse: data) else { throw AuthError.malformed("secure-key") }
         guard token.count == 108 || token.count == 16 || token.count >= 28 else { throw AuthError.badTokenSize(token.count) }
         return token
