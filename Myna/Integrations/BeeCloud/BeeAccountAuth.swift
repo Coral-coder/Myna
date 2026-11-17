@@ -73,17 +73,19 @@ enum BeeAccountAuth {
     static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
 
-        // Try each API host; the recovery blob + verify + key all live on it.
+        // The recovery blob + verify + key all live on the account's API host —
+        // which the Bee app resolves via GET /endpoints. Try that first.
+        let bases = try await apiBases(ephemeral: ephemeral, session: session)
         var lastError: Error = AuthError.noRecoveryBlob
-        for apiHost in apiHostCandidates {
+        for base in bases {
             do {
-                let blob = try await fetchRecoveryBlob(apiHost: apiHost, ephemeral: ephemeral, session: session)
+                let blob = try await fetchRecoveryBlob(base: base, ephemeral: ephemeral, session: session)
                 let (proof, secret) = try deriveProofSecret(passphrase: passphrase, recoveryBlob: blob)
-                guard try await verify(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, session: session) else {
+                guard try await verify(base: base, ephemeral: ephemeral, proof: proof, secret: secret, session: session) else {
                     throw AuthError.verifyFailed
                 }
-                let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
-                return Result(keyToken: token, apiHost: apiHost)
+                let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
+                return Result(keyToken: token, apiHost: base)
             } catch {
                 lastError = error
                 continue
@@ -97,17 +99,68 @@ enum BeeAccountAuth {
     /// token each time, so the stored credentials never expire.
     static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
+        let bases = try await apiBases(ephemeral: ephemeral, session: session)
         var lastError: Error = AuthError.http("secure-key", 0, "")
-        for apiHost in apiHostCandidates {
+        for base in bases {
             do {
-                let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
-                return Result(keyToken: token, apiHost: apiHost)
+                let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
+                return Result(keyToken: token, apiHost: base)
             } catch {
                 lastError = error
                 continue
             }
         }
         throw lastError
+    }
+
+    /// The API base URLs to try, discovered endpoint first (the way the Bee app
+    /// resolves it: GET {auth}/endpoints → the entry with type "api"), then the
+    /// known fallbacks. A base is a scheme+host string with no trailing slash.
+    static func apiBases(ephemeral: String, session: URLSession) async throws -> [String] {
+        var bases: [String] = []
+        if let discovered = try? await discoverApiBase(ephemeral: ephemeral, session: session), !discovered.isEmpty {
+            bases.append(discovered)
+        }
+        for host in apiHostCandidates where !bases.contains("https://\(host)") {
+            bases.append("https://\(host)")
+        }
+        return bases
+    }
+
+    /// GET {auth}/endpoints (ephemeral-authed) → the account's API endpoint URL
+    /// (the `url` of the entry whose `type` is "api"), normalized to scheme+host.
+    static func discoverApiBase(ephemeral: String, session: URLSession) async throws -> String? {
+        var request = URLRequest(url: URL(string: "https://\(authHost)/endpoints")!)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
+        guard let (data, response) = try? await session.data(for: request),
+              (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let endpoints = obj["endpoints"] as? [[String: Any]] else { return nil }
+        for entry in endpoints {
+            if (entry["type"] as? String) == "api",
+               let url = (entry["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !url.isEmpty {
+                return baseURLString(url)
+            }
+        }
+        return nil
+    }
+
+    /// Normalize an endpoint URL to `scheme://host[:port]` (no path, no trailing slash).
+    static func baseURLString(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !s.lowercased().hasPrefix("http") { s = "https://" + s }
+        if let u = URL(string: s), let host = u.host {
+            let scheme = u.scheme ?? "https"
+            if let port = u.port { return "\(scheme)://\(host):\(port)" }
+            return "\(scheme)://\(host)"
+        }
+        let host = s.replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .components(separatedBy: "/").first ?? s
+        return "https://\(host)"
     }
 
     // MARK: - Steps
@@ -129,9 +182,10 @@ enum BeeAccountAuth {
 
     /// GET {api}/encryption/<recovery> (ephemeral-authed) → the encrypted
     /// recovery blob (base64 or raw bytes). Tries known paths.
-    static func fetchRecoveryBlob(apiHost: String, ephemeral: String, session: URLSession) async throws -> Data {
+    static func fetchRecoveryBlob(base: String, ephemeral: String, session: URLSession) async throws -> Data {
         for path in recoveryPaths {
-            var request = URLRequest(url: URL(string: "https://\(apiHost)\(path)")!)
+            guard let url = URL(string: "\(base)\(path)") else { continue }
+            var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
@@ -144,8 +198,9 @@ enum BeeAccountAuth {
 
     /// POST {api}/encryption/verify with proof/secret — confirms the derived
     /// pair before we rely on it.
-    static func verify(apiHost: String, ephemeral: String, proof: String, secret: String, session: URLSession) async throws -> Bool {
-        var request = URLRequest(url: URL(string: "https://\(apiHost)/encryption/verify")!)
+    static func verify(base: String, ephemeral: String, proof: String, secret: String, session: URLSession) async throws -> Bool {
+        guard let url = URL(string: "\(base)/encryption/verify") else { return false }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
@@ -158,16 +213,17 @@ enum BeeAccountAuth {
 
     /// POST {api}/ble/secure-key — the same call BeeCloudAPI makes, now with
     /// self-derived auth.
-    static func fetchKeyToken(apiHost: String, ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession) async throws -> Data {
-        var request = URLRequest(url: URL(string: "https://\(apiHost)/ble/secure-key")!)
+    static func fetchKeyToken(base: String, ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession) async throws -> Data {
+        guard let url = URL(string: "\(base)/ble/secure-key") else { throw AuthError.malformed("secure-key url") }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
         request.setValue(proof, forHTTPHeaderField: "x-bee-proof")
         request.setValue(secret, forHTTPHeaderField: "x-bee-secret")
-        // This services host validates snake_case `device_id`; the Bee app's own
-        // host took camelCase `deviceId`. Send both so either validator is happy.
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex, "deviceId": deviceIDHex])
+        // Exactly the Bee app's body: a single snake_case device_id, the lowercase
+        // hex of the secure-IDs' first 8 bytes (ConnectionGuard.fetchKeyFromBackend).
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw AuthError.http("secure-key", code, String(data: data, encoding: .utf8) ?? "") }

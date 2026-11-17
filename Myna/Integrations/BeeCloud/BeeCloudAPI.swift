@@ -174,9 +174,8 @@ struct BeeCloudAPI {
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        // The services host validates snake_case "device_id"; the app's host took
-        // camelCase "deviceId". Send both so either validator is satisfied.
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex, "deviceId": deviceIDHex])
+        // Exactly the Bee app's body: a single snake_case device_id.
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let http = response as? HTTPURLResponse
         let code = http?.statusCode ?? 0
@@ -231,7 +230,7 @@ struct BeeCloudAPI {
         if let amazonToken = amazonToken?.trimmingCharacters(in: .whitespacesAndNewlines), !amazonToken.isEmpty {
             request.setValue(amazonToken, forHTTPHeaderField: "x-amazon-access-token")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex, "deviceId": deviceIDHex])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
 
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
