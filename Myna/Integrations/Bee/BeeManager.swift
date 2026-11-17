@@ -302,6 +302,9 @@ final class BeeManager: ObservableObject {
         // A captured Bee-signed token (pasted in Backstage) gives the AES key
         // directly — bytes 12..<28 — with no Bee server at all.
         let capturedToken = BeeKeyVault.existingToken(deviceID: deviceID)
+        // Keep the token around for the audio decryption probe, whichever path
+        // sets up the key (fresh install or reusing the sealed/stored key).
+        if let capturedToken { installedToken = capturedToken }
 
         if isSealed {
             if let heldKey {
@@ -782,6 +785,7 @@ final class BeeManager: ObservableObject {
             return nil
         }
         var keys: [(String, Data)] = []
+        if let k = key, k.count == 16 { keys.append(("currentKey", k)) }
         if token.count >= 28 { keys.append(("tok[12:28]", token.subdata(in: 12..<28))) }
         if token.count >= 16 { keys.append(("tok[0:16]", token.subdata(in: 0..<16))) }
         if token.count >= 44 { keys.append(("tok[28:44]", token.subdata(in: 28..<44))) }
