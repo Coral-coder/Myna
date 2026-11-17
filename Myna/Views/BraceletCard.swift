@@ -84,7 +84,8 @@ struct BraceletCard: View {
     /// remembered and re-fetch or edit it without re-typing everything.
     private func prefillSavedLogin() {
         let saved = bee.savedBeeLogin
-        if acctSessionToken.isEmpty { acctSessionToken = saved.sessionToken }
+        // Prefer a pasted token, else show the token from the linked Bee account.
+        if acctSessionToken.isEmpty { acctSessionToken = saved.sessionToken.isEmpty ? (bee.effectiveSessionToken() ?? "") : saved.sessionToken }
         if acctPassphrase.isEmpty { acctPassphrase = saved.passphrase }
         if acctProof.isEmpty { acctProof = saved.proof }
         if acctSecret.isEmpty { acctSecret = saved.secret }
@@ -141,10 +142,12 @@ struct BraceletCard: View {
     private var accountFetchSection: some View {
         DisclosureGroup(isExpanded: $showAccountFetch) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Myna makes the exact call the Bee app does. Paste your real session token — the x-bee-token header from a Bee app request (the one whose POST /users/sessions/token returns 200) — plus your recovery passphrase, then tap Fetch. Everything stays on-device, and Myna remembers it so it re-fetches the key automatically next time. If the session token expires, just paste a fresh one — your passphrase stays saved.")
+                Text("Myna makes the exact call the Bee app does, using your recovery passphrase to derive the account keys. If your Bee account is linked above (for conversation import), Myna uses that token automatically — just enter your recovery passphrase once and tap Fetch; after that it re-fetches the key on its own each connect. If you haven't linked Bee, paste a session token (the x-bee-token header from a Bee app request) as well. Everything stays on-device.")
                     .braceletCaption()
-                if bee.hasSavedBeeLogin {
+                if bee.canAutoFetchKey {
                     detailRow(icon: "checkmark.seal.fill", text: "Bee login saved — Myna fetches the key automatically on connect.", tint: MynaTheme.cyan)
+                } else if bee.hasSavedBeeLogin {
+                    detailRow(icon: "exclamationmark.triangle.fill", text: "Passphrase saved, but no session token yet — link your Bee account above, or paste a token.", tint: MynaTheme.gold)
                 }
                 fetchField("x-bee-token (paste from a Bee app request)", text: $acctSessionToken)
                 Text("Option A — recovery passphrase:").braceletCaption()

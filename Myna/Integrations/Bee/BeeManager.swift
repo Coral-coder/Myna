@@ -81,6 +81,10 @@ final class BeeManager: ObservableObject {
     /// Fetches the bracelet's sealed key token from Bee (set by AppServices).
     /// Returns the full token; the 16-byte CTR key is extracted from it.
     var fetchSecureKeyToken: ((String) async throws -> Data)?
+    /// The session token from your linked Bee account (the cloud-import
+    /// connection), set by AppServices. Used as the session token for the
+    /// automatic key fetch so you never have to paste one by hand.
+    var linkedSessionToken: (() -> String?)?
     private var decryptor: BeeAudioDecryptor?
     private var decoder: BeeAudioDecoder?
     private var feedingSpeech = false
@@ -331,36 +335,70 @@ final class BeeManager: ObservableObject {
         } else if attemptAutoAccountFetch() {
             // Saved Bee login on file — re-mint the key automatically.
         } else {
-            // No installable token and no saved login. Point the user at the
-            // manual account login (which, once used, is remembered for next time).
-            log("Unsealed — no key yet. In Backstage → Bee, open ‘Advanced: fetch key with Bee login’, paste your x-bee-token + recovery passphrase, and tap Fetch. Myna remembers it after the first time.")
-            pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, paste your x-bee-token and recovery passphrase, then tap Fetch. Myna remembers it for next time.")
+            // No installable token and no saved secret. Point the user at the
+            // account login. If Bee is linked, they only need the passphrase.
+            let linked = (linkedSessionToken?()?.isEmpty == false)
+            if linked {
+                log("Unsealed — no key yet. Your Bee account is linked, so in Backstage → Bee → ‘Advanced: fetch key with Bee login’, just enter your recovery passphrase and tap Fetch. Myna remembers it and re-fetches automatically after that.")
+                pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, enter your recovery passphrase and tap Fetch (your linked Bee account supplies the token).")
+            } else {
+                log("Unsealed — no key yet. In Backstage → Bee, link your Bee account (for the token) or open ‘Advanced: fetch key with Bee login’ and paste your x-bee-token, then enter your recovery passphrase and tap Fetch. Myna remembers it after the first time.")
+                pairing = .error("This bracelet needs Bee's key. In Backstage → Bee, link your Bee account, then open ‘Advanced: fetch key with Bee login’, enter your recovery passphrase and tap Fetch. Myna remembers it for next time.")
+            }
         }
     }
 
-    /// If a Bee login is saved, re-mint the bracelet key with it automatically —
-    /// once per connection. Returns true when a fetch was kicked off.
+    /// The session token to authenticate Bee with, preferring a token you pasted
+    /// but falling back to the one from your linked Bee account — so a linked
+    /// account means no paste at all.
+    func effectiveSessionToken() -> String? {
+        let pasted = BeeAccountVault.load().sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pasted.isEmpty { return pasted }
+        if let linked = linkedSessionToken?()?.trimmingCharacters(in: .whitespacesAndNewlines), !linked.isEmpty {
+            return linked
+        }
+        return nil
+    }
+
+    /// If we have a secret (saved passphrase or proof/secret) and a session token
+    /// from either source, re-mint the bracelet key automatically — once per
+    /// connection. Returns true when a fetch was kicked off.
     @discardableResult
     private func attemptAutoAccountFetch() -> Bool {
-        guard !autoAccountFetchTried else { return false }
+        guard !autoAccountFetchTried, !deviceID.isEmpty else { return false }
         let creds = BeeAccountVault.load()
-        guard creds.canAutoFetch, !deviceID.isEmpty else { return false }
+        guard creds.hasSecret, let sessionToken = effectiveSessionToken() else { return false }
         autoAccountFetchTried = true
-        log("Unsealed — using your saved Bee login to fetch the key…")
+        let source = BeeAccountVault.load().sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "linked Bee account" : "saved login"
+        log("Unsealed — fetching the key with your \(source)…")
         pairing = .provisioning
         if !creds.passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fetchKeyFromBeeAccount(sessionToken: creds.sessionToken, passphrase: creds.passphrase)
+            fetchKeyFromBeeAccount(sessionToken: sessionToken, passphrase: creds.passphrase)
         } else {
-            fetchKeyFromBeeAccount(sessionToken: creds.sessionToken, proof: creds.proof, secret: creds.secret)
+            fetchKeyFromBeeAccount(sessionToken: sessionToken, proof: creds.proof, secret: creds.secret)
         }
         return true
     }
 
-    /// Whether Myna has a saved Bee login it can re-mint keys with.
-    var hasSavedBeeLogin: Bool { BeeAccountVault.load().canAutoFetch }
+    /// Whether Myna can fetch the key with no paste: a saved secret plus a
+    /// session token from either the paste or the linked Bee account.
+    var canAutoFetchKey: Bool { BeeAccountVault.load().hasSecret && effectiveSessionToken() != nil }
+
+    /// Whether a secret (passphrase or proof/secret) is saved.
+    var hasSavedBeeLogin: Bool { BeeAccountVault.load().hasSecret }
 
     /// The saved Bee login, for prefilling the Backstage fields.
     var savedBeeLogin: BeeAccountVault.Credentials { BeeAccountVault.load() }
+
+    /// Persist the login, but don't store a session token that just mirrors the
+    /// linked Bee account's (that token self-refreshes; a saved copy would shadow
+    /// it and go stale). The durable secret is always kept.
+    private func rememberLogin(sessionToken: String, passphrase: String? = nil, proof: String? = nil, secret: String? = nil) {
+        let linked = linkedSessionToken?()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokenToStore: String? = (trimmedToken == linked) ? nil : trimmedToken
+        BeeAccountVault.remember(sessionToken: tokenToStore, passphrase: passphrase, proof: proof, secret: secret)
+    }
 
     /// Forget the saved Bee login (stops automatic key fetches).
     func forgetBeeAccount() {
@@ -421,7 +459,7 @@ final class BeeManager: ObservableObject {
         }
         // Remember the login so the next connect can re-mint the key with no
         // paste. The passphrase is durable; the session token may later expire.
-        BeeAccountVault.remember(sessionToken: sessionToken, passphrase: passphrase)
+        rememberLogin(sessionToken: sessionToken, passphrase: passphrase)
         log("Deriving your Bee account keys from the recovery passphrase…")
         Task { [weak self] in
             do {
@@ -457,7 +495,7 @@ final class BeeManager: ObservableObject {
         }
         // Remember the login so the next connect can re-mint the key with no
         // paste. proof/secret are durable; the session token may later expire.
-        BeeAccountVault.remember(sessionToken: sessionToken, proof: proof, secret: secret)
+        rememberLogin(sessionToken: sessionToken, proof: proof, secret: secret)
         log("Minting a fresh token and fetching your bracelet key from Bee…")
         Task { [weak self] in
             do {

@@ -78,6 +78,9 @@ final class AppServices {
         bee.fetchSecureKeyToken = { [beeCloud] deviceIDHex in
             try await beeCloud.braceletKeyToken(deviceIDHex: deviceIDHex)
         }
+        // The linked Bee account's token doubles as the session token for the
+        // automatic key fetch, so a linked account needs no pasted token.
+        bee.linkedSessionToken = { [beeCloud] in beeCloud.storedToken }
         // When the bracelet's key can't be fetched, Myna removes the bracelet and
         // falls back to syncing conversations from Bee's cloud instead.
         bee.onSyncFallback = { [beeCloud] in beeCloud.importIfEnabled() }
