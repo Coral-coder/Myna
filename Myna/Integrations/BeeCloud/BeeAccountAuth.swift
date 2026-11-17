@@ -31,7 +31,10 @@ enum BeeAccountAuth {
     // Confirmed live: auth.beeai-services.com serves /ble/secure-key and
     // /encryption/* (both return 401, i.e. exist + need auth). api.beeai-services.com
     // no longer resolves.
-    static let apiHostCandidates = ["auth.beeai-services.com"]
+    // From a live proxy capture of the Bee app: the main API (encryption, key,
+    // recovery) is served by api-3.ce-beeai-services.com; auth.beeai-services.com
+    // handles /users/sessions/token (session exchange). Try the API host first.
+    static let apiHostCandidates = ["api-3.ce-beeai-services.com", "auth.beeai-services.com"]
     /// Candidate recovery-blob endpoints (the exact path is built at runtime in
     /// the app; these are the observed `/encryption/*` surface).
     static let recoveryPaths = ["/encryption/recovery", "/encryption/recovery-blob", "/users/me/recovery", "/encryption/recovery-key"]
