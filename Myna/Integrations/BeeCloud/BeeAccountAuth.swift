@@ -165,7 +165,9 @@ enum BeeAccountAuth {
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
         request.setValue(proof, forHTTPHeaderField: "x-bee-proof")
         request.setValue(secret, forHTTPHeaderField: "x-bee-secret")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+        // This services host validates snake_case `device_id`; the Bee app's own
+        // host took camelCase `deviceId`. Send both so either validator is happy.
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex, "deviceId": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw AuthError.http("secure-key", code, String(data: data, encoding: .utf8) ?? "") }
