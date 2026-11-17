@@ -73,26 +73,45 @@ enum BeeAccountAuth {
     static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
 
-        // The recovery blob + verify + key all live on the account's API host —
-        // which the Bee app resolves via GET /endpoints. Try that first.
+        // The recovery blob and the key endpoint can live on DIFFERENT hosts
+        // (observed: recovery blob on auth.beeai-services.com, /ble/secure-key on
+        // the resolved api host). So decouple: derive proof/secret from wherever
+        // the recovery blob is served, then call secure-key on the api endpoint.
         let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
         log?("device_id=\(deviceIDHex)")
-        var lastError: Error = AuthError.noRecoveryBlob
+
+        var proofSecret: (proof: String, secret: String)?
         for base in bases {
+            guard let blob = try? await fetchRecoveryBlob(base: base, ephemeral: ephemeral, session: session) else {
+                log?("no recovery blob on \(base)")
+                continue
+            }
+            if let ps = try? deriveProofSecret(passphrase: passphrase, recoveryBlob: blob) {
+                log?("recovery blob + proof/secret from \(base)")
+                proofSecret = ps
+                break
+            }
+            log?("recovery blob on \(base) but passphrase didn't decrypt it")
+        }
+        guard let (proof, secret) = proofSecret else { throw AuthError.decryptFailed }
+
+        return try await fetchKeyOnApi(bases: bases, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session, log: log)
+    }
+
+    /// POST /ble/secure-key on the account's api host. `bases` is already ordered
+    /// with the resolved api endpoint first (apiBases prepends it), and secure-key
+    /// lives on the api host, not auth — so trying bases in order hits api first.
+    static func fetchKeyOnApi(bases: [String], ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
+        var lastError: Error = AuthError.http("secure-key", 0, "")
+        for base in bases {
+            let ok = (try? await verify(base: base, ephemeral: ephemeral, proof: proof, secret: secret, session: session)) ?? false
+            log?("verify=\(ok) on \(base) → POST \(base)/ble/secure-key")
             do {
-                let blob = try await fetchRecoveryBlob(base: base, ephemeral: ephemeral, session: session)
-                let (proof, secret) = try deriveProofSecret(passphrase: passphrase, recoveryBlob: blob)
-                guard try await verify(base: base, ephemeral: ephemeral, proof: proof, secret: secret, session: session) else {
-                    log?("verify FAILED on \(base)")
-                    throw AuthError.verifyFailed
-                }
-                log?("verify OK on \(base) → POST \(base)/ble/secure-key")
                 let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
                 return Result(keyToken: token, apiHost: base)
             } catch {
-                log?("\(base): \(error.localizedDescription)")
+                log?("secure-key \(base): \(error.localizedDescription)")
                 lastError = error
-                continue
             }
         }
         throw lastError
@@ -105,19 +124,7 @@ enum BeeAccountAuth {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
         let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
         log?("device_id=\(deviceIDHex)")
-        var lastError: Error = AuthError.http("secure-key", 0, "")
-        for base in bases {
-            do {
-                log?("POST \(base)/ble/secure-key")
-                let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
-                return Result(keyToken: token, apiHost: base)
-            } catch {
-                log?("\(base): \(error.localizedDescription)")
-                lastError = error
-                continue
-            }
-        }
-        throw lastError
+        return try await fetchKeyOnApi(bases: bases, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session, log: log)
     }
 
     /// The API base URLs to try, discovered endpoint first (the way the Bee app
