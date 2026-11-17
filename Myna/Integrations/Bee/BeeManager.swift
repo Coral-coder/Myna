@@ -328,14 +328,13 @@ final class BeeManager: ObservableObject {
         // Bee account rather than jamming a key the firmware will reject.
         if let capturedToken, capturedToken.count >= 44 {
             installToken(capturedToken, deviceID: deviceID, source: "captured")
-        } else if fetchSecureKeyToken != nil {
-            if capturedToken != nil {
-                log("Ignoring a stored bare key — 0xC018 needs Bee's full signed token. Fetching it from your Bee account…")
-            }
-            provisionFromBackend(deviceID: deviceID)
         } else {
-            log("Unsealed, and Myna holds no installable token (a bare 16-byte key is rejected by 0xC018). Connect your Bee account so Myna can fetch the signed key, or paste the full 108-byte token.")
-            pairing = .error("This bracelet needs Bee's signed key. Connect your Bee account in Backstage, or paste the full 108-byte token in the key field.")
+            // No installable token yet. The connect-time Bearer fetch can't
+            // authenticate — the key requires the account session token + recovery
+            // passphrase — so DON'T attempt it and DON'T remove the bracelet.
+            // Leave it connected and point the user at the manual account login.
+            log("Unsealed — no key yet. In Backstage → Bee, open ‘Advanced: fetch key with Bee login’, paste your x-bee-token + recovery passphrase, and tap Fetch.")
+            pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, paste your x-bee-token and recovery passphrase, then tap Fetch.")
         }
     }
 
