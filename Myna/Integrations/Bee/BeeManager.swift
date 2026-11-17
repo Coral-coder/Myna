@@ -461,10 +461,11 @@ final class BeeManager: ObservableObject {
         // paste. The passphrase is durable; the session token may later expire.
         rememberLogin(sessionToken: sessionToken, passphrase: passphrase)
         log("Deriving your Bee account keys from the recovery passphrase…")
+        let logger: @Sendable (String) -> Void = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
         Task { [weak self] in
             do {
                 let result = try await BeeAccountAuth.fetchBraceletKey(
-                    sessionToken: sessionToken, passphrase: passphrase, deviceIDHex: deviceHex
+                    sessionToken: sessionToken, passphrase: passphrase, deviceIDHex: deviceHex, log: logger
                 )
                 guard let self else { return }
                 guard BeeCloudAPI.ctrKey(fromToken: result.keyToken) != nil else {
@@ -497,10 +498,11 @@ final class BeeManager: ObservableObject {
         // paste. proof/secret are durable; the session token may later expire.
         rememberLogin(sessionToken: sessionToken, proof: proof, secret: secret)
         log("Minting a fresh token and fetching your bracelet key from Bee…")
+        let logger: @Sendable (String) -> Void = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
         Task { [weak self] in
             do {
                 let result = try await BeeAccountAuth.fetchBraceletKey(
-                    sessionToken: sessionToken, proof: proof, secret: secret, deviceIDHex: deviceHex
+                    sessionToken: sessionToken, proof: proof, secret: secret, deviceIDHex: deviceHex, log: logger
                 )
                 guard let self else { return }
                 guard BeeCloudAPI.ctrKey(fromToken: result.keyToken) != nil else {

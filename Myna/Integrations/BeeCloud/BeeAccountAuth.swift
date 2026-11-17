@@ -70,23 +70,27 @@ enum BeeAccountAuth {
     /// Full chain: session token + passphrase + device id → the 108-byte sealed
     /// key token (its bytes 12..<28 are the AES key). Self-verifies before the
     /// final fetch so a wrong constant fails loudly instead of yielding garbage.
-    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
 
         // The recovery blob + verify + key all live on the account's API host —
         // which the Bee app resolves via GET /endpoints. Try that first.
-        let bases = try await apiBases(ephemeral: ephemeral, session: session)
+        let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
+        log?("device_id=\(deviceIDHex)")
         var lastError: Error = AuthError.noRecoveryBlob
         for base in bases {
             do {
                 let blob = try await fetchRecoveryBlob(base: base, ephemeral: ephemeral, session: session)
                 let (proof, secret) = try deriveProofSecret(passphrase: passphrase, recoveryBlob: blob)
                 guard try await verify(base: base, ephemeral: ephemeral, proof: proof, secret: secret, session: session) else {
+                    log?("verify FAILED on \(base)")
                     throw AuthError.verifyFailed
                 }
+                log?("verify OK on \(base) → POST \(base)/ble/secure-key")
                 let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
                 return Result(keyToken: token, apiHost: base)
             } catch {
+                log?("\(base): \(error.localizedDescription)")
                 lastError = error
                 continue
             }
@@ -97,15 +101,18 @@ enum BeeAccountAuth {
     /// Same fetch, but with proof/secret you captured directly (no recovery
     /// passphrase). Still mints a fresh ephemeral from the durable session
     /// token each time, so the stored credentials never expire.
-    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
-        let bases = try await apiBases(ephemeral: ephemeral, session: session)
+        let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
+        log?("device_id=\(deviceIDHex)")
         var lastError: Error = AuthError.http("secure-key", 0, "")
         for base in bases {
             do {
+                log?("POST \(base)/ble/secure-key")
                 let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
                 return Result(keyToken: token, apiHost: base)
             } catch {
+                log?("\(base): \(error.localizedDescription)")
                 lastError = error
                 continue
             }
@@ -116,28 +123,42 @@ enum BeeAccountAuth {
     /// The API base URLs to try, discovered endpoint first (the way the Bee app
     /// resolves it: GET {auth}/endpoints → the entry with type "api"), then the
     /// known fallbacks. A base is a scheme+host string with no trailing slash.
-    static func apiBases(ephemeral: String, session: URLSession) async throws -> [String] {
+    static func apiBases(ephemeral: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> [String] {
         var bases: [String] = []
-        if let discovered = try? await discoverApiBase(ephemeral: ephemeral, session: session), !discovered.isEmpty {
+        if let discovered = try? await discoverApiBase(ephemeral: ephemeral, session: session, log: log), !discovered.isEmpty {
             bases.append(discovered)
+        } else {
+            log?("No API endpoint from /endpoints — using fallback hosts.")
         }
         for host in apiHostCandidates where !bases.contains("https://\(host)") {
             bases.append("https://\(host)")
         }
+        log?("API bases: \(bases.joined(separator: ", "))")
         return bases
     }
 
     /// GET {auth}/endpoints (ephemeral-authed) → the account's API endpoint URL
     /// (the `url` of the entry whose `type` is "api"), normalized to scheme+host.
-    static func discoverApiBase(ephemeral: String, session: URLSession) async throws -> String? {
+    static func discoverApiBase(ephemeral: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> String? {
         var request = URLRequest(url: URL(string: "https://\(authHost)/endpoints")!)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
-        guard let (data, response) = try? await session.data(for: request),
-              (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let endpoints = obj["endpoints"] as? [[String: Any]] else { return nil }
+        guard let (data, response) = try? await session.data(for: request) else {
+            log?("/endpoints request errored")
+            return nil
+        }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            log?("/endpoints HTTP \(code): \(String(data: data, encoding: .utf8)?.prefix(160) ?? "")")
+            return nil
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let endpoints = obj["endpoints"] as? [[String: Any]] else {
+            log?("/endpoints unparseable: \(String(data: data, encoding: .utf8)?.prefix(160) ?? "")")
+            return nil
+        }
+        log?("/endpoints: " + endpoints.map { "\(($0["type"] as? String) ?? "?")=\(($0["url"] as? String) ?? "?")" }.joined(separator: ", "))
         for entry in endpoints {
             if (entry["type"] as? String) == "api",
                let url = (entry["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
