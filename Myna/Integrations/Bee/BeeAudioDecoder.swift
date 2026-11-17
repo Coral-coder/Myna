@@ -148,16 +148,11 @@ final class BeeAudioDecoder {
         // For kAudioFormatMPEG4AAC the input ASBD's mFormatFlags carries the
         // MPEG-4 audio object type. It MUST be set — with 0 the converter is
         // created but has no profile, so it decodes nothing (the long-standing
-        // "initialised but emitted no PCM"). Map the ADTS object type to the
-        // CoreAudio MPEG4ObjectID; default to AAC-LC, which is what Bee sends.
-        let objectID: UInt32
-        switch frame.objectType {
-        case 2: objectID = UInt32(kMPEG4Object_AAC_LC)
-        case 5: objectID = UInt32(kMPEG4Object_AAC_SBR)
-        case 4: objectID = UInt32(kMPEG4Object_AAC_LTP)
-        case 3: objectID = UInt32(kMPEG4Object_AAC_SSR)
-        default: objectID = UInt32(kMPEG4Object_AAC_LC)
-        }
+        // "initialised but emitted no PCM"). The ADTS header's object type IS the
+        // MPEG-4 audio object type value CoreAudio wants here (AAC-LC = 2, the
+        // same as kMPEG4Object_AAC_LC), so pass it straight through; clamp to
+        // AAC-LC for anything out of the sane 1…5 range.
+        let objectID = UInt32((1...5).contains(frame.objectType) ? frame.objectType : 2)
         var inASBD = AudioStreamBasicDescription(
             mSampleRate: sr, mFormatID: kAudioFormatMPEG4AAC,
             mFormatFlags: objectID, mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket,
