@@ -10,9 +10,24 @@ struct TranscriptionLabView: View {
     @State private var sortByScore = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Stays put: the engine in use and what it is hearing right now.
+            activeCard
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+            Rectangle().fill(MynaTheme.hair).frame(height: 1)
+            engineList
+        }
+        .onAppear {
+            for vendor in CloudVendor.allCases { keys[vendor] = LabKeychain.get(vendor) }
+        }
+    }
+
+    /// Scrolls underneath the pinned card.
+    private var engineList: some View {
         ScrollView {
             VStack(spacing: 16) {
-                activeCard
                 clipCard
                 section(title: "On this iPhone", icon: "iphone", engines: sorted(LabCatalog.onDevice))
                 section(title: "Cloud — audio leaves the phone", icon: "cloud", engines: sorted(LabCatalog.cloud))
@@ -22,9 +37,6 @@ struct TranscriptionLabView: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
-        .onAppear {
-            for vendor in CloudVendor.allCases { keys[vendor] = LabKeychain.get(vendor) }
-        }
     }
 
     private func sorted(_ engines: [LabEngine]) -> [LabEngine] {

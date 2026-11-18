@@ -21,6 +21,10 @@ struct MynaApp: App {
                 .environmentObject(services.whisper)
                 .environmentObject(services.neuralVoice)
                 .preferredColorScheme(themeStore.mood.scheme)
+                .onOpenURL { url in
+                    // The pairing QR the home server shows opens Myna with this link.
+                    if url.scheme == "myna", url.host == "pair" { HomeServer.shared.pair(link: url.absoluteString) }
+                }
         }
         .modelContainer(services.container)
         .onChange(of: scenePhase) { _, phase in

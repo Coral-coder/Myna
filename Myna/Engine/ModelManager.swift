@@ -203,6 +203,14 @@ final class ModelManager: ObservableObject {
     ///     iOS can fail it (which aborts the app) and the request is run again
     ///     on the CPU, so nothing is dropped.
     func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
+        // The home computer first, when it's paired and answering. Any failure
+        // falls through to this iPhone's own models, so nothing is lost.
+        if HomeServer.shared.shouldTry {
+            if let answer = try? await HomeServer.shared.generate(instructions: instructions, prompt: prompt, maxTokens: maxTokens) {
+                return answer
+            }
+        }
+        HomeServer.shared.noteLocal("writing")
         let onScreen = UIApplication.shared.applicationState == .active
         let appleFirst = activeModel?.backend == .appleFoundation
             || (!onScreen && AppleIntelligenceEngine.isAvailable)
