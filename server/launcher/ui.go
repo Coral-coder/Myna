@@ -76,14 +76,14 @@ func statusPage(st *status, token string, settings *launcherSettings) http.Handl
 		snap, lines := st.snapshot()
 		var b strings.Builder
 		b.WriteString(`<!doctype html><meta charset="utf-8"><title>Myna Server</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#1b1c1d;background:#e9e9e6}
-h1{font-weight:300;font-size:30px;margin:0 0 4px}.k{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#8a8b88;margin-top:22px}
-.v{font-size:17px;font-weight:300}a{color:#1b1c1d}pre{font:12px ui-monospace,monospace;background:#dededb;padding:12px;overflow:auto;max-height:220px}
-img{background:#fff;padding:10px;margin-top:8px}button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border:1px solid #1b1c1d;background:none;border-radius:99px;cursor:pointer}
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
+h1{font-weight:300;font-size:30px;margin:0 0 4px}.k{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#6a6c6e;margin-top:22px}
+.v{font-size:17px;font-weight:300}a{color:#e9e9e6}pre{font:12px ui-monospace,monospace;background:#1c1e20;padding:12px;overflow:auto;max-height:220px}
+img{background:#fff;padding:10px;margin-top:8px}button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}
 code{word-break:break-all;font-size:12px}
-nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #0002;padding-bottom:10px;margin-bottom:22px}
-nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6c6d6b}
-nav a.on{color:#1b1c1d;border-bottom:1px solid #1b1c1d}</style>
+nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #ffffff22;padding-bottom:10px;margin-bottom:22px}
+nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#9b9d9e}
+nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
 <nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a class="on" href="/" style="margin-left:auto">Status</a></nav><div id="page">`)
 		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
 

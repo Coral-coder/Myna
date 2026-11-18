@@ -33,6 +33,7 @@ func runWindow() {
 		DataPath:  sub("webview"),
 		WindowOptions: webview2.WindowOptions{
 			Title:  "Myna Server",
+			IconId: 1, // the icon built into the exe (winres/)
 			Width:  820,
 			Height: 900,
 			Center: true,
