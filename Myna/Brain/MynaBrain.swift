@@ -191,7 +191,7 @@ final class MynaBrain: ObservableObject {
         var webBlock = ""
         for round in 0..<2 {
             let prompt = "THE CONVERSATION JUST NOW:\n\(heard)\n\(webBlock)\nJSON:"
-            guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 200),
+            guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 200, background: true),
                   let json = NotesEngine.extractJSON(from: raw), let data = json.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
             let search = (object["search"] as? String ?? "").trimmingCharacters(in: .whitespaces)

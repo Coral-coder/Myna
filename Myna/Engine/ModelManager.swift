@@ -209,7 +209,12 @@ final class ModelManager: ObservableObject {
     ///   - if Myna leaves the screen mid-answer, the GPU run is stopped before
     ///     iOS can fail it (which aborts the app) and the request is run again
     ///     on the CPU, so nothing is dropped.
-    func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
+    ///
+    /// `background` marks work nobody is waiting on (sorting the transcript,
+    /// deciding whether to chime in). That work is never given to the phone's
+    /// own MLX model, which is the heaviest and least stable thing Myna runs:
+    /// it uses the home server or Apple Intelligence, or waits.
+    func respond(instructions: String, prompt: String, maxTokens: Int = 2048, background: Bool = false) async throws -> String {
         // The home computer first, when it's paired and answering. Any failure
         // falls through to this iPhone's own models, so nothing is lost.
         if HomeServer.shared.shouldTry {
@@ -240,6 +245,7 @@ final class ModelManager: ObservableObject {
         guard hasMLXModelInstalled else {
             throw AppleIntelligenceEngine.isAvailable ? MynaModelError.appleIntelligenceUnavailable : MynaModelError.noModelInstalled
         }
+        if background { throw MynaModelError.waitingForServer }
 
         // Ask iOS for time to finish if Myna gets backgrounded part-way.
         let grace = UIApplication.shared.beginBackgroundTask(withName: "myna.generate")

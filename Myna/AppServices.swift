@@ -83,7 +83,7 @@ final class AppServices {
         // When the home server comes back, write up what was waiting for it.
         HomeServer.shared.onBack = { [pilot] in pilot.drainQueue() }
         TranscriptSorter.shared.start(container: container) { [modelManager] instructions, prompt in
-            try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 80)
+            try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 80, background: true)
         }
         beeCloud.brain = brain
         // Extraction runs on the user's downloaded model (a bigger MLX model when
