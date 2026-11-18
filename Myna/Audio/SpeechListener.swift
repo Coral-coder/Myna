@@ -358,14 +358,55 @@ final class SpeechListener: NSObject, ObservableObject {
         }
     }
 
-    /// Hand the recognizer a buffer of PCM decoded from the bracelet.
+    /// Bracelet audio that arrived while no recognition request could take it
+    /// (recognizer unavailable, restarting, or paused while Myna speaks). It is
+    /// replayed, in order, the moment a request is live again.
+    private var externalBacklog: [AVAudioPCMBuffer] = []
+    /// ~30 minutes of 16 kHz AAC frames. Past this the oldest audio is let go
+    /// from the replay queue only — the segment recording on disk still has it.
+    private let externalBacklogLimit = 28_000
+    private var lastTaskAttempt: Date = .distantPast
+
+    /// Take a buffer of PCM decoded from the bracelet. Never refused: it is
+    /// recorded to the conversation's audio file, and either handed to the
+    /// recognizer now or queued until the recognizer is back.
     func feedExternalAudio(_ buffer: AVAudioPCMBuffer) {
-        guard externalSourceActive, !isPaused else { return }
-        tapLock.lock()
-        tapRequest?.append(buffer)
-        tapLock.unlock()
         let level = Self.rms(of: buffer)
         audioLevel = max(level, audioLevel * 0.86)
+
+        // Let a conversation (and its Whisper recording) start from the bracelet
+        // alone, even when Apple's recognizer is producing nothing.
+        if captureFormat == nil || segmentURL == nil { captureFormat = buffer.format }
+        if level > 0.3, Date.now.timeIntervalSince(lastVoiceActivity) > 2 {
+            lastVoiceActivity = .now
+            onVoiceActivity?()
+        }
+
+        tapLock.lock()
+        if captureActive { try? segmentFile?.write(from: buffer) }
+        let liveRequest = isPaused ? nil : tapRequest
+        tapLock.unlock()
+
+        guard let liveRequest else {
+            externalBacklog.append(buffer)
+            if externalBacklog.count > externalBacklogLimit {
+                externalBacklog.removeFirst(externalBacklog.count - externalBacklogLimit)
+            }
+            // Nobody else retries a recognizer that failed to start; do it here.
+            if isListening, !isPaused, !restartPending, request == nil, Date.now.timeIntervalSince(lastTaskAttempt) > 5 {
+                startRecognitionTask()
+            }
+            return
+        }
+        flushExternalBacklog(into: liveRequest)
+        liveRequest.append(buffer)
+    }
+
+    private func flushExternalBacklog(into request: SFSpeechAudioBufferRecognitionRequest) {
+        guard !externalBacklog.isEmpty else { return }
+        let pending = externalBacklog
+        externalBacklog.removeAll()
+        for buffer in pending { request.append(buffer) }
     }
 
     /// Hand audio back to the phone's microphone.
@@ -386,6 +427,7 @@ final class SpeechListener: NSObject, ObservableObject {
     // MARK: - Recognition
 
     private func startRecognitionTask() {
+        lastTaskAttempt = .now
         guard let recognizer, recognizer.isAvailable else {
             lastError = "Speech recognition is not available on this device."
             return
@@ -400,6 +442,8 @@ final class SpeechListener: NSObject, ObservableObject {
             newRequest.requiresOnDeviceRecognition = true
         }
         setRequest(newRequest)
+        // Anything the bracelet sent while there was no request goes in first.
+        flushExternalBacklog(into: newRequest)
         generation += 1
         let taskGeneration = generation
         taskStartedAt = .now
@@ -472,6 +516,11 @@ final class SpeechListener: NSObject, ObservableObject {
     private func rotateRecognitionTask() {
         guard isListening, !isPaused else { return }
         request?.endAudio()
+        // The ended request can't take more audio. Detach it so bracelet audio
+        // queues for the next task instead of vanishing into a closed request.
+        tapLock.lock()
+        tapRequest = nil
+        tapLock.unlock()
     }
 
     /// Tears down the current task without waiting for its result.

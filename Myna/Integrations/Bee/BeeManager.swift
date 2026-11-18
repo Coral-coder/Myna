@@ -684,9 +684,13 @@ final class BeeManager: ObservableObject {
             // Start the bracelet recording ourselves so Myna doesn't need the
             // Bee app to "unlock" it. Once per connection; the rate limiter in
             // setRecording keeps the device's own VAD toggles from spamming.
-            if state == .mute, !autoRecordTried {
+            // The bracelet is meant to record continuously: whenever it reports
+            // anything but recording (muted, or dozing on its own VAD), put it
+            // back. State events only arrive on a change and setRecording is
+            // rate-limited, so this can't spin.
+            if state != .recording, state != .powerOff {
+                if !autoRecordTried { log("Asking the bracelet to start recording…") }
                 autoRecordTried = true
-                log("Asking the bracelet to start recording…")
                 setRecording(true)
             }
         }
