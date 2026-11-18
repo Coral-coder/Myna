@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +54,7 @@ jobs:
   unit-tests:
     # Platform-free logic (parsing, context matching, device protocols) is
     # symlinked into a SwiftPM package under Tests/ and tested here.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
