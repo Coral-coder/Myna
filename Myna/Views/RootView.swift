@@ -25,6 +25,7 @@ struct RootView: View {
         case lists = "Lists"
         case inbox = "Inbox"
         case core = "Core"
+        case lab = "Lab"
     }
 
     @State private var tab: Tab = .ask
@@ -74,7 +75,7 @@ struct RootView: View {
 
     private var todayStage: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 18) {
+            HStack(spacing: 13) {
                 ForEach(TodaySub.allCases, id: \.self) { sub in
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { todaySub = sub }
@@ -103,6 +104,7 @@ struct RootView: View {
                 case .lists: ListsView()
                 case .inbox: SuggestionsView()
                 case .core: ModelHubView()
+                case .lab: TranscriptionLabView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

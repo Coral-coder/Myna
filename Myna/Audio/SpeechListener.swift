@@ -370,11 +370,15 @@ final class SpeechListener: NSObject, ObservableObject {
     /// from the replay queue only — the segment recording on disk still has it.
     private let externalBacklogLimit = 28_000
     private var lastTaskAttempt: Date = .distantPast
+    /// A second listener for bracelet audio (the Transcription Lab records its
+    /// test clip through this). Never affects what the recognizer receives.
+    var externalAudioSink: ((AVAudioPCMBuffer) -> Void)?
 
     /// Take a buffer of PCM decoded from the bracelet. Never refused: it is
     /// recorded to the conversation's audio file, and either handed to the
     /// recognizer now or queued until the recognizer is back.
     func feedExternalAudio(_ buffer: AVAudioPCMBuffer) {
+        externalAudioSink?(buffer)
         let level = Self.rms(of: buffer)
         audioLevel = max(level, audioLevel * 0.86)
 
