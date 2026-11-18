@@ -92,7 +92,7 @@ func updateLoop(ctx context.Context, st *status) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(6 * time.Hour):
+		case <-time.After(time.Hour):
 		}
 	}
 }

@@ -7,7 +7,7 @@ name: Release Myna Server
 on:
   workflow_dispatch:
   push:
-    branches: [main, bee-remember-login]
+    branches: [main, bee-remember-login, tailscale-ios]
     paths:
       - server/**
       - .github/workflows/server-release.yml

@@ -16,7 +16,7 @@ does the work itself whenever it doesn't.
     Myna (closing the window leaves the server running; open the exe again to
     see it);
   - starts when you sign in to Windows;
-  - checks GitHub every six hours and replaces itself when a new release is out.
+  - checks GitHub every hour and replaces itself when a new release is out.
 - `myna_server/` is the worker: a small API (`/health`, `/v1/transcribe`,
   `/v1/generate`). Every request needs the pairing token.
 

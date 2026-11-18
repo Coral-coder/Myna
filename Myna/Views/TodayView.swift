@@ -234,6 +234,7 @@ private struct TodaySegments: View {
     @Query(sort: \VoicePerson.createdAt) private var people: [VoicePerson]
     @State private var openID: UUID?
     @State private var newName = ""
+    @AppStorage("myna.today.hideMedia") private var hideMedia = false
     private let searching: Bool
 
     init(dayStart: Date, search: String) {
@@ -253,11 +254,23 @@ private struct TodaySegments: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(searching ? "\(lines.count) MATCHES" : "TRANSCRIPT")
-                .font(MynaTheme.mono(11))
-                .tracking(2)
-                .foregroundStyle(MynaTheme.faint)
-                .padding(.bottom, 8)
+            HStack {
+                Text(searching ? "\(lines.count) MATCHES" : "TRANSCRIPT")
+                    .font(MynaTheme.mono(11))
+                    .tracking(2)
+                    .foregroundStyle(MynaTheme.faint)
+                Spacer()
+                // Audiobooks, music, TV and the like are kept and labelled;
+                // this only hides them from the list.
+                Button { hideMedia.toggle() } label: {
+                    Text(hideMedia ? "MEDIA HIDDEN" : "MEDIA SHOWN")
+                        .font(MynaTheme.mono(10))
+                        .tracking(1.5)
+                        .foregroundStyle(MynaTheme.muted)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 8)
 
             if lines.isEmpty {
                 Text(searching ? "Nothing heard matches that." : "Nothing transcribed yet today. Lines appear here as you talk.")
@@ -266,7 +279,7 @@ private struct TodaySegments: View {
                     .padding(.vertical, 12)
             }
 
-            ForEach(lines) { line in
+            ForEach(hideMedia ? lines.filter { !TranscriptSorter.isMedia($0.context) } : lines) { line in
                 row(line)
                 Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
             }
@@ -300,9 +313,17 @@ private struct TodaySegments: View {
                                 .textCase(.uppercase)
                                 .foregroundStyle(MynaTheme.muted)
                         }
+                        if TranscriptSorter.isMedia(line.context) {
+                            Text(line.segment.isEmpty ? TranscriptSorter.label(line.context)
+                                 : "\(TranscriptSorter.label(line.context)) · \(line.segment)")
+                                .font(MynaTheme.mono(10))
+                                .tracking(1)
+                                .textCase(.uppercase)
+                                .foregroundStyle(MynaTheme.faint)
+                        }
                         Text(line.text)
                             .font(.system(size: 15, weight: .light))
-                            .foregroundStyle(MynaTheme.ink)
+                            .foregroundStyle(TranscriptSorter.isMedia(line.context) ? MynaTheme.muted : MynaTheme.ink)
                             .multilineTextAlignment(.leading)
                             .lineLimit(open ? nil : 3)
                     }

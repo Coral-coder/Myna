@@ -6,6 +6,7 @@ import html
 from datetime import datetime
 from urllib.parse import quote
 
+from . import catalog
 from .store import Store
 
 TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"))
@@ -28,6 +29,28 @@ pre{white-space:pre-wrap;font:13px/1.5 system-ui,sans-serif}
 </style>"""
 
 
+# Keeps a page current as the phone syncs, without reloading it: the content is
+# fetched again every two seconds and swapped in only if it changed, leaving the
+# scroll position, the search box and any selected text alone.
+_REFRESH = """<script>
+let last = document.getElementById('page').innerHTML;
+setInterval(async () => {
+  try {
+    if (String(window.getSelection())) return;
+    const reply = await fetch(location.href, {cache: 'no-store'});
+    if (reply.status === 401) { location.reload(); return; }
+    const text = await reply.text();
+    const next = new DOMParser().parseFromString(text, 'text/html').getElementById('page');
+    if (!next || next.innerHTML === last) return;
+    const y = window.scrollY;
+    last = next.innerHTML;
+    document.getElementById('page').innerHTML = last;
+    window.scrollTo(0, y);
+  } catch (e) {}
+}, 2000);
+</script>"""
+
+
 def _e(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
@@ -44,14 +67,25 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     for kind, title in TABS:
         on = ' class="on"' if kind == active else ""
         links.append(f'<a{on} href="/browse?kind={kind}">{title} {counts.get(kind, 0)}</a>')
-    links.append('<a href="/" style="margin-left:auto">Status</a>')
-    search = (
-        f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
-        f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
+    for key, title in (("live", "Live"), ("models", "Models")):
+        on = ' class="on"' if key == active else ""
+        links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "live" else ""}>{title}</a>')
+    links.append('<a href="/">Status</a>')
+    links.append(
+        '<form method="post" action="/lock" style="margin:0"><button style="font:11px ui-monospace,monospace;'
+        "letter-spacing:.1em;text-transform:uppercase;padding:2px 10px;border:1px solid #e9e9e6;color:#e9e9e6;"
+        'background:none;border-radius:99px;cursor:pointer">Lock</button></form>'
     )
+    search = ""
+    if active not in ("live", "models"):
+        search = (
+            f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
+            f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
+        )
     return (
         '<!doctype html><meta charset="utf-8"><title>Myna Server</title>'
-        f"{_STYLE}<nav>{''.join(links)}</nav>{search}{body}"
+        f"{_STYLE}<nav>{''.join(links)}</nav>{search}"
+        f'<div id="page">{body}</div>{"" if active == "live" else _REFRESH}'
     )
 
 
@@ -69,6 +103,10 @@ def list_page(store: Store, kind: str, query: str, before: float | None) -> str:
         if kind == "utterance":
             who = row.get("speakerName") or names.get(row.get("speaker", ""), "")
             label = f'<span class="who">{_e(who)}:</span>' if who else ""
+            heard = row.get("context") or ""
+            if heard and heard != "conversation":
+                piece = f"{heard} · {row.get('segment')}" if row.get("segment") else heard
+                label = f'<span class="t">{_e(piece.upper())}</span>' + label
             parts.append(f'<div class="row"><span class="t">{clock}</span>{label}{_e(row.get("text"))}</div>')
         elif kind == "note":
             link = f'/browse/note?id={quote(row["id"])}'
@@ -128,3 +166,82 @@ def note_page(store: Store, note_id: str) -> str:
     bullets("Follow-ups", note.get("followUps"))
     section("Transcript", note.get("transcript"))
     return _frame("note", "", "".join(parts), store.counts())
+
+
+def live_page(store: Store) -> str:
+    """What the server is receiving and doing right now, updating by itself."""
+    body = """
+<h2>Now</h2><div id="now" class="dim">…</div>
+<h2>Just received</h2><div id="events"><p class="dim">Nothing yet. Lines appear here as the phone sends audio.</p></div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+async function tick() {
+  try {
+    const reply = await fetch('/browse/live.json', {cache: 'no-store'});
+    if (reply.status === 401) { location.reload(); return; }
+    const d = await reply.json();
+    document.getElementById('now').innerHTML =
+      'Transcription: ' + esc(d.transcriber) + ' — ' + esc(d.transcriber_status) + '<br>' +
+      'Writing: ' + esc(d.writer) + ' — ' + esc(d.writer_status) + '<br>' +
+      esc(d.transcribed) + ' clips transcribed, ' + esc(d.generated) + ' pieces written since the server started';
+    if (d.events.length) {
+      document.getElementById('events').innerHTML = d.events.slice().reverse().map(e => {
+        const t = new Date(e.at * 1000).toLocaleTimeString();
+        const what = e.kind === 'transcribe'
+          ? 'heard ' + e.audio_seconds + ' s, transcribed in ' + e.took + ' s'
+          : 'wrote in ' + e.took + ' s';
+        const text = e.failed ? 'Failed: ' + esc(e.text) : (esc(e.text) || '<span class="dim">(no speech in this clip)</span>');
+        return '<div class="row"><span class="t">' + t + '</span>' + text +
+               '<div class="dim">' + what + ' · ' + esc(e.engine) + '</div></div>';
+      }).join('');
+    }
+  } catch (e) {}
+}
+tick(); setInterval(tick, 1500);
+</script>"""
+    return _frame("live", "", body, store.counts())
+
+
+def models_page(store: Store, config, state: dict) -> str:
+    """Choose which models transcribe and write."""
+    parts = [
+        '<style>button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;'
+        "padding:6px 12px;border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}"
+        ".pick{display:flex;gap:12px;align-items:center;justify-content:space-between}</style>",
+        "<h2>Transcription</h2>",
+        f'<div class="dim">{_e(state.get("transcriber_status"))}</div>',
+    ]
+    for model, name, note in catalog.SPEECH:
+        current = model == config.stt_model
+        action = (
+            '<span class="t">IN USE</span>'
+            if current
+            else f'<form method="post" action="/browse/models"><input type="hidden" name="speech" value="{_e(model)}">'
+            "<button>Use</button></form>"
+        )
+        parts.append(f'<div class="row pick"><div>{_e(name)}<div class="dim">{_e(note)}</div></div>{action}</div>')
+
+    parts += ["<h2>Writing notes and answers</h2>", f'<div class="dim">{_e(state.get("writer_status"))}</div>']
+    listed = False
+    for repo, file, name, note in catalog.WRITING:
+        current = repo == config.llm_repo and file == config.llm_file
+        listed = listed or current
+        action = (
+            '<span class="t">IN USE</span>'
+            if current
+            else f'<form method="post" action="/browse/models"><input type="hidden" name="repo" value="{_e(repo)}">'
+            f'<input type="hidden" name="file" value="{_e(file)}"><button>Use</button></form>'
+        )
+        parts.append(f'<div class="row pick"><div>{_e(name)}<div class="dim">{_e(note)}</div></div>{action}</div>')
+    if not listed:
+        parts.append(f'<div class="row pick"><div>{_e(config.llm_file)}<div class="dim">{_e(config.llm_repo)}</div></div><span class="t">IN USE</span></div>')
+    parts.append(
+        "<h2>Another model</h2>"
+        '<div class="dim">Any GGUF model on Hugging Face: its repository and file name.</div>'
+        '<form method="post" action="/browse/models" style="display:grid;gap:8px;margin-top:8px">'
+        '<input name="repo" placeholder="owner/repository"><input name="file" placeholder="model-file.gguf">'
+        "<div><button>Use</button></div></form>"
+        '<p class="dim">A model is downloaded the first time it is used, then loaded onto the graphics card. '
+        "The Live tab shows when it is ready.</p>"
+    )
+    return _frame("models", "", "".join(parts), store.counts())

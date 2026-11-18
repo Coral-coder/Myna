@@ -122,7 +122,8 @@ extension Utterance: HomeSyncRecord {
     var syncID: String { id.uuidString }
 
     func syncData() -> [String: Any] {
-        ["heardAt": syncSeconds(heardAt), "text": text, "duration": duration, "engine": engine, "speaker": speakerKey]
+        ["heardAt": syncSeconds(heardAt), "text": text, "duration": duration, "engine": engine, "speaker": speakerKey,
+         "context": context, "segment": segment]
     }
 
     func syncApply(_ data: [String: Any]) {
@@ -131,6 +132,8 @@ extension Utterance: HomeSyncRecord {
         duration = data["duration"] as? Double ?? 0
         engine = syncText(data["engine"])
         speakerKey = syncText(data["speaker"])
+        context = syncText(data["context"])
+        segment = syncText(data["segment"])
     }
 
     static func syncMake(id: String) -> Utterance? {

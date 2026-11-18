@@ -84,7 +84,7 @@ code{word-break:break-all;font-size:12px}
 nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #ffffff22;padding-bottom:10px;margin-bottom:22px}
 nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#9b9d9e}
 nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
-<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a class="on" href="/" style="margin-left:auto">Status</a></nav><div id="page">`)
+<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a href="/browse/live" style="margin-left:auto">Live</a><a href="/browse/models">Models</a><a class="on" href="/">Status</a><form method="post" action="/lock" style="margin:0"><button style="padding:2px 10px;font-size:11px">Lock</button></form></nav><div id="page">`)
 		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
 
 		row := func(label, value string) {
@@ -151,7 +151,9 @@ let last = document.getElementById('page').innerHTML;
 setInterval(async () => {
   try {
     if (String(window.getSelection())) return;
-    const text = await (await fetch('/', {cache: 'no-store'})).text();
+    const reply = await fetch('/', {cache: 'no-store'});
+    if (reply.status === 401) { location.reload(); return; }
+    const text = await reply.text();
     const next = new DOMParser().parseFromString(text, 'text/html').getElementById('page');
     if (!next || next.innerHTML === last) return;
     const page = document.getElementById('page');
@@ -165,11 +167,12 @@ setInterval(async () => {
     if (fresh) fresh.scrollTop = atEnd && top > 0 ? fresh.scrollHeight : top;
     window.scrollTo(0, y);
   } catch (e) {}
-}, 3000);
+}, 1500);
 </script>`)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
 	})
+	guarded := newLock(settings).guard(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Answer only when addressed as this computer, so no web page elsewhere
 		// can reach these pages under another name.
@@ -177,6 +180,6 @@ setInterval(async () => {
 			http.Error(w, "this page is only for this computer", http.StatusForbidden)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		guarded.ServeHTTP(w, r)
 	})
 }

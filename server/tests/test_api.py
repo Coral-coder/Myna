@@ -171,3 +171,31 @@ def test_browse_lists_and_searches(client):
     assert "oat" in found and "meeting moved" not in found
     note = client.get("/browse/note?id=n1", headers=AUTH).text
     assert "Standup" in note and "hello" in note
+
+
+def test_live_page_shows_what_was_received(client):
+    samples = np.zeros(16000, dtype=np.float32)
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(samples))
+    client.post("/v1/generate", headers=AUTH, json={"prompt": "hello"})
+    live = client.get("/browse/live.json", headers=AUTH).json()
+    kinds = [event["kind"] for event in live["events"]]
+    assert kinds == ["transcribe", "generate"] and live["events"][0]["audio_seconds"] == 1.0
+    assert live["transcriber"] == "fake-stt"
+    assert "Just received" in client.get("/browse/live", headers=AUTH).text
+
+
+def test_models_page_lists_choices_and_switches(stt):
+    class SwitchableWriter(FakeWriter):
+        def use(self, repo, file):
+            self.name = file.removesuffix(".gguf")
+
+    config = Config(token="secret-token")
+    app = create_app(config, stt, SwitchableWriter())
+    app.state.save_config = False
+    client = TestClient(app)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Whisper large-v3 turbo" in page and "Qwen 3 14B" in page
+    assert client.post("/browse/models", data={"repo": "x/y", "file": "z.gguf"}).status_code == 401
+    reply = client.post("/browse/models", headers=AUTH, data={"repo": "x/y", "file": "z.gguf"}, follow_redirects=False)
+    assert reply.status_code == 303
+    assert config.llm_file == "z.gguf" and client.get("/health", headers=AUTH).json()["writer"] == "z"

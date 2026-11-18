@@ -547,8 +547,8 @@ final class TranscriptionLab: ObservableObject {
         }
     }
 
-    /// Collects bracelet audio into an utterance and hands it to the engine when
-    /// the speaker pauses (or after 20 s without a pause).
+    /// Collects bracelet audio and hands all of it to the engine, cut where the
+    /// speaker pauses (or every 20 s without a pause). Nothing is discarded.
     private func ingestLive(_ buffer: AVAudioPCMBuffer) {
         guard let data = buffer.floatChannelData?[0] else { return }
         let frames = Int(buffer.frameLength)
@@ -575,11 +575,6 @@ final class TranscriptionLab: ObservableObject {
             liveSilence = 0
         } else {
             liveSilence += frames
-            // Before anyone speaks, keep only a short lead-in.
-            let leadIn = Int(liveRate * 0.4)
-            if liveVoiced == 0, liveSamples.count > leadIn {
-                liveSamples.removeFirst(liveSamples.count - leadIn)
-            }
         }
 
         refreshLivePartial()
@@ -595,8 +590,10 @@ final class TranscriptionLab: ObservableObject {
         liveSilence = 0
         liveGeneration += 1
         lastInterimCount = 0
-        guard voicedSeconds >= 0.3 else { livePartial = ""; return }
-        enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: voicedSeconds)
+        // Everything is transcribed, however quiet: the loudness check above
+        // only decides where to cut, never what to keep. Whether a stretch
+        // holds speech is left to the transcriber itself.
+        enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: max(voicedSeconds, 0.1))
     }
 
     /// Utterances are transcribed strictly in order, one at a time; nothing is

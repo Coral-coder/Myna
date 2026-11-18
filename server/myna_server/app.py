@@ -6,6 +6,7 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import time
+from collections import deque
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, resample_to_16k
 from .config import Config
-from . import browse
+from . import browse, catalog
 from .engines import Transcriber, Writer
 from .store import KINDS, Store
 
@@ -58,6 +59,21 @@ def create_app(
     app = FastAPI(title="Myna server", version=__version__)
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
+    # What the server has just done, newest last, for the Live page.
+    activity: deque[dict] = deque(maxlen=200)
+
+    def note(kind: str, engine: str, took: float, text: str, audio_seconds: float = 0.0, failed: bool = False) -> None:
+        activity.append(
+            {
+                "at": time.time(),
+                "kind": kind,
+                "engine": engine,
+                "took": round(took, 2),
+                "audio_seconds": round(audio_seconds, 1),
+                "text": text[:600],
+                "failed": failed,
+            }
+        )
 
     @app.middleware("http")
     async def only_known_networks(request: Request, call_next):
@@ -98,8 +114,13 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         seconds = samples.size / rate if rate else 0.0
         began = time.perf_counter()
-        text = await run_in_threadpool(transcriber.transcribe, resample_to_16k(samples, rate))
+        try:
+            text = await run_in_threadpool(transcriber.transcribe, resample_to_16k(samples, rate))
+        except Exception as error:
+            note("transcribe", transcriber.name, time.perf_counter() - began, str(error), seconds, failed=True)
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
         stats["transcribed"] += 1
+        note("transcribe", transcriber.name, time.perf_counter() - began, text, seconds)
         return {
             "text": text,
             "audio_seconds": round(seconds, 3),
@@ -110,8 +131,13 @@ def create_app(
     @app.post("/v1/generate")
     async def generate(payload: GenerateRequest, _: None = Depends(paired)) -> dict:
         began = time.perf_counter()
-        text = await run_in_threadpool(writer.generate, payload.instructions, payload.prompt, payload.max_tokens)
+        try:
+            text = await run_in_threadpool(writer.generate, payload.instructions, payload.prompt, payload.max_tokens)
+        except Exception as error:
+            note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
+            raise HTTPException(status_code=500, detail=f"Writing failed: {error}") from error
         stats["generated"] += 1
+        note("generate", writer.name, time.perf_counter() - began, text)
         return {"text": text, "took_seconds": round(time.perf_counter() - began, 3), "engine": writer.name}
 
     @app.post("/v1/sync")
@@ -121,6 +147,45 @@ def create_app(
     @app.get("/browse", response_class=HTMLResponse)
     def browse_list(kind: str = "utterance", q: str = "", before: float | None = None, _: None = Depends(paired)) -> str:
         return browse.list_page(store, kind if kind in KINDS else "utterance", q, before)
+
+    def engines_state() -> dict:
+        return {
+            "transcriber": transcriber.name,
+            "transcriber_status": getattr(transcriber, "status", ""),
+            "writer": writer.name,
+            "writer_status": getattr(writer, "status", ""),
+        }
+
+    @app.get("/browse/live", response_class=HTMLResponse)
+    def browse_live(_: None = Depends(paired)) -> str:
+        return browse.live_page(store)
+
+    @app.get("/browse/live.json")
+    def browse_live_json(_: None = Depends(paired)) -> dict:
+        return {**engines_state(), **stats, "events": list(activity)[-80:]}
+
+    @app.get("/browse/models", response_class=HTMLResponse)
+    def browse_models(_: None = Depends(paired)) -> str:
+        return browse.models_page(store, config, engines_state())
+
+    @app.post("/browse/models")
+    async def choose_model(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        speech = form.get("speech", "").strip()
+        repo, file = form.get("repo", "").strip(), form.get("file", "").strip()
+        if speech and hasattr(transcriber, "use"):
+            await run_in_threadpool(transcriber.use, speech)
+            config.stt_model = speech
+        if repo and file.endswith(".gguf") and hasattr(writer, "use"):
+            await run_in_threadpool(writer.use, repo, file)
+            config.llm_repo, config.llm_file = repo, file
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/models", status_code=303)
 
     @app.get("/browse/note", response_class=HTMLResponse)
     def browse_note(id: str, _: None = Depends(paired)) -> str:

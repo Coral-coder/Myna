@@ -52,6 +52,15 @@ class WhisperTranscriber:
         self._model = None
         self._lock = threading.Lock()
         self.device = "unloaded"
+        self.status = "Not loaded yet (loads on first use)"
+
+    def use(self, model_name: str) -> None:
+        """Switch to another Whisper model; it loads on its next use."""
+        with self._lock:
+            self._model = None
+            self._model_name = model_name
+            self.name = f"whisper-{model_name}"
+            self.status = "Not loaded yet (loads on first use)"
 
     def _load(self):
         if self._model is not None:
@@ -59,13 +68,20 @@ class WhisperTranscriber:
         _add_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
 
+        self.status = "Loading (the first time, this downloads the model)…"
         cache = str(data_dir() / "models" / "whisper")
         try:
-            self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16", download_root=cache)
-            self.device = "cuda"
-        except Exception:
-            self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", download_root=cache)
-            self.device = "cpu"
+            try:
+                self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16", download_root=cache)
+                self.device = "cuda"
+                self.status = "Ready on the graphics card"
+            except Exception:
+                self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", download_root=cache)
+                self.device = "cpu"
+                self.status = "Ready on the processor (the graphics card couldn't be used)"
+        except Exception as error:
+            self.status = f"Couldn't load: {error}"
+            raise
         return self._model
 
     def transcribe(self, samples: np.ndarray) -> str:
@@ -75,7 +91,12 @@ class WhisperTranscriber:
                 samples,
                 language="en",
                 beam_size=5,
-                vad_filter=False,
+                # Keep quiet, far-away speech: the filter below judges whether
+                # a stretch is speech at all (not how loud it is), with a low
+                # bar, so only stretches with no speech in them are left out
+                # (Whisper invents words when given pure silence).
+                vad_filter=True,
+                vad_parameters={"threshold": 0.15, "min_silence_duration_ms": 600, "speech_pad_ms": 400},
                 condition_on_previous_text=False,
             )
             return " ".join(segment.text.strip() for segment in segments).strip()
@@ -92,6 +113,16 @@ class LlamaWriter:
         self._config = config
         self._model = None
         self._lock = threading.Lock()
+        self.status = "Not loaded yet (loads on first use)"
+
+    def use(self, repo: str, file: str) -> None:
+        """Switch to another model; it downloads and loads on its next use."""
+        with self._lock:
+            self._model = None
+            self._config.llm_repo = repo
+            self._config.llm_file = file
+            self.name = file.removesuffix(".gguf")
+            self.status = "Not loaded yet (loads on first use)"
 
     def _load(self):
         if self._model is not None:
@@ -100,12 +131,18 @@ class LlamaWriter:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
 
-        path = hf_hub_download(
-            repo_id=self._config.llm_repo,
-            filename=self._config.llm_file,
-            cache_dir=str(data_dir() / "models" / "llm"),
-        )
-        self._model = Llama(model_path=path, n_gpu_layers=-1, n_ctx=self._config.llm_context, verbose=False)
+        self.status = "Loading (the first time, this downloads several GB)…"
+        try:
+            path = hf_hub_download(
+                repo_id=self._config.llm_repo,
+                filename=self._config.llm_file,
+                cache_dir=str(data_dir() / "models" / "llm"),
+            )
+            self._model = Llama(model_path=path, n_gpu_layers=-1, n_ctx=self._config.llm_context, verbose=False)
+            self.status = "Ready"
+        except Exception as error:
+            self.status = f"Couldn't load: {error}"
+            raise
         return self._model
 
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str:
