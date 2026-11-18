@@ -215,28 +215,39 @@ tick(); setInterval(tick, 1500);
     return _frame("live", "", body, store.counts())
 
 
+def _choices(field: str, options, current: str) -> str:
+    out = []
+    for key, name, note in options:
+        action = (
+            '<span class="t">IN USE</span>'
+            if key == current
+            else f'<form method="post" action="/browse/models"><input type="hidden" name="{field}" value="{_e(key)}">'
+            "<button>Use</button></form>"
+        )
+        out.append(f'<div class="row pick"><div>{_e(name)}<div class="dim">{_e(note)}</div></div>{action}</div>')
+    return "".join(out)
+
+
 def models_page(store: Store, config, state: dict) -> str:
-    """Choose which models transcribe and write."""
+    """Choose which models transcribe and write, and where each runs."""
     parts = [
         '<style>button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;'
         "padding:6px 12px;border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}"
         ".pick{display:flex;gap:12px;align-items:center;justify-content:space-between}</style>",
         "<h2>Transcription</h2>",
-        f'<div class="dim">{_e(state.get("transcriber_status"))}</div>',
+        f'<div class="dim">{_e(state.get("transcriber"))} — {_e(state.get("transcriber_status"))}</div>',
+        "<h2>Transcription runs on</h2>",
+        _choices("stt_device", catalog.STT_DEVICES, config.stt_device),
+        "<h2>Transcription model</h2>",
+        _choices("speech", catalog.SPEECH, config.stt_model),
+        "<h2>Writing notes and answers</h2>",
+        f'<div class="dim">{_e(state.get("writer"))} — {_e(state.get("writer_status"))}</div>',
+        "<h2>Writing runs on</h2>",
+        _choices("llm_device", catalog.LLM_DEVICES, config.llm_device),
+        "<h2>Writing model</h2>",
     ]
-    for model, name, note in catalog.SPEECH:
-        current = model == config.stt_model
-        action = (
-            '<span class="t">IN USE</span>'
-            if current
-            else f'<form method="post" action="/browse/models"><input type="hidden" name="speech" value="{_e(model)}">'
-            "<button>Use</button></form>"
-        )
-        parts.append(f'<div class="row pick"><div>{_e(name)}<div class="dim">{_e(note)}</div></div>{action}</div>')
-
-    parts += ["<h2>Writing notes and answers</h2>", f'<div class="dim">{_e(state.get("writer_status"))}</div>']
     listed = False
-    for repo, file, name, note in catalog.WRITING:
+    for repo, file, name, size, note in catalog.WRITING:
         current = repo == config.llm_repo and file == config.llm_file
         listed = listed or current
         action = (
@@ -245,7 +256,10 @@ def models_page(store: Store, config, state: dict) -> str:
             else f'<form method="post" action="/browse/models"><input type="hidden" name="repo" value="{_e(repo)}">'
             f'<input type="hidden" name="file" value="{_e(file)}"><button>Use</button></form>'
         )
-        parts.append(f'<div class="row pick"><div>{_e(name)}<div class="dim">{_e(note)}</div></div>{action}</div>')
+        parts.append(
+            f'<div class="row pick"><div>{_e(name)} <span class="dim">{size:g} GB</span>'
+            f'<div class="dim">{_e(note)}</div></div>{action}</div>'
+        )
     if not listed:
         parts.append(f'<div class="row pick"><div>{_e(config.llm_file)}<div class="dim">{_e(config.llm_repo)}</div></div><span class="t">IN USE</span></div>')
     parts.append(
@@ -254,8 +268,7 @@ def models_page(store: Store, config, state: dict) -> str:
         '<form method="post" action="/browse/models" style="display:grid;gap:8px;margin-top:8px">'
         '<input name="repo" placeholder="owner/repository"><input name="file" placeholder="model-file.gguf">'
         "<div><button>Use</button></div></form>"
-        '<p class="dim">A model is downloaded the first time it is used, then loaded onto the graphics card. '
-        "The Live tab shows when it is ready.</p>"
+        '<p class="dim">A chosen model starts downloading straight away; progress shows above.</p>'
     )
     return _frame("models", "", "".join(parts), store.counts())
 

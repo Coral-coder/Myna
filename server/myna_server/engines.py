@@ -89,6 +89,7 @@ class WhisperTranscriber:
     def __init__(self, config: Config) -> None:
         self.name = f"whisper-{config.stt_model}"
         self._model_name = config.stt_model
+        self._config = config
         self._model = None
         self._lock = threading.Lock()
         self.device = "unloaded"
@@ -101,6 +102,12 @@ class WhisperTranscriber:
             self._model_name = model_name
             self.name = f"whisper-{model_name}"
             self.status = "Not loaded yet (loads on first use)"
+
+    def reload(self) -> None:
+        """Drop the loaded model so it loads again with the current settings."""
+        with self._lock:
+            self._model = None
+            self.status = "Reloading…"
 
     def warm(self) -> None:
         """Download and load the model now, so the first clip doesn't wait."""
@@ -119,14 +126,17 @@ class WhisperTranscriber:
         self.status = "Downloading and loading…"
         cache = str(data_dir() / "models" / "whisper")
         try:
+            wants_cpu = self._config.stt_device == "cpu"
             try:
+                if wants_cpu:
+                    raise RuntimeError("processor chosen")
                 self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16", download_root=cache)
                 self.device = "cuda"
                 self.status = "Ready on the graphics card"
             except Exception:
                 self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", download_root=cache)
                 self.device = "cpu"
-                self.status = "Ready on the processor (the graphics card couldn't be used)"
+                self.status = "Ready on the processor" + ("" if wants_cpu else " (the graphics card couldn't be used)")
         except Exception as error:
             self.status = f"Couldn't load: {error}"
             raise
@@ -184,6 +194,12 @@ class LlamaWriter:
             self._config.llm_file = file
             self.name = file.removesuffix(".gguf")
             self.status = "Selected; starting download…"
+
+    def reload(self) -> None:
+        """Stop the runner so it starts again with the current settings."""
+        with self._lock:
+            self._stop()
+            self.status = "Reloading…"
 
     def warm(self) -> None:
         """Download and load the model now, so the first request doesn't wait."""
@@ -286,8 +302,12 @@ class LlamaWriter:
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             log = open(data_dir() / "llama-server.log", "w", encoding="utf-8", errors="replace")
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            # Where it runs: all on the graphics card, all on the processor, or
+            # (no setting) llama.cpp fits what it can on the card by itself.
+            device = self._config.llm_device
+            layers = {"gpu": ["-ngl", "999"], "cpu": ["-ngl", "0"]}.get(device, [])
             self._process = subprocess.Popen(
-                [str(exe), "-m", model, "-ngl", "999", "-c", str(self._config.llm_context),
+                [str(exe), "-m", model, *layers, "-c", str(self._config.llm_context),
                  "--host", "127.0.0.1", "--port", str(LLAMA_PORT)],
                 stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
             )
@@ -301,7 +321,10 @@ class LlamaWriter:
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{LLAMA_PORT}/health", timeout=3) as reply:
                         if reply.status == 200:
-                            self.status = "Ready on the graphics card"
+                            where = {"gpu": "the graphics card", "cpu": "the processor"}.get(
+                                device, "the graphics card and processor together"
+                            )
+                            self.status = f"Ready on {where}"
                             return
                 except Exception:
                     time.sleep(1)

@@ -224,3 +224,23 @@ def test_invented_phrases_from_quiet_audio_are_left_out():
         S(text=" mm blah", no_speech_prob=0.9, avg_logprob=-1.4),              # noise
     ]
     assert keep_segments(segments) == ["Thank you.", "can you pass the salt"]
+
+
+def test_choosing_where_models_run_and_big_models_are_shared(stt):
+    class SwitchableWriter(FakeWriter):
+        def use(self, repo, file):
+            self.name = file.removesuffix(".gguf")
+
+    config = Config(token="secret-token")
+    app = create_app(config, stt, SwitchableWriter())
+    app.state.save_config = False
+    client = TestClient(app)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "DeepSeek R1 distill 14B" in page and "Llama 3.3 70B" in page and "Processor" in page
+    client.post("/browse/models", headers=AUTH, data={"llm_device": "cpu", "stt_device": "cpu"}, follow_redirects=False)
+    assert config.llm_device == "cpu" and config.stt_device == "cpu"
+    # A model bigger than the card, chosen while set to the card, is shared instead.
+    config.llm_device = "gpu"
+    client.post("/browse/models", headers=AUTH, follow_redirects=False,
+                data={"repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
+    assert config.llm_device == "shared" and config.llm_file == "Qwen_Qwen3-32B-Q4_K_M.gguf"

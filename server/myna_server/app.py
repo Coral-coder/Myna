@@ -181,6 +181,22 @@ def create_app(
 
         # A chosen model starts downloading and loading straight away, in the
         # background; the Models and Live pages show how far along it is.
+        llm_device, stt_device = form.get("llm_device", ""), form.get("stt_device", "")
+        if stt_device in {key for key, _, _ in catalog.STT_DEVICES} and stt_device != config.stt_device:
+            config.stt_device = stt_device
+            if hasattr(transcriber, "reload"):
+                await run_in_threadpool(transcriber.reload)
+                threading.Thread(target=transcriber.warm, daemon=True).start()
+        if llm_device in {key for key, _, _ in catalog.LLM_DEVICES} and llm_device != config.llm_device:
+            config.llm_device = llm_device
+            if hasattr(writer, "reload"):
+                await run_in_threadpool(writer.reload)
+                threading.Thread(target=writer.warm, daemon=True).start()
+        if repo and file.endswith(".gguf"):
+            # A model too big for the card can't run wholly on it: share it.
+            size = next((gb for r, f, _, gb, _ in catalog.WRITING if r == repo and f == file), 0)
+            if size > catalog.FITS_CARD_GB and config.llm_device == "gpu":
+                config.llm_device = "shared"
         if speech and hasattr(transcriber, "use"):
             await run_in_threadpool(transcriber.use, speech)
             config.stt_model = speech

@@ -33,6 +33,10 @@ class Config:
     llm_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
     llm_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
     llm_context: int = 8192
+    # Where each model runs: the writing model on "gpu", "shared" (split with
+    # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
+    llm_device: str = "gpu"
+    stt_device: str = "auto"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
