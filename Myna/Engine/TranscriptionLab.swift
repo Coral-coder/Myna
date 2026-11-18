@@ -527,6 +527,9 @@ final class TranscriptionLab: ObservableObject {
     private func refreshLivePartial() {
         // "Don't use this iPhone": no in-progress preview from the phone's engine.
         guard !UserDefaults.standard.bool(forKey: Self.serverOnlyKey) else { return }
+        // While the home server is answering it does the transcribing; the
+        // phone's engine isn't run just to preview the words.
+        if HomeServer.shared.shouldTry, HomeServer.shared.reachable == true { return }
         let engine = effectiveEngine
         switch engine.kind {
         case .sherpa, .whisperKit: break
