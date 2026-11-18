@@ -114,3 +114,60 @@ def test_audio_helpers():
     samples, rate = decode_wav(wav_bytes(np.array([0.0, 0.5, -0.5], dtype=np.float32), rate=8000))
     assert rate == 8000 and samples.shape == (3,)
     assert resample_to_16k(samples, 8000).size == 6
+
+
+def change(kind, record_id, data, at, deleted=False):
+    return {"kind": kind, "id": record_id, "data": data, "updated_at": at, "deleted": deleted}
+
+
+def test_sync_requires_pairing(client):
+    assert client.post("/v1/sync", json={"since": 0, "changes": []}).status_code == 401
+
+
+def test_sync_keeps_newest_edit_and_reports_others_changes(client):
+    first = client.post(
+        "/v1/sync",
+        headers=AUTH,
+        json={"since": 0, "changes": [change("memory", "m1", {"content": "likes tea", "createdAt": 10}, 100)]},
+    ).json()
+    # The sender doesn't get its own change back.
+    assert first["changes"] == [] and first["cursor"] == 1
+
+    # Someone who has seen nothing gets it.
+    fresh = client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": []}).json()
+    assert [c["id"] for c in fresh["changes"]] == ["m1"] and fresh["changes"][0]["data"]["content"] == "likes tea"
+
+    # An older edit loses; a newer one wins.
+    client.post("/v1/sync", headers=AUTH, json={"since": 1, "changes": [change("memory", "m1", {"content": "old"}, 50)]})
+    client.post("/v1/sync", headers=AUTH, json={"since": 1, "changes": [change("memory", "m1", {"content": "likes coffee"}, 200)]})
+    latest = client.post("/v1/sync", headers=AUTH, json={"since": 1, "changes": []}).json()
+    assert [c["data"]["content"] for c in latest["changes"]] == ["likes coffee"]
+    # Nothing new after the cursor.
+    assert client.post("/v1/sync", headers=AUTH, json={"since": latest["cursor"], "changes": []}).json()["changes"] == []
+
+
+def test_sync_delete_is_kept_as_a_mark_and_unknown_kinds_are_ignored(client):
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("item", "i1", {"text": "milk", "createdAt": 5}, 10),
+        change("nonsense", "x", {"a": 1}, 10),
+    ]})
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [change("item", "i1", None, 20, deleted=True)]})
+    seen = client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": []}).json()["changes"]
+    assert len(seen) == 1 and seen[0]["deleted"] is True and seen[0]["data"] is None
+    assert client.get("/health", headers=AUTH).json()["records"] == 0
+
+
+def test_browse_lists_and_searches(client):
+    assert client.get("/browse").status_code == 401
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "Buy <b>oat</b> milk", "heardAt": 1_700_000_000, "speakerName": "Sam"}, 1),
+        change("utterance", "u2", {"text": "The meeting moved", "heardAt": 1_700_000_100}, 1),
+        change("note", "n1", {"title": "Standup", "overview": "Short", "startedAt": 1_700_000_000, "transcript": "hello"}, 1),
+    ]})
+    page = client.get("/browse?kind=utterance", headers=AUTH).text
+    assert "The meeting moved" in page and "Sam:" in page
+    assert "&lt;b&gt;oat&lt;/b&gt;" in page and "<b>oat</b>" not in page  # text is never treated as markup
+    found = client.get("/browse?kind=utterance&q=MILK", headers=AUTH).text
+    assert "oat" in found and "meeting moved" not in found
+    note = client.get("/browse/note?id=n1", headers=AUTH).text
+    assert "Standup" in note and "hello" in note

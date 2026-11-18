@@ -37,6 +37,17 @@ func statusPage(st *status, token string, settings *launcherSettings) http.Handl
 		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
+	// The database pages come from the worker; this window is already on this
+	// computer, so the launcher presents the pairing token for it.
+	database := workerProxy()
+	mux.HandleFunc("/browse", func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token)
+		database.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/browse/", func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token)
+		database.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		snap, _ := st.snapshot()
 		w.Header().Set("Content-Type", "application/json")
@@ -66,7 +77,7 @@ h1{font-weight:300;font-size:30px;margin:0 0 4px}.k{font:11px ui-monospace,monos
 .v{font-size:17px;font-weight:300}a{color:#1b1c1d}pre{font:12px ui-monospace,monospace;background:#dededb;padding:12px;overflow:auto;max-height:220px}
 img{background:#fff;padding:10px;margin-top:8px}button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border:1px solid #1b1c1d;background:none;border-radius:99px;cursor:pointer}
 code{word-break:break-all;font-size:12px}</style>`)
-		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
+		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div><div class="v" style="margin-top:10px"><a href="/browse">Browse everything Myna has saved here</a></div>`, html.EscapeString(snap.Version))
 
 		row := func(label, value string) {
 			fmt.Fprintf(&b, `<div class="k">%s</div><div class="v">%s</div>`, html.EscapeString(label), html.EscapeString(value))
@@ -128,5 +139,13 @@ code{word-break:break-all;font-size:12px}</style>`)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Answer only when addressed as this computer, so no web page elsewhere
+		// can reach these pages under another name.
+		if host := r.Host; host != "127.0.0.1:"+uiPort && host != "localhost:"+uiPort {
+			http.Error(w, "this page is only for this computer", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }

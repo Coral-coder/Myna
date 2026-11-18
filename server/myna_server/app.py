@@ -1,4 +1,5 @@
-"""The server's API. Three things: are you there, transcribe this, write this."""
+"""The server's API: are you there, transcribe this, write this, and keep the
+phone's records in step with the database here."""
 
 from __future__ import annotations
 
@@ -8,12 +9,15 @@ import time
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .audio import AudioError, decode_wav, resample_to_16k
 from .config import Config
+from . import browse
 from .engines import Transcriber, Writer
+from .store import KINDS, Store
 
 # Largest clip accepted: ten minutes of 16 kHz 16-bit mono, with headroom.
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
@@ -22,6 +26,11 @@ MAX_AUDIO_BYTES = 24 * 1024 * 1024
 # itself, these are the only callers the server answers unless LAN is enabled.
 _TAILNET = ipaddress.ip_network("100.64.0.0/10")
 _TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
+class SyncRequest(BaseModel):
+    since: int = 0
+    changes: list[dict] = Field(default_factory=list, max_length=5000)
 
 
 class GenerateRequest(BaseModel):
@@ -42,7 +51,10 @@ def _allowed(host: str | None, allow_lan: bool) -> bool:
     return allow_lan and address.is_private
 
 
-def create_app(config: Config, transcriber: Transcriber, writer: Writer, allow_lan: bool = False) -> FastAPI:
+def create_app(
+    config: Config, transcriber: Transcriber, writer: Writer, allow_lan: bool = False, store: Store | None = None
+) -> FastAPI:
+    store = store or Store(":memory:")
     app = FastAPI(title="Myna server", version=__version__)
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
@@ -69,6 +81,7 @@ def create_app(config: Config, transcriber: Transcriber, writer: Writer, allow_l
             "uptime": round(time.time() - started),
             "transcriber": transcriber.name,
             "writer": writer.name,
+            "records": sum(store.counts().values()),
             **stats,
         }
 
@@ -100,5 +113,17 @@ def create_app(config: Config, transcriber: Transcriber, writer: Writer, allow_l
         text = await run_in_threadpool(writer.generate, payload.instructions, payload.prompt, payload.max_tokens)
         stats["generated"] += 1
         return {"text": text, "took_seconds": round(time.perf_counter() - began, 3), "engine": writer.name}
+
+    @app.post("/v1/sync")
+    async def sync(payload: SyncRequest, _: None = Depends(paired)) -> dict:
+        return await run_in_threadpool(store.sync, payload.since, payload.changes)
+
+    @app.get("/browse", response_class=HTMLResponse)
+    def browse_list(kind: str = "utterance", q: str = "", before: float | None = None, _: None = Depends(paired)) -> str:
+        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before)
+
+    @app.get("/browse/note", response_class=HTMLResponse)
+    def browse_note(id: str, _: None = Depends(paired)) -> str:
+        return browse.note_page(store, id)
 
     return app

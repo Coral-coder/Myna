@@ -7,8 +7,9 @@ import argparse
 import uvicorn
 
 from .app import create_app
-from .config import Config
+from .config import Config, data_dir
 from .engines import LlamaWriter, WhisperTranscriber
+from .store import Store
 
 
 def main() -> None:
@@ -23,7 +24,8 @@ def main() -> None:
     if args.show_token:
         print(config.token)
         return
-    app = create_app(config, WhisperTranscriber(config), LlamaWriter(config), allow_lan=args.allow_lan)
+    store = Store(data_dir() / "myna.db")
+    app = create_app(config, WhisperTranscriber(config), LlamaWriter(config), allow_lan=args.allow_lan, store=store)
     uvicorn.run(app, host=args.host, port=args.port or config.port, log_level="info")
 
 
