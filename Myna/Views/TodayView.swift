@@ -19,6 +19,7 @@ struct TodayView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 TodayStats(dayStart: dayStart, notesToday: pilot.notesComposedToday, battery: bee.batteryLevel)
+                TodayCloud(dayStart: dayStart, search: $search)
                 liveSection
                 searchField
                 TodaySegments(dayStart: dayStart, search: search.trimmingCharacters(in: .whitespaces))
@@ -348,5 +349,114 @@ private struct TodaySegments: View {
         }
         .padding(.leading, searching ? 98 : 58)
         .padding(.bottom, 12)
+    }
+}
+
+/// The words said most today, sized by how often. Tapping one searches for it.
+private struct TodayCloud: View {
+    @Query private var lines: [Utterance]
+    @Binding var search: String
+
+    init(dayStart: Date, search: Binding<String>) {
+        _lines = Query(filter: #Predicate<Utterance> { $0.heardAt >= dayStart })
+        _search = search
+    }
+
+    /// Words too common to say anything about the day.
+    private static let dull: Set<String> = [
+        "the", "and", "that", "this", "with", "for", "you", "your", "are", "was", "were", "have", "has", "had", "but",
+        "not", "they", "them", "their", "there", "then", "than", "what", "when", "where", "which", "who", "how", "why",
+        "from", "just", "like", "about", "would", "could", "should", "will", "can", "into", "out", "all", "one", "get",
+        "got", "its", "it's", "i'm", "i'll", "i've", "don't", "that's", "yeah", "okay", "know", "going", "want", "really",
+        "well", "also", "some", "any", "our", "been", "being", "here", "him", "her", "his", "she", "did", "does", "doing",
+        "because", "think", "thing", "things", "right", "more", "very", "much", "over", "only", "even", "still", "these",
+        "those", "let", "say", "said", "yes", "gonna", "kind", "sort", "lot", "back", "see", "now", "too", "way", "make",
+        "need", "time", "something", "actually", "you're", "we're", "they're", "can't", "didn't", "isn't", "there's",
+    ]
+
+    private var words: [(word: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for line in lines {
+            for raw in line.text.lowercased().split(whereSeparator: { !($0.isLetter || $0 == "'" || $0 == "\u{2019}") }) {
+                let word = raw.replacingOccurrences(of: "\u{2019}", with: "'").trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+                guard word.count >= 3, !Self.dull.contains(word) else { continue }
+                counts[word, default: 0] += 1
+            }
+        }
+        return counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .prefix(36)
+            .map { (word: $0.key, count: $0.value) }
+    }
+
+    var body: some View {
+        let top = words
+        if top.count >= 4 {
+            let highest = Double(top.first?.count ?? 1)
+            let lowest = Double(top.last?.count ?? 1)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("WORDS")
+                    .font(MynaTheme.mono(11))
+                    .tracking(2)
+                    .foregroundStyle(MynaTheme.faint)
+                CloudLayout(spacing: 10, lineSpacing: 6) {
+                    // Alphabetical, so the big words scatter instead of piling up first.
+                    ForEach(top.sorted { $0.word < $1.word }, id: \.word) { item in
+                        let weight = highest > lowest ? (Double(item.count) - lowest) / (highest - lowest) : 0.5
+                        Button {
+                            search = item.word
+                        } label: {
+                            Text(item.word)
+                                .font(.system(size: 13 + 17 * weight, weight: .light))
+                                .foregroundStyle(weight > 0.5 ? MynaTheme.ink : MynaTheme.muted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Lays children out left to right, wrapping to new lines; each line is
+/// centred on its tallest word's baseline area.
+private struct CloudLayout: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> [[(index: Int, size: CGSize)]] {
+        var rows: [[(index: Int, size: CGSize)]] = [[]]
+        var x: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                rows.append([])
+                x = 0
+            }
+            rows[rows.count - 1].append((index: index, size: size))
+            x += size.width + spacing
+        }
+        return rows.filter { !$0.isEmpty }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let laid = rows(subviews, width: width)
+        let height = laid.reduce(CGFloat(0)) { $0 + ($1.map(\.size.height).max() ?? 0) } + lineSpacing * CGFloat(max(0, laid.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, width: bounds.width) {
+            let rowHeight = row.map(\.size.height).max() ?? 0
+            var x = bounds.minX
+            for item in row {
+                subviews[item.index].place(
+                    at: CGPoint(x: x, y: y + (rowHeight - item.size.height) / 2),
+                    proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += rowHeight + lineSpacing
+        }
     }
 }
