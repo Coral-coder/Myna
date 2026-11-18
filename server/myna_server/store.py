@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-KINDS = ("utterance", "note", "memory", "item", "person", "song")
+KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily")
 
 # Which field of a record places it in time, per kind.
 _TIME_FIELDS = {
@@ -24,6 +24,7 @@ _TIME_FIELDS = {
     "item": ("createdAt",),
     "person": ("createdAt",),
     "song": ("lastHeard", "firstHeard"),
+    "daily": ("day",),
 }
 
 
@@ -62,6 +63,27 @@ class Store:
             )
             self._db.execute("CREATE INDEX IF NOT EXISTS records_seq ON records (seq)")
             self._db.execute("CREATE INDEX IF NOT EXISTS records_time ON records (kind, deleted, sort_at)")
+            # Received audio (kept a few days) and what each transcription
+            # model made of it, for comparing models on the same recordings.
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS clips (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at REAL NOT NULL,
+                    seconds REAL NOT NULL,
+                    path TEXT NOT NULL
+                )"""
+            )
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS transcripts (
+                    clip_id INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    took REAL NOT NULL,
+                    made_at REAL NOT NULL,
+                    PRIMARY KEY (clip_id, model)
+                )"""
+            )
+            self._db.execute("CREATE INDEX IF NOT EXISTS clips_at ON clips (at)")
 
     def _cursor(self) -> int:
         row = self._db.execute("SELECT COALESCE(MAX(seq), 0) AS top FROM records").fetchone()
@@ -160,3 +182,73 @@ class Store:
             rows = self._db.execute("SELECT kind, COUNT(*) AS n FROM records WHERE deleted = 0 GROUP BY kind").fetchall()
         found = {row["kind"]: int(row["n"]) for row in rows}
         return {kind: found.get(kind, 0) for kind in KINDS}
+
+    # -- received audio and model comparison -----------------------------------
+
+    def add_clip(self, at: float, seconds: float, path: str) -> int:
+        with self._lock, self._db:
+            return int(self._db.execute("INSERT INTO clips (at, seconds, path) VALUES (?, ?, ?)", (at, seconds, path)).lastrowid)
+
+    def add_transcript(self, clip_id: int, model: str, text: str, took: float) -> None:
+        import time
+
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO transcripts (clip_id, model, text, took, made_at) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT (clip_id, model) DO UPDATE SET text = excluded.text, took = excluded.took,
+                       made_at = excluded.made_at""",
+                (clip_id, model, text, took, time.time()),
+            )
+
+    def clips_since(self, since: float, without_model: str | None = None) -> list[dict]:
+        """Kept clips heard after `since`, oldest first; optionally only those
+        `without_model` hasn't transcribed yet."""
+        sql = "SELECT id, at, seconds, path FROM clips WHERE at >= ?"
+        args: list[Any] = [since]
+        if without_model is not None:
+            sql += " AND id NOT IN (SELECT clip_id FROM transcripts WHERE model = ?)"
+            args.append(without_model)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY at", args).fetchall()
+        return [dict(row) for row in rows]
+
+    def last_clip_at(self) -> float:
+        with self._lock:
+            row = self._db.execute("SELECT COALESCE(MAX(at), 0) AS latest FROM clips").fetchone()
+        return float(row["latest"])
+
+    def model_readout(self, since: float) -> list[dict]:
+        """For each model: how many clips it did, how much audio, how long it
+        took, and how many words it produced."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT t.model AS model, COUNT(*) AS clips, SUM(c.seconds) AS audio, SUM(t.took) AS took,
+                          SUM(CASE WHEN t.text = '' THEN 1 ELSE 0 END) AS empty,
+                          SUM(LENGTH(t.text) - LENGTH(REPLACE(t.text, ' ', '')) + (t.text != '')) AS words
+                   FROM transcripts t JOIN clips c ON c.id = t.clip_id WHERE c.at >= ?
+                   GROUP BY t.model ORDER BY MAX(t.made_at) DESC""",
+                (since,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def side_by_side(self, since: float, limit: int = 40) -> list[dict]:
+        """The latest clips, each with what every model heard in it."""
+        with self._lock:
+            clips = self._db.execute(
+                "SELECT id, at, seconds FROM clips WHERE at >= ? ORDER BY at DESC LIMIT ?", (since, limit)
+            ).fetchall()
+            out = []
+            for clip in clips:
+                texts = self._db.execute(
+                    "SELECT model, text, took FROM transcripts WHERE clip_id = ? ORDER BY made_at", (clip["id"],)
+                ).fetchall()
+                out.append({"at": clip["at"], "seconds": clip["seconds"], "texts": [dict(t) for t in texts]})
+        return out
+
+    def drop_clips_before(self, before: float) -> list[str]:
+        """Forget clips older than `before`; returns their file paths to delete."""
+        with self._lock, self._db:
+            rows = self._db.execute("SELECT id, path FROM clips WHERE at < ?", (before,)).fetchall()
+            self._db.execute("DELETE FROM transcripts WHERE clip_id IN (SELECT id FROM clips WHERE at < ?)", (before,))
+            self._db.execute("DELETE FROM clips WHERE at < ?", (before,))
+        return [row["path"] for row in rows]

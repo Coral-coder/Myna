@@ -112,7 +112,7 @@ code{word-break:break-all;font-size:12px}
 nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #ffffff22;padding-bottom:10px;margin-bottom:22px}
 nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#9b9d9e}
 nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
-<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a href="/browse/ask" style="margin-left:auto">Ask</a><a href="/browse/live">Live</a><a href="/browse/models">Models</a><a class="on" href="/">Settings</a><form method="post" action="/lock" style="margin:0"><button style="padding:2px 10px;font-size:11px">Lock</button></form></nav><div id="page">`)
+<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a href="/browse?kind=song">Music</a><a href="/browse?kind=daily">Days</a><a href="/browse/ask" style="margin-left:auto">Ask</a><a href="/browse/live">Live</a><a href="/browse/compare">Compare</a><a href="/browse/models">Models</a><a class="on" href="/">Settings</a><form method="post" action="/lock" style="margin:0"><button style="padding:2px 10px;font-size:11px">Lock</button></form></nav><div id="page">`)
 		fmt.Fprintf(&b, `<h1>Settings</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
 
 		row := func(label, value string) {

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import threading
 import time
+import wave
 
 import numpy as np
 from collections import deque
@@ -18,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, resample_to_16k
 from .config import Config
-from . import ask, browse, catalog, web
+from . import ask, browse, catalog, daily, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -66,8 +68,15 @@ def create_app(
     allow_lan: bool = False,
     store: Store | None = None,
     voices=None,
+    helper=None,
+    summarizer=None,
+    audio_dir=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
+    roles = {"llm": writer, "helper": helper, "summary": summarizer}
+
+    def chosen(model) -> bool:
+        return model is not None and getattr(model, "chosen", True)
     app = FastAPI(title="Myna server", version=__version__)
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
@@ -168,6 +177,23 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
         stats["transcribed"] += 1
         note("transcribe", transcriber.name, time.perf_counter() - began, text, seconds)
+        # Keep the audio for a few days, with what this model heard in it, so
+        # another model can be tried on the same recording later.
+        if audio_dir is not None and config.keep_audio_days > 0:
+            try:
+                heard_at = time.time() - seconds
+                folder = audio_dir / time.strftime("%Y-%m-%d", time.localtime(heard_at))
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"{int(heard_at * 1000)}.wav"
+                with wave.open(str(path), "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(16000)
+                    out.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+                clip = store.add_clip(heard_at, seconds, str(path))
+                store.add_transcript(clip, transcriber.name, text, time.perf_counter() - began)
+            except Exception:
+                pass  # keeping the audio is a convenience; never fail the transcription over it
         return {
             "text": text,
             "audio_seconds": round(seconds, 3),
@@ -194,7 +220,7 @@ def create_app(
 
     @app.get("/browse", response_class=HTMLResponse)
     def browse_list(kind: str = "utterance", q: str = "", before: float | None = None, _: None = Depends(paired)) -> str:
-        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before)
+        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before, daily_state.get("status", ""))
 
     def engines_state() -> dict:
         return {
@@ -203,7 +229,117 @@ def create_app(
             "writer": writer.name,
             "writer_status": getattr(writer, "status", ""),
             "voices_status": getattr(voices, "status", "") if voices is not None else "",
+            "helper": getattr(helper, "name", "") if chosen(helper) else "",
+            "helper_status": getattr(helper, "status", "") if helper is not None else "",
+            "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
+            "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
+            "reprocess": dict(reprocess),
+            "daily": dict(daily_state),
         }
+
+    # -- trying a transcription model on the kept recordings -------------------
+
+    reprocess = {"running": False, "done": 0, "total": 0, "model": "", "note": ""}
+
+    def run_reprocess(hours: float) -> None:
+        model = transcriber.name
+        try:
+            clips = store.clips_since(time.time() - hours * 3600, without_model=model)
+            reprocess.update(running=True, done=0, total=len(clips), model=model, note="")
+            for clip in clips:
+                if transcriber.name != model:
+                    reprocess["note"] = "Stopped: the model was changed part-way."
+                    break
+                try:
+                    with wave.open(clip["path"], "rb") as source:
+                        raw = source.readframes(source.getnframes())
+                    audio = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+                    began = time.perf_counter()
+                    text = transcriber.transcribe(audio)
+                    store.add_transcript(clip["id"], model, text, time.perf_counter() - began)
+                except Exception as error:
+                    reprocess["note"] = f"A clip failed: {error}"
+                reprocess["done"] += 1
+            if not reprocess["note"]:
+                reprocess["note"] = "Finished." if clips else "Nothing to do: this model has already done every kept recording in that span."
+        finally:
+            reprocess["running"] = False
+
+    @app.post("/browse/reprocess")
+    async def start_reprocess(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        try:
+            hours = min(max(float(form.get("hours", "24")), 0.25), 24 * 30)
+        except ValueError:
+            hours = 24
+        if not reprocess["running"]:
+            reprocess.update(running=True, done=0, total=0, model=transcriber.name, note="Starting…")
+            threading.Thread(target=run_reprocess, args=(hours,), daemon=True).start()
+        return RedirectResponse("/browse/compare", status_code=303)
+
+    @app.get("/browse/compare", response_class=HTMLResponse)
+    def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
+        return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days)
+
+    # -- the end-of-day summary -------------------------------------------------
+
+    daily_state = {"running": False, "status": ""}
+
+    def run_daily(day: str) -> str:
+        """Write (or rewrite) the summary for `day`, YYYY-MM-DD."""
+        if daily_state["running"]:
+            return ""
+        daily_state.update(running=True, status="Starting…")
+        own_model = chosen(summarizer)
+        try:
+            write = summarizer.generate if own_model else writer.generate
+            condense = helper.generate if chosen(helper) else write
+            if own_model and hasattr(writer, "stop"):
+                writer.stop()  # make room for the summary model
+
+            def progress(text: str) -> None:
+                daily_state["status"] = text
+
+            text = daily.summarize(store, day, condense, write, progress)
+            if text:
+                start, _ = daily.day_bounds(day)
+                store.sync(0, [{
+                    "kind": "daily", "id": day, "updated_at": time.time(), "deleted": False,
+                    "data": {"day": start, "date": day, "text": text, "writtenAt": time.time(),
+                             "model": summarizer.name if own_model else writer.name},
+                }])
+                daily_state["status"] = f"Wrote the summary for {day}."
+            else:
+                daily_state["status"] = f"Nothing was saved on {day} to summarise."
+            return text
+        except Exception as error:
+            daily_state["status"] = f"The summary for {day} failed: {error}"
+            return ""
+        finally:
+            if own_model and hasattr(summarizer, "stop"):
+                summarizer.stop()
+            daily_state["running"] = False
+
+    app.state.run_daily = run_daily
+
+    @app.post("/browse/daily")
+    async def start_daily(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        day = form.get("day") or time.strftime("%Y-%m-%d")
+        try:
+            daily.day_bounds(day)
+        except ValueError:
+            day = time.strftime("%Y-%m-%d")
+        threading.Thread(target=run_daily, args=(day,), daemon=True).start()
+        return RedirectResponse("/browse?kind=daily", status_code=303)
 
     @app.get("/browse/ask", response_class=HTMLResponse)
     def browse_ask(_: None = Depends(paired)) -> str:
@@ -214,7 +350,10 @@ def create_app(
         began = time.perf_counter()
         lookup = getattr(app.state, "web_lookup", web.lookup)
         try:
-            result = await run_in_threadpool(ask.answer, store, writer.generate, lookup, payload.question, payload.history)
+            pick = helper.generate if chosen(helper) else None
+            result = await run_in_threadpool(
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, pick
+            )
         except Exception as error:
             note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
             raise HTTPException(status_code=500, detail=f"Couldn't answer: {error}") from error
@@ -243,8 +382,6 @@ def create_app(
         form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
         speech = form.get("speech", "").strip()
         repo, file = form.get("repo", "").strip(), form.get("file", "").strip()
-        import threading
-
         # A chosen model starts downloading and loading straight away, in the
         # background; the Models and Live pages show how far along it is.
         llm_device, stt_device = form.get("llm_device", ""), form.get("stt_device", "")
@@ -258,21 +395,37 @@ def create_app(
             if hasattr(writer, "reload"):
                 await run_in_threadpool(writer.reload)
                 threading.Thread(target=writer.warm, daemon=True).start()
+        role = form.get("role", "llm")
+        if role not in roles:
+            role = "llm"
+        target = roles[role]
+        device_keys = {key for key, _, _ in catalog.LLM_DEVICES}
+        for other in ("helper", "summary"):
+            wanted = form.get(f"{other}_device", "")
+            if wanted in device_keys and wanted != getattr(config, f"{other}_device"):
+                setattr(config, f"{other}_device", wanted)
+                if roles[other] is not None and hasattr(roles[other], "reload"):
+                    await run_in_threadpool(roles[other].reload)
+        if form.get("clear") in ("helper", "summary") and roles[form["clear"]] is not None:
+            await run_in_threadpool(roles[form["clear"]].use, "", "")
         if repo and file.endswith(".gguf"):
             # A model too big for the card can't run wholly on it: share it.
             size = next((gb for r, f, _, gb, _ in catalog.WRITING if r == repo and f == file), 0)
-            if size > catalog.FITS_CARD_GB and config.llm_device == "gpu":
-                config.llm_device = "shared"
+            if size > catalog.FITS_CARD_GB and getattr(config, f"{role}_device") == "gpu":
+                setattr(config, f"{role}_device", "shared")
         if speech and hasattr(transcriber, "use"):
             await run_in_threadpool(transcriber.use, speech)
             config.stt_model = speech
             if hasattr(transcriber, "warm"):
                 threading.Thread(target=transcriber.warm, daemon=True).start()
-        if repo and file.endswith(".gguf") and hasattr(writer, "use"):
-            await run_in_threadpool(writer.use, repo, file)
-            config.llm_repo, config.llm_file = repo, file
-            if hasattr(writer, "warm"):
-                threading.Thread(target=writer.warm, daemon=True).start()
+        if repo and file.endswith(".gguf") and target is not None and hasattr(target, "use"):
+            await run_in_threadpool(target.use, repo, file)
+            setattr(config, f"{role}_repo", repo)
+            setattr(config, f"{role}_file", file)
+            # The main model and the helper load now. The summary model loads
+            # only when a summary is written, so it doesn't hold memory all day.
+            if role != "summary" and hasattr(target, "warm"):
+                threading.Thread(target=target.warm, daemon=True).start()
         if getattr(app.state, "save_config", True):
             config.save()
         return RedirectResponse("/browse/models", status_code=303)

@@ -37,6 +37,21 @@ class Config:
     # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
     llm_device: str = "gpu"
     stt_device: str = "auto"
+    # A second, smaller model that reads a lot of material and picks out what
+    # matters, so the main model gets the relevant part. Empty = not used.
+    helper_repo: str = ""
+    helper_file: str = ""
+    helper_device: str = "cpu"
+    # The model that writes the end-of-day summary. Empty = the main model.
+    summary_repo: str = ""
+    summary_file: str = ""
+    summary_device: str = "gpu"
+    # Write the day's summary once nothing has been heard for this long.
+    daily_summary: bool = True
+    idle_minutes: int = 45
+    # Received audio is kept this many days, so a different transcription
+    # model can be tried on the same recordings. 0 = don't keep audio.
+    keep_audio_days: int = 7
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

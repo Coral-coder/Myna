@@ -34,8 +34,10 @@ def _when(seconds) -> str:
         return ""
 
 
-def gather(store: Store, question: str) -> str:
-    """The saved material most likely to matter for `question`."""
+def gather(store: Store, question: str, wide: bool = False) -> str:
+    """The saved material most likely to matter for `question`. `wide` takes
+    several times as much, for a helper model to sift."""
+    scale = 4 if wide else 1
     words = [w for w in re.findall(r"[a-z0-9']{3,}", question.lower()) if w not in _STOP][:8]
     parts: list[str] = []
 
@@ -46,18 +48,18 @@ def gather(store: Store, question: str) -> str:
     seen: set[str] = set()
     matched: list[str] = []
     for word in words:
-        for row in store.browse("utterance", word, limit=8):
+        for row in store.browse("utterance", word, limit=8 * scale):
             if row["id"] not in seen:
                 seen.add(row["id"])
                 matched.append(f"[{_when(row['at'])}] {row.get('text', '')}")
-        for row in store.browse("note", word, limit=3):
+        for row in store.browse("note", word, limit=3 * scale):
             if row["id"] not in seen:
                 seen.add(row["id"])
                 matched.append(f"[note, {_when(row['at'])}] {row.get('title', '')}: {row.get('overview', '')}")
     if matched:
-        parts.append("FROM THE USER'S TRANSCRIPT AND NOTES (matching the question):\n" + "\n".join(matched[:40]))
+        parts.append("FROM THE USER'S TRANSCRIPT AND NOTES (matching the question):\n" + "\n".join(matched[: 40 * scale]))
 
-    recent = store.browse("utterance", limit=25)
+    recent = store.browse("utterance", limit=25 * scale)
     if recent:
         lines = [f"[{_when(row['at'])}] {row.get('text', '')}" for row in reversed(recent)]
         parts.append("THE MOST RECENT THINGS HEARD:\n" + "\n".join(lines))
@@ -65,7 +67,7 @@ def gather(store: Store, question: str) -> str:
     open_items = [i for i in store.browse("item", limit=60) if not i.get("isDone")]
     if open_items:
         parts.append("OPEN LIST ITEMS:\n" + "\n".join(f"- ({i.get('kind', '')}) {i.get('text', '')}" for i in open_items[:30]))
-    return "\n\n".join(parts)[:9000]
+    return "\n\n".join(parts)[: 9000 * scale]
 
 
 def _parse(raw: str) -> tuple[str, str]:
@@ -79,19 +81,38 @@ def _parse(raw: str) -> tuple[str, str]:
     return raw.strip(), ""
 
 
+PICK = (
+    "You are preparing material for another assistant. Below is saved material about a person and a question "
+    "they asked. Copy out, word for word, only the lines that help answer the question, keeping their times. "
+    "If nothing helps, reply with the single word NONE. Add nothing of your own."
+)
+
+
 def answer(
     store: Store,
     generate: Callable[[str, str, int], str],
     lookup: Callable[[str], str],
     question: str,
     history: list[dict],
+    pick: Callable[[str, str, int], str] | None = None,
 ) -> dict:
-    """One turn: the reply, and the web search made for it (if any)."""
+    """One turn: the reply, and the web search made for it (if any). When a
+    helper model is given as `pick`, it reads a much larger slice of the saved
+    material first and hands the main model only what bears on the question."""
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
+    material = gather(store, question)
+    if pick is not None:
+        try:
+            wide = gather(store, question, wide=True)
+            chosen = pick(PICK, f"{wide}\n\nQUESTION: {question}", 900).strip()
+            if chosen and chosen.upper() != "NONE":
+                material = "PICKED OUT OF THE USER'S SAVED MATERIAL AS RELEVANT:\n" + chosen
+        except Exception:
+            pass  # the helper is optional; carry on with the usual material
     earlier = "\n".join(
         f"{'USER' if turn.get('role') == 'me' else 'YOU'}: {str(turn.get('text', ''))[:500]}" for turn in history[-10:]
     )
-    base = f"NOW: {now}\n\n{gather(store, question)}\n\n"
+    base = f"NOW: {now}\n\n{material}\n\n"
     if earlier:
         base += f"EARLIER IN THIS CHAT:\n{earlier}\n\n"
     reply, search = _parse(generate(INSTRUCTIONS, base + f'THE USER ASKS: "{question}"\n\nJSON:', 700))

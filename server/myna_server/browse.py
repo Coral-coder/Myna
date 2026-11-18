@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from . import catalog
 from .store import Store
 
-TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"))
+TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
 
 _STYLE = """<style>
 body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
@@ -71,7 +71,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     for kind, title in TABS:
         on = ' class="on"' if kind == active else ""
         links.append(f'<a{on} href="/browse?kind={kind}">{title} {counts.get(kind, 0)}</a>')
-    for key, title in (("ask", "Ask"), ("live", "Live"), ("models", "Models")):
+    for key, title in (("ask", "Ask"), ("live", "Live"), ("compare", "Compare"), ("models", "Models")):
         on = ' class="on"' if key == active else ""
         links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "ask" else ""}>{title}</a>')
     links.append('<a href="/">Settings</a>')
@@ -81,7 +81,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
         'background:none;border-radius:99px;cursor:pointer">Lock</button></form>'
     )
     search = ""
-    if active not in ("live", "models", "ask"):
+    if active not in ("live", "models", "ask", "compare", "daily"):
         search = (
             f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
             f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
@@ -93,7 +93,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     )
 
 
-def list_page(store: Store, kind: str, query: str, before: float | None) -> str:
+def list_page(store: Store, kind: str, query: str, before: float | None, daily_status: str = "") -> str:
     rows = store.browse(kind, query, before=before)
     names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
     parts: list[str] = []
@@ -131,6 +131,12 @@ def list_page(store: Store, kind: str, query: str, before: float | None) -> str:
                 f'<div class="row">{mark} {_e(row.get("text"))} <span class="dim">{_e(row.get("kind"))}</span>'
                 f'<div class="dim">{_e(row.get("detail"))}</div></div>'
             )
+        elif kind == "daily":
+            parts.append(
+                f'<h1>{_e(_when(row["at"], "%A %d %B %Y"))}</h1>'
+                f'<div class="dim">written {_e(_when(row.get("writtenAt"), "%d %b %H:%M"))} by {_e(row.get("model"))}</div>'
+                f'<pre>{_e(row.get("text"))}</pre>'
+            )
         elif kind == "song":
             found = quote(f"{row.get('title', '')} {row.get('artist', '')}")
             links = f'<a href="https://open.spotify.com/search/{found}">Spotify</a>'
@@ -149,6 +155,15 @@ def list_page(store: Store, kind: str, query: str, before: float | None) -> str:
             )
     if kind == "song" and parts:
         parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
+    if kind == "daily":
+        parts.insert(
+            0,
+            '<form method="post" action="/browse/daily" style="display:flex;gap:8px;align-items:center;margin:6px 0 4px">'
+            f'<input type="date" name="day" value="{datetime.now().strftime("%Y-%m-%d")}" style="width:auto">'
+            '<button style="font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:7px 14px;'
+            'border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer">Write this day\'s summary now</button></form>'
+            f'<div class="dim">{_e(daily_status) or "A summary is written by itself once nothing has been heard for a while."}</div>',
+        )
     if not parts:
         parts.append('<p class="dim">Nothing here yet. It fills in as the phone syncs.</p>')
     elif len(rows) >= 300:
@@ -251,30 +266,57 @@ def models_page(store: Store, config, state: dict) -> str:
         _choices("llm_device", catalog.LLM_DEVICES, config.llm_device),
         "<h2>Writing model</h2>",
     ]
+    in_use = {
+        "llm": (config.llm_repo, config.llm_file),
+        "helper": (config.helper_repo, config.helper_file),
+        "summary": (config.summary_repo, config.summary_file),
+    }
+    labels = (("llm", "Main"), ("helper", "Helper"), ("summary", "Summary"))
+    parts.append(
+        '<div class="dim">Each model can be given a job. <b>Main</b> writes notes and answers. <b>Helper</b> is a '
+        "small, quick model that reads a lot of saved material and picks out what matters before the main model "
+        "sees it. <b>Summary</b> writes the end-of-day summary (left unset, the main model does it).</div>"
+    )
     listed = False
     for repo, file, name, size, note in catalog.WRITING:
-        current = repo == config.llm_repo and file == config.llm_file
-        listed = listed or current
-        action = (
-            '<span class="t">IN USE</span>'
-            if current
-            else f'<form method="post" action="/browse/models"><input type="hidden" name="repo" value="{_e(repo)}">'
-            f'<input type="hidden" name="file" value="{_e(file)}"><button>Use</button></form>'
-        )
+        buttons = []
+        for role, label in labels:
+            if in_use[role] == (repo, file):
+                listed = listed or role == "llm"
+                buttons.append(f'<span class="t">{label.upper()}</span>')
+            else:
+                buttons.append(
+                    f'<form method="post" action="/browse/models" style="margin:0"><input type="hidden" name="role" value="{role}">'
+                    f'<input type="hidden" name="repo" value="{_e(repo)}"><input type="hidden" name="file" value="{_e(file)}">'
+                    f"<button>{label}</button></form>"
+                )
         parts.append(
             f'<div class="row pick"><div>{_e(name)} <span class="dim">{size:g} GB</span>'
-            f'<div class="dim">{_e(note)}</div></div>{action}</div>'
+            f'<div class="dim">{_e(note)}</div></div><div style="display:flex;gap:6px;align-items:center">{"".join(buttons)}</div></div>'
         )
     if not listed:
-        parts.append(f'<div class="row pick"><div>{_e(config.llm_file)}<div class="dim">{_e(config.llm_repo)}</div></div><span class="t">IN USE</span></div>')
+        parts.append(f'<div class="row pick"><div>{_e(config.llm_file)}<div class="dim">{_e(config.llm_repo)}</div></div><span class="t">MAIN</span></div>')
     parts.append(
         "<h2>Another model</h2>"
         '<div class="dim">Any GGUF model on Hugging Face: its repository and file name.</div>'
         '<form method="post" action="/browse/models" style="display:grid;gap:8px;margin-top:8px">'
         '<input name="repo" placeholder="owner/repository"><input name="file" placeholder="model-file.gguf">'
-        "<div><button>Use</button></div></form>"
+        '<div style="display:flex;gap:6px"><button name="role" value="llm">Main</button>'
+        '<button name="role" value="helper">Helper</button><button name="role" value="summary">Summary</button></div></form>'
         '<p class="dim">A chosen model starts downloading straight away; progress shows above.</p>'
     )
+    for role, title, status_key in (("helper", "Helper model", "helper_status"), ("summary", "Summary model", "summary_status")):
+        repo, file = in_use[role]
+        shown = file.removesuffix(".gguf") if file else ("not used" if role == "helper" else "the main model")
+        clear = (
+            f'<form method="post" action="/browse/models" style="margin:0"><input type="hidden" name="clear" value="{role}">'
+            "<button>Stop using</button></form>" if file else ""
+        )
+        parts.append(
+            f"<h2>{title}</h2>"
+            f'<div class="row pick"><div>{_e(shown)}<div class="dim">{_e(state.get(status_key))}</div></div>{clear}</div>'
+            f"<h2>{title} runs on</h2>" + _choices(f"{role}_device", catalog.LLM_DEVICES, getattr(config, f"{role}_device"))
+        )
     return _frame("models", "", "".join(parts), store.counts())
 
 
@@ -339,3 +381,58 @@ document.getElementById('bar').onsubmit = async (event) => {
 };
 </script>"""
     return _frame("ask", "", body, store.counts())
+
+
+def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: int) -> str:
+    """Run the chosen transcription model over the kept recordings, and read
+    off how each model did on the same audio."""
+    since = (datetime.now() - timedelta(hours=hours)).timestamp()
+    parts = [
+        '<style>button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;'
+        "padding:7px 14px;border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}"
+        "table{border-collapse:collapse;width:100%;margin-top:8px}td,th{text-align:left;padding:6px 10px 6px 0;"
+        "border-bottom:1px solid #ffffff12;font-size:13px;vertical-align:top}th{font:11px ui-monospace,monospace;"
+        "letter-spacing:.1em;text-transform:uppercase;color:#6a6c6e}select{font:inherit;padding:6px;background:#141517;"
+        "color:#e9e9e6;border:1px solid #ffffff33;border-radius:8px}</style>",
+        "<h2>Try the current model on what was recorded</h2>",
+        f'<div class="dim">Transcription model in use: <b>{_e(model)}</b>. Change it on the Models tab, then run it over '
+        f"the same recordings here to compare. Audio is kept {keep_days} days.</div>",
+        '<form method="post" action="/browse/reprocess" style="display:flex;gap:8px;align-items:center;margin-top:10px">'
+        '<select name="hours"><option value="1">the last hour</option><option value="6">the last 6 hours</option>'
+        '<option value="24" selected>the last 24 hours</option><option value="72">the last 3 days</option>'
+        '<option value="168">the last 7 days</option></select>'
+        f'<button>Reprocess with {_e(model)}</button></form>',
+    ]
+    if job.get("running"):
+        parts.append(f'<p>Running {_e(job.get("model"))}: {job.get("done", 0)} of {job.get("total", 0)} recordings…</p>')
+    elif job.get("note"):
+        parts.append(f'<p class="dim">{_e(job.get("note"))}</p>')
+
+    readout = store.model_readout(since)
+    parts.append(f"<h2>Readout, last {hours:g} hours</h2>")
+    if not readout:
+        parts.append('<p class="dim">No recordings kept yet. They appear as the phone sends audio.</p>')
+    else:
+        parts.append(
+            "<table><tr><th>Model</th><th>Recordings</th><th>Audio</th><th>Time taken</th><th>Speed</th>"
+            "<th>Words</th><th>Heard nothing in</th></tr>"
+        )
+        for row in readout:
+            audio, took = row["audio"] or 0, row["took"] or 0
+            speed = f"{audio / took:.0f}× real time" if took > 0 else ""
+            parts.append(
+                f'<tr><td>{_e(row["model"])}</td><td>{row["clips"]}</td><td>{audio / 60:.1f} min</td>'
+                f'<td>{took:.1f} s</td><td>{speed}</td><td>{row["words"] or 0}</td><td>{row["empty"] or 0}</td></tr>'
+            )
+        parts.append("</table>")
+
+    parts.append("<h2>Same recording, each model</h2>")
+    for clip in store.side_by_side(since):
+        lines = "".join(
+            f'<div><span class="t">{_e(text["model"])}</span>{_e(text["text"]) or "<span class=dim>(nothing)</span>"}</div>'
+            for text in clip["texts"]
+        )
+        parts.append(
+            f'<div class="row"><div class="dim">{_e(_when(clip["at"], "%d %b %H:%M:%S"))} · {clip["seconds"]:.0f} s</div>{lines}</div>'
+        )
+    return _frame("compare", "", "".join(parts), store.counts())

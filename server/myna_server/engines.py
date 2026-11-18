@@ -262,19 +262,48 @@ LLAMA_BUILD = "b12400"
 LLAMA_ZIP = f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip"
 LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{LLAMA_ZIP}"
 LLAMA_SHA256 = "15eafe06f3ea80f78b80764e1994fd74b5ffa66b5cf0875a3bd9b3ee41a058ef"
-LLAMA_PORT = 8791
+LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793}
+_strays_cleared = False
 
 
 class LlamaWriter:
     """A GGUF language model served by llama.cpp's `llama-server`, run beside
     this process and spoken to over localhost."""
 
-    def __init__(self, config: Config) -> None:
-        self.name = config.llm_file.removesuffix(".gguf")
+    def __init__(self, config: Config, role: str = "llm") -> None:
+        # `role` picks which settings this one reads: the main model ("llm"),
+        # the small helper, or the end-of-day summary model. Each has its own
+        # runner on its own port.
+        self._role = role
+        self._port = LLAMA_PORTS[role]
         self._config = config
+        self.name = self._file.removesuffix(".gguf")
         self._process = None
         self._lock = threading.Lock()
-        self.status = "Not loaded yet"
+        self.status = "Not loaded yet" if self._file else "Not chosen"
+
+    @property
+    def _repo(self) -> str:
+        return getattr(self._config, f"{self._role}_repo")
+
+    @property
+    def _file(self) -> str:
+        return getattr(self._config, f"{self._role}_file")
+
+    @property
+    def _device(self) -> str:
+        return getattr(self._config, f"{self._role}_device")
+
+    @property
+    def chosen(self) -> bool:
+        return bool(self._repo and self._file)
+
+    def stop(self) -> None:
+        """Unload the model (frees its memory); it loads again on next use."""
+        with self._lock:
+            if self._process is not None:
+                self._stop()
+                self.status = "Unloaded (loads on next use)"
 
     # -- switching and warming -------------------------------------------------
 
@@ -282,10 +311,10 @@ class LlamaWriter:
         """Switch to another model. `warm` then downloads and loads it."""
         with self._lock:
             self._stop()
-            self._config.llm_repo = repo
-            self._config.llm_file = file
+            setattr(self._config, f"{self._role}_repo", repo)
+            setattr(self._config, f"{self._role}_file", file)
             self.name = file.removesuffix(".gguf")
-            self.status = "Selected; starting download…"
+            self.status = "Selected; starting download…" if file else "Not chosen"
 
     def reload(self) -> None:
         """Stop the runner so it starts again with the current settings."""
@@ -295,6 +324,8 @@ class LlamaWriter:
 
     def warm(self) -> None:
         """Download and load the model now, so the first request doesn't wait."""
+        if not self.chosen:
+            return
         with self._lock:
             try:
                 self._ensure_running()
@@ -352,7 +383,7 @@ class LlamaWriter:
         from huggingface_hub import get_hf_file_metadata, hf_hub_download, hf_hub_url
 
         cache = data_dir() / "models" / "llm"
-        repo, file = self._config.llm_repo, self._config.llm_file
+        repo, file = self._repo, self._file
         total = 0
         try:
             total = get_hf_file_metadata(hf_hub_url(repo, file)).size or 0
@@ -387,20 +418,23 @@ class LlamaWriter:
             model = self._download_model()
             _add_nvidia_dll_dirs()
             self.status = "Loading onto the graphics card…"
-            if sys.platform == "win32":
-                # A runner left over from an earlier run would hold the port
-                # (and maybe another model); clear it out first.
+            global _strays_cleared
+            if sys.platform == "win32" and not _strays_cleared:
+                # Runners left over from an earlier run of the worker would
+                # hold the ports (and maybe other models); clear them out once.
+                _strays_cleared = True
                 subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], capture_output=True,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            log = open(data_dir() / "llama-server.log", "w", encoding="utf-8", errors="replace")
+            log_path = data_dir() / f"llama-server-{self._role}.log"
+            log = open(log_path, "w", encoding="utf-8", errors="replace")
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             # Where it runs: all on the graphics card, all on the processor, or
             # (no setting) llama.cpp fits what it can on the card by itself.
-            device = self._config.llm_device
+            device = self._device
             layers = {"gpu": ["-ngl", "999"], "cpu": ["-ngl", "0"]}.get(device, [])
             self._process = subprocess.Popen(
                 [str(exe), "-m", model, *layers, "-c", str(self._config.llm_context),
-                 "--host", "127.0.0.1", "--port", str(LLAMA_PORT)],
+                 "--host", "127.0.0.1", "--port", str(self._port)],
                 stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
             )
             import time
@@ -408,10 +442,10 @@ class LlamaWriter:
             deadline = time.time() + 600
             while time.time() < deadline:
                 if self._process.poll() is not None:
-                    tail = (data_dir() / "llama-server.log").read_text(encoding="utf-8", errors="replace")[-400:]
+                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-400:]
                     raise RuntimeError(f"The model runner stopped while loading. {tail.strip()}")
                 try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{LLAMA_PORT}/health", timeout=3) as reply:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{self._port}/health", timeout=3) as reply:
                         if reply.status == 200:
                             where = {"gpu": "the graphics card", "cpu": "the processor"}.get(
                                 device, "the graphics card and processor together"
@@ -430,6 +464,8 @@ class LlamaWriter:
         import json
         import urllib.request
 
+        if not self.chosen:
+            raise RuntimeError("no model has been chosen for this")
         with self._lock:
             self._ensure_running()
             body = json.dumps(
@@ -443,7 +479,7 @@ class LlamaWriter:
                 }
             ).encode()
             request = urllib.request.Request(
-                f"http://127.0.0.1:{LLAMA_PORT}/v1/chat/completions",
+                f"http://127.0.0.1:{self._port}/v1/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json"},
             )

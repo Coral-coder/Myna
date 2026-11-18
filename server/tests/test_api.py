@@ -314,3 +314,128 @@ def test_one_speaker_is_transcribed_whole_and_no_voices_still_works(stt, client)
     assert body["text"] == "heard 48000 samples" and len(body["segments"]) == 1 and body["segments"][0]["voice"] == [1.0, 2.0]
     plain = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
     assert plain["segments"] == [] and plain["text"] == "heard 16000 samples"
+
+
+class NamedStt:
+    """A transcriber whose output depends on its (switchable) name."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def use(self, model):
+        self.name = model
+
+    def transcribe(self, samples):
+        return f"{self.name} heard {samples.size}"
+
+
+def test_audio_is_kept_and_another_model_can_be_run_over_it(tmp_path):
+    import time as clock
+
+    stt = NamedStt("model-a")
+    app = create_app(Config(token="secret-token"), stt, FakeWriter(), audio_dir=tmp_path)
+    app.state.save_config = False
+    client = TestClient(app)
+    for _ in range(2):
+        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 2, dtype=np.float32)))
+    assert len(list(tmp_path.rglob("*.wav"))) == 2
+
+    stt.use("model-b")
+    assert client.post("/browse/reprocess", data={"hours": "1"}).status_code == 401
+    client.post("/browse/reprocess", headers=AUTH, data={"hours": "1"}, follow_redirects=False)
+    for _ in range(50):
+        if not client.get("/browse/live.json", headers=AUTH).json()["reprocess"]["running"]:
+            break
+        clock.sleep(0.05)
+    job = client.get("/browse/live.json", headers=AUTH).json()["reprocess"]
+    assert job["done"] == 2 and job["total"] == 2 and job["model"] == "model-b"
+
+    page = client.get("/browse/compare?hours=1", headers=AUTH).text
+    assert "model-a heard 32000" in page and "model-b heard 32000" in page  # same recording, each model
+    assert "Reprocess with model-b" in page and "real time" in page
+    # Running it again has nothing left to do.
+    client.post("/browse/reprocess", headers=AUTH, data={"hours": "1"}, follow_redirects=False)
+    clock.sleep(0.2)
+    assert "already done" in client.get("/browse/live.json", headers=AUTH).json()["reprocess"]["note"]
+
+
+class Recorder:
+    """A writing model that records what it was asked and answers from a script."""
+
+    def __init__(self, name, reply):
+        self.name, self.reply, self.asked, self.chosen, self.stopped = name, reply, [], True, 0
+
+    def generate(self, instructions, prompt, max_tokens):
+        self.asked.append((instructions, prompt))
+        return self.reply(instructions, prompt) if callable(self.reply) else self.reply
+
+    def stop(self):
+        self.stopped += 1
+
+
+def test_helper_model_picks_out_context_for_the_main_model(stt):
+    helper = Recorder("small", "[Tue 10:00] the dentist is at four on Friday")
+    main = Recorder("big", '{"reply": "Friday at four.", "search": ""}')
+    client = TestClient(create_app(Config(token="secret-token"), stt, main, helper=helper))
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "the dentist is at four on Friday", "heardAt": 1_700_000_000}, 1),
+        change("utterance", "u2", {"text": "we talked about the dentist bill", "heardAt": 1_700_000_100}, 1),
+    ]})
+    reply = client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the dentist?"}).json()
+    assert reply["reply"] == "Friday at four."
+    assert "dentist bill" in helper.asked[0][1]            # the helper saw the wide material
+    assert "PICKED OUT" in main.asked[0][1] and "at four on Friday" in main.asked[0][1]
+    assert "dentist bill" not in main.asked[0][1]          # the main model only got what was picked
+
+
+def test_end_of_day_summary_uses_its_own_model_and_is_listed(stt):
+    from datetime import datetime
+
+    day = "2026-11-17"
+    noon = datetime(2026, 11, 17, 12, 0).timestamp()
+    helper = Recorder("small", "They discussed the roof repair with Sam.")
+    summary = Recorder("summary-model", "The day in brief\nRoof repair agreed with Sam.")
+    main = Recorder("big", "should not be used")
+    app = create_app(Config(token="secret-token"), stt, main, helper=helper, summarizer=summary)
+    client = TestClient(app)
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "so the roof needs doing before winter", "heardAt": noon}, 1),
+        change("note", "n1", {"title": "Roof", "overview": "Agreed a date", "startedAt": noon + 60,
+                              "placeName": "Home", "people": ["Sam"], "actionItems": [{"task": "call the roofer"}]}, 1),
+        change("song", "s1", {"title": "Blue in Green", "artist": "Miles Davis", "lastHeard": noon + 120}, 1),
+    ]})
+    text = app.state.run_daily(day)
+    assert text.startswith("The day in brief") and not main.asked
+    assert "roof needs doing" in helper.asked[0][1]                     # the helper read the transcript
+    prompt = summary.asked[0][1]
+    assert "roof repair with Sam" in prompt and "Home around 12:01" in prompt
+    assert "call the roofer" in prompt and "Blue in Green" in prompt
+    assert main.stopped == 1 and summary.stopped == 1                   # room made for it, then released
+    page = client.get("/browse?kind=daily", headers=AUTH).text
+    assert "Roof repair agreed with Sam." in page and "summary-model" in page
+    # A day with nothing saved writes nothing.
+    assert app.state.run_daily("2020-01-01") == ""
+
+
+def test_models_page_assigns_jobs_to_models(stt):
+    class Switchable(FakeWriter):
+        chosen = True
+
+        def use(self, repo, file):
+            self.name = file.removesuffix(".gguf")
+
+    config = Config(token="secret-token")
+    helper, summary = Switchable(), Switchable()
+    app = create_app(config, stt, Switchable(), helper=helper, summarizer=summary)
+    app.state.save_config = False
+    client = TestClient(app)
+    form = {"repo": "bartowski/Qwen_Qwen3-4B-GGUF", "file": "Qwen_Qwen3-4B-Q4_K_M.gguf"}
+    client.post("/browse/models", headers=AUTH, data={"role": "helper", **form}, follow_redirects=False)
+    client.post("/browse/models", headers=AUTH, follow_redirects=False,
+                data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
+    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("gemma")
+    assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "shared"  # too big for the card
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
+    client.post("/browse/models", headers=AUTH, data={"clear": "helper"}, follow_redirects=False)
+    assert helper.name == ""

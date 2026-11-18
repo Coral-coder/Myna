@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 
 import uvicorn
@@ -34,13 +35,46 @@ def main() -> None:
         return
     store = Store(data_dir() / "myna.db")
     transcriber, writer, voices = WhisperTranscriber(config), LlamaWriter(config), Voices()
-    app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices)
+    helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
+    audio_dir = data_dir() / "audio"
+    app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
+                     helper=helper, summarizer=summarizer, audio_dir=audio_dir)
+
+    def housekeeping() -> None:
+        """Once a minute: write the day's summary when the day has gone quiet,
+        and clear out audio past its keeping time."""
+        import time
+        from datetime import datetime
+
+        last_purge = 0.0
+        while True:
+            time.sleep(60)
+            try:
+                now = time.time()
+                last = store.last_clip_at()
+                if config.daily_summary and last > 0 and now - last >= config.idle_minutes * 60:
+                    day = datetime.fromtimestamp(last).strftime("%Y-%m-%d")
+                    written = store.get("daily", day)
+                    if written is None or float(written.get("writtenAt") or 0) < last:
+                        app.state.run_daily(day)
+                if now - last_purge > 3600:
+                    last_purge = now
+                    for path in store.drop_clips_before(now - max(config.keep_audio_days, 0) * 86400):
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+            except Exception:
+                pass  # try again next minute
+
+    threading.Thread(target=housekeeping, daemon=True).start()
 
     # Get both models downloaded and loaded now rather than on the first request.
     def warm() -> None:
         transcriber.warm()
         voices.warm()
         writer.warm()
+        helper.warm()
 
     threading.Thread(target=warm, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port or config.port, log_level="info")
