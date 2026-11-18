@@ -1,0 +1,85 @@
+name: Publish Core AI language models
+
+# Converts an open language model to Apple's Core AI format for iPhone (Neural
+# Engine) with Apple's own export tool, and publishes it to the `llm-models`
+# release, which the app downloads from.
+#
+# Each export is one folder, <slug>/, holding <slug>.aimodel plus the tokenizer.
+# It is zipped and, because GitHub caps a release file at 2 GB, split into
+# parts; <slug>.json lists the parts and the total size.
+#
+# Run manually (Actions → Publish Core AI language models → Run workflow), or
+# on your own Mac with Xcode 27:
+#   git clone --branch 1.0.0 https://github.com/apple/coreai-models && cd coreai-models
+#   uv run coreai.llm.export Qwen/Qwen3-4B --platform iOS --output-dir out --output-name qwen3-4b
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Hugging Face model id (must have an iOS preset in apple/coreai-models)
+        required: true
+        default: Qwen/Qwen3-1.7B
+      slug:
+        description: Name the app knows it by (catalog id without the coreai/ prefix)
+        required: true
+        default: qwen3-1.7b
+  # First registration of this workflow: a push that touches it runs the default export.
+  push:
+    branches: [coreai-ane]
+    paths: [.github/workflows/llm-models.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: xcode-27
+    timeout-minutes: 300
+    env:
+      MODEL: ${{ inputs.model || 'Qwen/Qwen3-1.7B' }}
+      SLUG: ${{ inputs.slug || 'qwen3-1.7b' }}
+    steps:
+      - name: Select Xcode 27
+        run: |
+          xcode=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+          sysctl -n hw.memsize hw.ncpu
+          df -h /
+
+      - name: Get Apple's export tool
+        run: |
+          git clone --depth 1 --branch 1.0.0 https://github.com/apple/coreai-models
+          command -v uv || brew install uv
+
+      - name: Export for iPhone
+        working-directory: coreai-models
+        run: |
+          set -euo pipefail
+          uv run coreai.llm.export "$MODEL" --platform iOS --output-dir "$GITHUB_WORKSPACE/out" --output-name "$SLUG"
+          ls -la "$GITHUB_WORKSPACE/out" "$GITHUB_WORKSPACE/out/$SLUG"
+          du -sh "$GITHUB_WORKSPACE/out/$SLUG"
+
+      - name: Zip and split
+        run: |
+          set -euo pipefail
+          cd out
+          test -e "$SLUG/$SLUG.aimodel"
+          # Already-compressed weights: store, don't deflate.
+          zip -r -0 "$SLUG.zip" "$SLUG"
+          bytes=$(stat -f%z "$SLUG.zip")
+          split -b 1900m "$SLUG.zip" "$SLUG.zip.part-"
+          rm "$SLUG.zip"
+          parts=$(ls "$SLUG".zip.part-* | sort | sed 's/.*/"&"/' | paste -sd, -)
+          echo "{\"parts\":[${parts}],\"bytes\":${bytes}}" > "$SLUG.json"
+          cat "$SLUG.json"; ls -la
+          mkdir publish && mv "$SLUG".zip.part-* "$SLUG.json" publish/
+
+      - name: Publish to the llm-models release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: llm-models
+          name: Core AI language models
+          body: Open language models converted to Apple's Core AI format for iPhone (Neural Engine), for Myna.
+          files: out/publish/*

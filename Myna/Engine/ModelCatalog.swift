@@ -30,7 +30,14 @@ struct CatalogModel: Identifiable, Hashable {
         /// Apple's on-device foundation model (iOS 26+, Apple Intelligence on).
         /// Nothing to download, and it keeps working while the phone is locked.
         case appleFoundation
+        /// An open model converted to Apple's Core AI format, run on the Neural
+        /// Engine (iOS 27). Works on screen, in the background and locked.
+        case coreAI
     }
+
+    /// For Core AI models: the file name stem of the export in this repo's
+    /// `llm-models` release.
+    var coreAISlug: String { id.replacingOccurrences(of: "coreai/", with: "") }
 
     /// Whether this iPhone has enough memory to run the model comfortably.
     var fitsThisDevice: Bool {
@@ -58,6 +65,29 @@ enum ModelCatalog {
             peakRAMGB: 0,
             badge: .builtIn,
             blurb: "Apple's own on-device model, already on your iPhone with iOS 26. Nothing to download, light on battery, and the only mind that can keep composing notes while the phone is locked in your pocket. Myna also uses it as a background helper when your main model needs the screen on."
+        ),
+        CatalogModel(
+            id: "coreai/qwen3-4b",
+            backend: .coreAI,
+            displayName: "Qwen 3 4B · Neural Engine",
+            family: "Alibaba Qwen · Core AI",
+            parameters: "4B · runs locked",
+            downloadGB: 2.6,
+            peakRAMGB: 3.5,
+            badge: .maxQuality,
+            blurb: "Qwen 3 4B converted to Apple's Core AI format so it runs on the Neural Engine instead of the graphics chip. That means it keeps writing notes with Myna in the background and the phone locked. The most capable background model.",
+            minimumDeviceRAMGB: 8
+        ),
+        CatalogModel(
+            id: "coreai/qwen3-1.7b",
+            backend: .coreAI,
+            displayName: "Qwen 3 1.7B · Neural Engine",
+            family: "Alibaba Qwen · Core AI",
+            parameters: "1.7B · runs locked",
+            downloadGB: 1.4,
+            peakRAMGB: 2.0,
+            badge: nil,
+            blurb: "A smaller, faster Neural Engine model. Runs in the background and locked, with lighter notes than the 4B."
         ),
         CatalogModel(
             id: "mlx-community/Qwen3-8B-4bit",
