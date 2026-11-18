@@ -43,11 +43,8 @@ struct TranscriptionLabView: View {
             Text(activeNote)
                 .font(.system(size: 13, weight: .light))
                 .foregroundStyle(MynaTheme.muted)
-            if !lab.liveStatus.isEmpty {
-                Text(lab.liveStatus)
-                    .font(MynaTheme.mono(10))
-                    .foregroundStyle(MynaTheme.faint)
-            }
+            Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
+            LiveTicker()
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)

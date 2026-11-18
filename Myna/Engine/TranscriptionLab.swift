@@ -511,6 +511,40 @@ final class TranscriptionLab: ObservableObject {
     private var liveQueue: Task<Void, Never>?
     private var livePending = 0
 
+    /// The utterance being spoken right now, as the chosen engine hears it so
+    /// far. Refreshed several times a second while someone is talking.
+    @Published private(set) var livePartial: String = ""
+    private var interimBusy = false
+    private var lastInterimCount = 0
+    private var liveGeneration = 0
+
+    /// Re-transcribe the utterance-so-far so words show up while they're being
+    /// said, not only at the pause. Runs only when the engine is free, so it
+    /// can't fall behind or delay the final pass.
+    private func refreshLivePartial() {
+        let engine = effectiveEngine
+        switch engine.kind {
+        case .sherpa, .whisperKit: break
+        default: return   // Apple's own recognizer already streams; cloud would bill per pass.
+        }
+        guard !interimBusy, livePending == 0, liveVoiced > 0,
+              liveSamples.count - lastInterimCount >= Int(liveRate * 0.5) else { return }
+        interimBusy = true
+        lastInterimCount = liveSamples.count
+        let snapshot = liveSamples
+        let rate = Int(liveRate)
+        let generation = liveGeneration
+        let dir = sherpaDir(engine)
+        Task { [weak self] in
+            let text = try? await LabRunner.shared.transcribe(engine: engine, modelDir: dir, samples: snapshot, sampleRate: rate)
+            guard let self else { return }
+            self.interimBusy = false
+            guard generation == self.liveGeneration, let text else { return }
+            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty { self.livePartial = cleaned }
+        }
+    }
+
     /// Collects bracelet audio into an utterance and hands it to the engine when
     /// the speaker pauses (or after 20 s without a pause).
     private func ingestLive(_ buffer: AVAudioPCMBuffer) {
@@ -535,6 +569,8 @@ final class TranscriptionLab: ObservableObject {
             }
         }
 
+        refreshLivePartial()
+
         let paused = liveVoiced > 0 && Double(liveSilence) >= liveRate * 0.8
         let tooLong = Double(liveSamples.count) >= liveRate * 20
         guard paused || tooLong else { return }
@@ -544,7 +580,9 @@ final class TranscriptionLab: ObservableObject {
         liveSamples.removeAll(keepingCapacity: true)
         liveVoiced = 0
         liveSilence = 0
-        guard voicedSeconds >= 0.3 else { return }
+        liveGeneration += 1
+        lastInterimCount = 0
+        guard voicedSeconds >= 0.3 else { livePartial = ""; return }
         enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: voicedSeconds)
     }
 
@@ -581,6 +619,8 @@ final class TranscriptionLab: ObservableObject {
             let voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate)
             guard let self else { return }
             self.livePending = max(0, self.livePending - 1)
+            // The finished line replaces the in-progress preview of it.
+            if self.livePending == 0, self.liveVoiced == 0 { self.livePartial = "" }
             guard !usedName.isEmpty else {
                 self.liveStatus = lastError
                 return

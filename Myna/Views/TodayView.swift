@@ -3,24 +3,31 @@ import SwiftUI
 
 /// Today: the day's numbers, an optional live ticker, and the transcript —
 /// searchable, each line tappable to say whose voice it is.
+///
+/// This view itself watches nothing that changes many times a second; the
+/// pieces that do (the header status, the ticker, the battery) are their own
+/// small views, so the transcript and the numbers aren't rebuilt per packet.
 struct TodayView: View {
-    @EnvironmentObject private var pilot: ConversationPilot
-    @EnvironmentObject private var listener: SpeechListener
-    @EnvironmentObject private var bee: BeeManager
-    @ObservedObject private var lab = TranscriptionLab.shared
-
     @AppStorage("myna.today.showLive") private var showLive = true
     @State private var search = ""
 
-    private var dayStart: Date { Calendar.current.startOfDay(for: .now) }
-
     var body: some View {
+        let dayStart = Calendar.current.startOfDay(for: .now)
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                header
-                TodayStats(dayStart: dayStart, notesToday: pilot.notesComposedToday, battery: bee.batteryLevel)
+                TodayHeader()
+                TodayStats(dayStart: dayStart)
                 TodayCloud(dayStart: dayStart, search: $search)
-                liveSection
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: $showLive) {
+                        Text("LIVE")
+                            .font(MynaTheme.mono(11))
+                            .tracking(2)
+                            .foregroundStyle(MynaTheme.faint)
+                    }
+                    .tint(MynaTheme.signal)
+                    if showLive { LiveTicker() }
+                }
                 searchField
                 TodaySegments(dayStart: dayStart, search: search.trimmingCharacters(in: .whitespaces))
             }
@@ -32,9 +39,36 @@ struct TodayView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    // MARK: - Header
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13))
+                .foregroundStyle(MynaTheme.faint)
+            TextField("Search everything heard", text: $search)
+                .font(.system(size: 15, weight: .light))
+                .foregroundStyle(MynaTheme.ink)
+                .autocorrectionDisabled()
+            if !search.isEmpty {
+                Button { search = "" } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MynaTheme.faint)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MynaTheme.hair, lineWidth: 1))
+    }
+}
 
-    private var header: some View {
+private struct TodayHeader: View {
+    @EnvironmentObject private var pilot: ConversationPilot
+    @EnvironmentObject private var listener: SpeechListener
+    @EnvironmentObject private var bee: BeeManager
+
+    var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Today")
@@ -72,85 +106,61 @@ struct TodayView: View {
         }
         return "\(date) · \(source)"
     }
+}
 
-    // MARK: - Live ticker
+/// What is being heard this instant: a level bar and the words as they are
+/// spoken. Used on Today and on the Transcription settings page.
+struct LiveTicker: View {
+    @EnvironmentObject private var listener: SpeechListener
+    @EnvironmentObject private var bee: BeeManager
+    @ObservedObject private var lab = TranscriptionLab.shared
 
-    private var liveSection: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: $showLive) {
-                Text("LIVE")
-                    .font(MynaTheme.mono(11))
-                    .tracking(2)
-                    .foregroundStyle(MynaTheme.faint)
-            }
-            .tint(MynaTheme.signal)
-
-            if showLive {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(MynaTheme.hair)
-                        Capsule().fill(MynaTheme.signal)
-                            .frame(width: max(3, geo.size.width * min(1, listener.audioLevel)))
-                    }
-                }
-                .frame(height: 3)
-
-                Text(ticker)
-                    .font(.system(size: 16, weight: .light))
-                    .foregroundStyle(listener.liveTranscript.isEmpty ? MynaTheme.faint : MynaTheme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(4)
-
-                if !lab.liveStatus.isEmpty {
-                    Text(lab.liveStatus)
-                        .font(MynaTheme.mono(10))
-                        .foregroundStyle(MynaTheme.faint)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(MynaTheme.hair)
+                    Capsule().fill(MynaTheme.signal)
+                        .frame(width: max(3, geo.size.width * min(1, listener.audioLevel)))
                 }
             }
-        }
-    }
+            .frame(height: 3)
 
-    /// The tail of what is being heard right now.
-    private var ticker: String {
-        let text = listener.liveTranscript
-        if text.isEmpty { return bee.audioActive || listener.isListening ? "Listening…" : "Nothing is being heard." }
-        return text.count > 240 ? "…" + String(text.suffix(240)) : text
-    }
+            Text(words)
+                .font(.system(size: 16, weight: .light))
+                .foregroundStyle(hasWords ? MynaTheme.ink : MynaTheme.faint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(5)
 
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13))
+            Text(source)
+                .font(MynaTheme.mono(10))
                 .foregroundStyle(MynaTheme.faint)
-            TextField("Search everything heard", text: $search)
-                .font(.system(size: 15, weight: .light))
-                .foregroundStyle(MynaTheme.ink)
-                .autocorrectionDisabled()
-            if !search.isEmpty {
-                Button { search = "" } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MynaTheme.faint)
-                }
-                .buttonStyle(.plain)
-            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MynaTheme.hair, lineWidth: 1))
+    }
+
+    /// The chosen engine's running text when it has some; otherwise Apple's
+    /// instant word stream.
+    private var raw: String { lab.livePartial.isEmpty ? listener.liveTranscript : lab.livePartial }
+    private var hasWords: Bool { !raw.isEmpty }
+
+    private var words: String {
+        if raw.isEmpty { return bee.audioActive || listener.isListening ? "Listening…" : "Nothing is being heard." }
+        return raw.count > 280 ? "…" + String(raw.suffix(280)) : raw
+    }
+
+    private var source: String {
+        if !lab.livePartial.isEmpty { return "\(lab.effectiveEngine.name) · live" }
+        if !lab.liveStatus.isEmpty { return lab.liveStatus }
+        return listener.liveTranscript.isEmpty ? " " : "Apple Speech · preview"
     }
 }
 
 /// Today's numbers, where the animated orb used to be.
 private struct TodayStats: View {
     @Query private var lines: [Utterance]
-    let notesToday: Int
-    let battery: Int?
 
-    init(dayStart: Date, notesToday: Int, battery: Int?) {
+    init(dayStart: Date) {
         _lines = Query(filter: #Predicate<Utterance> { $0.heardAt >= dayStart })
-        self.notesToday = notesToday
-        self.battery = battery
     }
 
     var body: some View {
@@ -163,8 +173,8 @@ private struct TodayStats: View {
             stat("\(words)", "words")
             stat("\(lines.count)", "segments")
             stat("\(voices)", voices == 1 ? "voice" : "voices")
-            stat("\(notesToday)", notesToday == 1 ? "note" : "notes")
-            stat(battery.map { "\($0)%" } ?? "—", "bracelet")
+            NotesStat()
+            BatteryStat()
         }
         .padding(.vertical, 16)
         .overlay(alignment: .top) { Rectangle().fill(MynaTheme.hairSoft).frame(height: 1) }
@@ -172,6 +182,36 @@ private struct TodayStats: View {
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
+        TodayStatCell(value: value, label: label)
+    }
+
+    private static func clock(_ seconds: Double) -> String {
+        let total = Int(seconds)
+        if total >= 3600 { return "\(total / 3600)h \((total % 3600) / 60)m" }
+        if total >= 60 { return "\(total / 60)m" }
+        return "\(total)s"
+    }
+}
+
+private struct NotesStat: View {
+    @EnvironmentObject private var pilot: ConversationPilot
+    var body: some View {
+        TodayStatCell(value: "\(pilot.notesComposedToday)", label: pilot.notesComposedToday == 1 ? "note" : "notes")
+    }
+}
+
+private struct BatteryStat: View {
+    @EnvironmentObject private var bee: BeeManager
+    var body: some View {
+        TodayStatCell(value: bee.batteryLevel.map { "\($0)%" } ?? "—", label: "bracelet")
+    }
+}
+
+private struct TodayStatCell: View {
+    let value: String
+    let label: String
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(value)
                 .font(.system(size: 26, weight: .light))
@@ -185,13 +225,6 @@ private struct TodayStats: View {
                 .foregroundStyle(MynaTheme.faint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private static func clock(_ seconds: Double) -> String {
-        let total = Int(seconds)
-        if total >= 3600 { return "\(total / 3600)h \((total % 3600) / 60)m" }
-        if total >= 60 { return "\(total / 60)m" }
-        return "\(total)s"
     }
 }
 

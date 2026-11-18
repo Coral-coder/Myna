@@ -9,47 +9,86 @@ import SwiftUI
 struct SuggestionsView: View {
     @EnvironmentObject private var brain: MynaBrain
     @EnvironmentObject private var beeCloud: BeeCloudImporter
-    @EnvironmentObject private var bee: BeeManager
-    @EnvironmentObject private var listener: SpeechListener
-    @EnvironmentObject private var pilot: ConversationPilot
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Suggestion.createdAt, order: .reverse) private var all: [Suggestion]
-    @Query(sort: \ConversationNote.createdAt, order: .reverse) private var notes: [ConversationNote]
+    // Only what's waiting, fetched by the store — not every suggestion ever made,
+    // filtered on each redraw. This screen also no longer watches the bracelet or
+    // the microphone, whose many-times-a-second updates were rebuilding the whole
+    // list and made it crawl.
+    @Query private var pending: [Suggestion]
+    @State private var confirmingClear = false
 
-    private var pending: [Suggestion] { all.filter { $0.status == .pending } }
+    init() {
+        let waiting = SuggestionStatus.pending.rawValue
+        _pending = Query(filter: #Predicate<Suggestion> { $0.statusRaw == waiting },
+                         sort: \Suggestion.createdAt, order: .reverse)
+    }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                SectionHeading(icon: "tray.full", title: "Inbox", tint: MynaTheme.cyan)
-                    .padding(.top, 12)
-
-                liveStatusStrip
-
+            LazyVStack(alignment: .leading, spacing: 0) {
+                header
                 if pending.isEmpty {
-                    emptyState
-                    activityCards
-                } else {
-                    Text(pending.count == 1 ? "1 suggestion from your Bee" : "\(pending.count) suggestions from your Bee")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    ForEach(pending) { suggestion in
-                        SuggestionRow(
-                            suggestion: suggestion,
-                            accept: { accept(suggestion) },
-                            dismiss: { dismiss(suggestion) }
-                        )
-                    }
+                    Text(beeCloud.hasToken
+                         ? "Nothing waiting. New things to buy, do and remember land here as Myna hears them."
+                         : "Nothing waiting.")
+                        .font(.system(size: 14, weight: .light))
+                        .foregroundStyle(MynaTheme.muted)
+                        .padding(.vertical, 16)
+                }
+                ForEach(pending) { suggestion in
+                    SuggestionRow(
+                        suggestion: suggestion,
+                        accept: { accept(suggestion) },
+                        dismiss: { dismiss(suggestion) }
+                    )
+                    Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, 12)
-            .animation(.bouncy(duration: 0.35), value: pending.count)
+            .padding(.bottom, 16)
         }
         .scrollIndicators(.hidden)
         .refreshable { await beeCloud.importRecent() }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(pending.count == 1 ? "1 waiting" : "\(pending.count) waiting")
+                .font(MynaTheme.mono(11))
+                .tracking(1.5)
+                .textCase(.uppercase)
+                .foregroundStyle(MynaTheme.faint)
+            Spacer()
+            if !pending.isEmpty {
+                if confirmingClear {
+                    Button { confirmingClear = false } label: {
+                        Text("Keep")
+                            .font(MynaTheme.mono(11)).tracking(1).textCase(.uppercase)
+                            .foregroundStyle(MynaTheme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    Button { clearAll() } label: {
+                        Text("Clear all \(pending.count)")
+                            .font(MynaTheme.mono(11)).tracking(1).textCase(.uppercase)
+                            .foregroundStyle(MynaTheme.paper)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(Capsule().fill(MynaTheme.ink))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button { confirmingClear = true } label: {
+                        Text("Clear all")
+                            .font(MynaTheme.mono(11)).tracking(1).textCase(.uppercase)
+                            .foregroundStyle(MynaTheme.ink)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.top, 16)
+        .padding(.bottom, 12)
     }
 
     // MARK: - Accept / dismiss
@@ -82,140 +121,13 @@ struct SuggestionsView: View {
         try? modelContext.save()
     }
 
-    // MARK: - Empty state
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: beeCloud.hasToken ? "checkmark.seal.fill" : "link")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(MynaTheme.auroraGradient)
-            Text(beeCloud.hasToken ? "Inbox zero" : "Connect your Bee")
-                .font(MynaTheme.display(17, weight: .semibold))
-                .foregroundStyle(MynaTheme.ink)
-            Text(beeCloud.hasToken
-                 ? "Nothing waiting. New things to buy, do and remember land here as Myna hears them."
-                 : "Myna reads your Bee conversations and turns them into suggestions. Connect your Bee account in Backstage to begin.")
-                .font(.system(size: 13))
-                .foregroundStyle(MynaTheme.ink.opacity(0.55))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 12)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 26)
-        .glassCard(cornerRadius: 22)
-    }
-
-    // MARK: - Live + activity
-
-    private var isLive: Bool { bee.pairing == .streaming || pilot.phase == .listening || listener.usingExternalSource }
-
-    private var liveStatusStrip: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle().fill((isLive ? MynaTheme.mint : MynaTheme.ink.opacity(0.25)))
-                    .frame(width: 8, height: 8)
-                if isLive {
-                    Circle().stroke(MynaTheme.mint.opacity(0.5), lineWidth: 1)
-                        .frame(width: 16, height: 16)
-                }
-            }
-            Text(statusText)
-                .font(.system(size: 12.5, weight: .medium, design: .rounded))
-                .foregroundStyle(MynaTheme.ink.opacity(0.7))
-            Spacer()
-            if bee.pairing == .streaming {
-                Text("\(bee.packetsDecoded) pkts")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(MynaTheme.ink.opacity(0.4))
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .glassCard(cornerRadius: 14)
-    }
-
-    private var statusText: String {
-        if bee.pairing == .streaming { return bee.audioActive ? "Listening through your bracelet" : "Bracelet connected" }
-        if pilot.phase == .listening || listener.usingExternalSource { return "Listening on this iPhone" }
-        if pilot.phase == .composing { return "Composing a note…" }
-        return "Standing by"
-    }
-
-    private var acceptedToday: [Suggestion] {
-        all.filter { $0.status == .accepted && Calendar.current.isDateInToday($0.createdAt) }
-    }
-
-    private var notesToday: [ConversationNote] {
-        notes.filter { Calendar.current.isDateInToday($0.createdAt) }
-    }
-
-    @ViewBuilder
-    private var activityCards: some View {
-        // Today's tally.
-        HStack(spacing: 12) {
-            miniStat("\(notesToday.count)", "Notes today", "sparkles.rectangle.stack", MynaTheme.cyan)
-            miniStat("\(acceptedToday.count)", "Added today", "checkmark.circle", MynaTheme.mint)
-            miniStat("\(notesToday.reduce(0) { $0 + $1.durationMinutes })m", "Captured", "waveform", MynaTheme.magenta)
-        }
-
-        // What Myna recently added for you.
-        let recentHandled = all.filter { $0.status == .accepted }.prefix(6)
-        if !recentHandled.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeading(icon: "clock.arrow.circlepath", title: "Recently added", tint: MynaTheme.mint)
-                ForEach(Array(recentHandled)) { s in
-                    HStack(spacing: 10) {
-                        Image(systemName: s.kind.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(MynaTheme.mint)
-                            .frame(width: 20)
-                        Text(CommandParser.capitalizeFirst(s.text))
-                            .font(.system(size: 13, design: .rounded))
-                            .foregroundStyle(MynaTheme.ink.opacity(0.85))
-                            .lineLimit(1)
-                        Spacer()
-                        Text(s.createdAt.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 10.5, design: .rounded))
-                            .foregroundStyle(MynaTheme.ink.opacity(0.35))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard(cornerRadius: 18)
-        } else if let lastNote = notes.first {
-            VStack(alignment: .leading, spacing: 8) {
-                SectionHeading(icon: "note.text", title: "Latest note", tint: MynaTheme.cyan)
-                Text(lastNote.title.isEmpty ? "Untitled note" : lastNote.title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(MynaTheme.ink)
-                    .lineLimit(1)
-                if !lastNote.overview.isEmpty {
-                    Text(lastNote.overview)
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
-                        .lineLimit(3)
-                }
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard(cornerRadius: 18)
-        }
-    }
-
-    private func miniStat(_ value: String, _ label: String, _ icon: String, _ tint: Color) -> some View {
-        VStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 13)).foregroundStyle(tint)
-            Text(value).font(MynaTheme.display(19, weight: .bold)).foregroundStyle(MynaTheme.ink)
-            Text(label.uppercased())
-                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
-                .tracking(1.1)
-                .foregroundStyle(MynaTheme.ink.opacity(0.42))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MynaTheme.ink.opacity(0.05)))
+    /// Dismiss everything that's waiting, in one save.
+    private func clearAll() {
+        let dismissed = SuggestionStatus.dismissed.rawValue
+        let waiting = pending
+        for suggestion in waiting { suggestion.statusRaw = dismissed }
+        try? modelContext.save()
+        confirmingClear = false
     }
 }
 
@@ -293,7 +205,6 @@ private struct SuggestionRow: View {
             }
             .padding(.top, 2)
         }
-        .padding(14)
-        .glassCard(cornerRadius: 18)
+        .padding(.vertical, 14)
     }
 }
