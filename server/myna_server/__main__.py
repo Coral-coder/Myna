@@ -21,6 +21,13 @@ def main() -> None:
     parser.add_argument("--show-token", action="store_true", help="Print the pairing token and exit")
     args = parser.parse_args()
 
+    # If a native library crashes the worker, leave the Python stack behind
+    # in a file so the cause can be seen.
+    import faulthandler
+
+    crash_log = open(data_dir() / "worker-crash.log", "a", encoding="utf-8")
+    faulthandler.enable(file=crash_log, all_threads=True)
+
     config = Config.load()
     if args.show_token:
         print(config.token)

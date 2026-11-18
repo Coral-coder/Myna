@@ -200,6 +200,7 @@ async function tick() {
     document.getElementById('now').innerHTML =
       'Transcription: ' + esc(d.transcriber) + ' — ' + esc(d.transcriber_status) + '<br>' +
       'Writing: ' + esc(d.writer) + ' — ' + esc(d.writer_status) + '<br>' +
+      'Telling speakers apart: ' + esc(d.voices_status || 'off') + '<br>' +
       esc(d.transcribed) + ' clips transcribed, ' + esc(d.generated) + ' pieces written since the server started';
     if (d.events.length) {
       document.getElementById('events').innerHTML = d.events.slice().reverse().map(e => {

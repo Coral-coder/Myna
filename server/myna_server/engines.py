@@ -116,6 +116,22 @@ def load_sherpa(key: str, report=lambda text: None):
     raise RuntimeError(f"Unknown transcriber family: {family}")
 
 
+def decode_sherpa(model, key: str, samples: np.ndarray) -> str:
+    """Transcribe 16 kHz audio with a loaded sherpa-onnx model, a stretch at a time."""
+    from .catalog import SHERPA
+
+    step = int(SHERPA[key][3] * 16000)
+    pieces = []
+    for start in range(0, len(samples), step):
+        stream = model.create_stream()
+        stream.accept_waveform(16000, samples[start : start + step])
+        model.decode_stream(stream)
+        text = stream.result.text.strip()
+        if text:
+            pieces.append(text)
+    return " ".join(pieces)
+
+
 class WhisperTranscriber:
     """The chosen transcriber: a Whisper size on faster-whisper (graphics card,
     falling back to the processor), or one of the sherpa-onnx models."""
@@ -141,6 +157,9 @@ class WhisperTranscriber:
         """Drop the loaded model so it loads again with the current settings."""
         with self._lock:
             self._model = None
+            # Choosing where it runs again is also the way to retry the
+            # graphics card after it crashed.
+            (data_dir() / "loading-whisper-on-gpu").unlink(missing_ok=True)
             self.status = "Reloading…"
 
     def warm(self) -> None:
@@ -158,8 +177,12 @@ class WhisperTranscriber:
             def report(text: str) -> None:
                 self.status = text
 
+            # These run in the helper process (see sidecar.py).
+            from .sidecar import helper
+
             try:
-                self._model = load_sherpa(self._model_name.removeprefix("sherpa:"), report)
+                helper.call("stt_load", self._model_name.removeprefix("sherpa:"), report=report)
+                self._model = "helper"
                 self.device = "cpu"
                 self.status = "Ready on the processor"
             except Exception as error:
@@ -171,18 +194,32 @@ class WhisperTranscriber:
 
         self.status = "Downloading and loading…"
         cache = str(data_dir() / "models" / "whisper")
+        # If loading onto the graphics card killed the worker last time, the
+        # mark below is still there: use the processor instead of crashing again.
+        mark = data_dir() / "loading-whisper-on-gpu"
+        crashed_before = mark.exists()
         try:
             wants_cpu = self._config.stt_device == "cpu"
             try:
                 if wants_cpu:
                     raise RuntimeError("processor chosen")
+                if crashed_before:
+                    raise RuntimeError("the graphics card crashed the server last time")
+                mark.write_text("1")
                 self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16", download_root=cache)
+                mark.unlink(missing_ok=True)
                 self.device = "cuda"
                 self.status = "Ready on the graphics card"
             except Exception:
+                if not crashed_before:
+                    mark.unlink(missing_ok=True)
                 self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", download_root=cache)
                 self.device = "cpu"
-                self.status = "Ready on the processor" + ("" if wants_cpu else " (the graphics card couldn't be used)")
+                why = "" if wants_cpu else (
+                    " (loading on the graphics card crashed the server earlier; choose Graphics card again on the Models tab to retry)"
+                    if crashed_before else " (the graphics card couldn't be used)"
+                )
+                self.status = "Ready on the processor" + why
         except Exception as error:
             self.status = f"Couldn't load: {error}"
             raise
@@ -192,18 +229,14 @@ class WhisperTranscriber:
         with self._lock:
             model = self._load()
             if self._model_name.startswith("sherpa:"):
-                from .catalog import SHERPA
+                from .sidecar import helper
 
-                step = int(SHERPA[self._model_name.removeprefix("sherpa:")][3] * 16000)
-                pieces = []
-                for start in range(0, len(samples), step):
-                    stream = model.create_stream()
-                    stream.accept_waveform(16000, samples[start : start + step])
-                    model.decode_stream(stream)
-                    text = stream.result.text.strip()
-                    if text:
-                        pieces.append(text)
-                return " ".join(pieces)
+                try:
+                    return helper.call("stt", self._model_name.removeprefix("sherpa:"), samples)
+                except Exception as error:
+                    self._model = None
+                    self.status = f"Stopped: {error}"
+                    raise
             segments, _ = model.transcribe(
                 samples,
                 language="en",
@@ -427,13 +460,54 @@ VOICE_MODEL_SHA256 = "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d2
 class Voices:
     """Who is speaking when. Splits a clip into stretches by speaker and gives
     each speaker a voice print: the same voice model the phone uses, so the
-    phone can match the prints against the people it already knows."""
+    phone can match the prints against the people it already knows. The work is
+    done in the helper process (see sidecar.py)."""
+
+    def __init__(self) -> None:
+        self.status = "Not loaded yet"
+
+    def _report(self, text: str) -> None:
+        self.status = text
+
+    def warm(self) -> None:
+        from .sidecar import helper
+
+        try:
+            helper.call("voices_load", report=self._report)
+            self.status = "Ready"
+        except Exception as error:
+            self.status = f"Not available: {error}"
+
+    def split(self, samples: np.ndarray) -> list[tuple[float, float, int]]:
+        from .sidecar import helper
+
+        try:
+            pieces = helper.call("split", samples, report=self._report)
+            self.status = "Ready"
+            return pieces
+        except Exception as error:
+            self.status = f"Not available: {error}"
+            raise
+
+    def print_of(self, samples: np.ndarray) -> list[float]:
+        from .sidecar import helper
+
+        return helper.call("print", samples, report=self._report)
+
+
+class VoicesLocal:
+    """The voice models themselves, loaded in whichever process calls this."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._splitter = None
         self._extractor = None
         self.status = "Not loaded yet"
+
+    def load(self, report=lambda text: None) -> None:
+        with self._lock:
+            report("Downloading the voice models…")
+            self._load()
 
     def _voice_model(self) -> str:
         import hashlib

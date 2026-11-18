@@ -202,6 +202,7 @@ def create_app(
             "transcriber_status": getattr(transcriber, "status", ""),
             "writer": writer.name,
             "writer_status": getattr(writer, "status", ""),
+            "voices_status": getattr(voices, "status", "") if voices is not None else "",
         }
 
     @app.get("/browse/ask", response_class=HTMLResponse)
