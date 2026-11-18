@@ -71,6 +71,7 @@ final class MusicSpotter: ObservableObject {
         let appleMusicURL: String
         let artworkURL: String
         let isrc: String
+        let appleMusicID: String
     }
 
     enum Outcome: Sendable {
@@ -100,7 +101,8 @@ final class MusicSpotter: ObservableObject {
                                   artist: item.artist ?? "",
                                   appleMusicURL: item.appleMusicURL?.absoluteString ?? "",
                                   artworkURL: item.artworkURL?.absoluteString ?? "",
-                                  isrc: item.isrc ?? ""))
+                                  isrc: item.isrc ?? "",
+                                  appleMusicID: item.appleMusicID ?? ""))
             case .noMatch:
                 return .nothing
             case .error(let error, _):
@@ -119,9 +121,11 @@ final class MusicSpotter: ObservableObject {
             // The same song still playing isn't a new listen.
             if Date().timeIntervalSince(existing.lastHeard) > 600 { existing.timesHeard += 1 }
             existing.lastHeard = .now
+            if existing.appleMusicID.isEmpty { existing.appleMusicID = song.appleMusicID }
         } else {
             context.insert(HeardSong(shazamID: song.shazamID, title: song.title, artist: song.artist,
-                                     appleMusicURL: song.appleMusicURL, artworkURL: song.artworkURL, isrc: song.isrc))
+                                     appleMusicURL: song.appleMusicURL, artworkURL: song.artworkURL, isrc: song.isrc,
+                                     appleMusicID: song.appleMusicID))
         }
         try? context.save()
         lastStatus = "Heard \(song.title) — \(song.artist)"

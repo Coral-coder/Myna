@@ -208,7 +208,7 @@ extension HeardSong: HomeSyncRecord {
 
     func syncData() -> [String: Any] {
         ["shazamID": shazamID, "title": title, "artist": artist, "appleMusicURL": appleMusicURL,
-         "artworkURL": artworkURL, "isrc": isrc, "firstHeard": syncSeconds(firstHeard),
+         "artworkURL": artworkURL, "isrc": isrc, "appleMusicID": appleMusicID, "firstHeard": syncSeconds(firstHeard),
          "lastHeard": syncSeconds(lastHeard), "timesHeard": timesHeard]
     }
 
@@ -219,6 +219,7 @@ extension HeardSong: HomeSyncRecord {
         appleMusicURL = syncText(data["appleMusicURL"])
         artworkURL = syncText(data["artworkURL"])
         isrc = syncText(data["isrc"])
+        appleMusicID = syncText(data["appleMusicID"])
         firstHeard = syncDate(data["firstHeard"]) ?? firstHeard
         lastHeard = syncDate(data["lastHeard"]) ?? lastHeard
         timesHeard = data["timesHeard"] as? Int ?? timesHeard

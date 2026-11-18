@@ -9,6 +9,8 @@ struct HeardMusicView: View {
     @Environment(\.openURL) private var openURL
     @ObservedObject private var spotter = MusicSpotter.shared
     @AppStorage("myna.music.spot") private var spotting = true
+    @State private var playlistStatus = ""
+    @State private var makingPlaylist = false
 
     private var playlistText: String {
         songs.map { song in
@@ -51,6 +53,32 @@ struct HeardMusicView: View {
                 }
                 .padding(.bottom, 8)
 
+                if !songs.isEmpty {
+                    HStack(spacing: 12) {
+                        Button {
+                            makePlaylist()
+                        } label: {
+                            Text(makingPlaylist ? "ADDING…" : "CREATE APPLE MUSIC PLAYLIST")
+                                .font(MynaTheme.mono(11))
+                                .tracking(1)
+                                .foregroundStyle(MynaTheme.ink)
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 8)
+                                .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(makingPlaylist)
+                        Spacer()
+                    }
+                    .padding(.bottom, 6)
+                    if !playlistStatus.isEmpty {
+                        Text(playlistStatus)
+                            .font(.system(size: 12, weight: .light))
+                            .foregroundStyle(MynaTheme.muted)
+                            .padding(.bottom, 8)
+                    }
+                }
+
                 if songs.isEmpty {
                     Text("Nothing recognised yet. Songs appear here when music plays near you.")
                         .font(.system(size: 14, weight: .light))
@@ -92,6 +120,17 @@ struct HeardMusicView: View {
             .padding(.vertical, 16)
         }
         .scrollIndicators(.hidden)
+    }
+
+    /// Put every heard song into a new playlist in the Apple Music library.
+    private func makePlaylist() {
+        let wanted = songs.map { ApplePlaylist.Entry(appleMusicID: $0.appleMusicID, isrc: $0.isrc, title: $0.title) }
+        makingPlaylist = true
+        playlistStatus = ""
+        Task {
+            playlistStatus = await ApplePlaylist.create(from: wanted)
+            makingPlaylist = false
+        }
     }
 
     private func link(_ title: String, action: @escaping () -> Void) -> some View {
