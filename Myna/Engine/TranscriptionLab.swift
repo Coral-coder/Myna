@@ -507,6 +507,8 @@ final class TranscriptionLab: ObservableObject {
     private var liveSamples: [Float] = []
     private var liveRate: Double = 16_000
     private var liveVoiced = 0
+    /// Running estimate of the room's background level (see `ingestLive`).
+    private var liveNoiseFloor: Float = 0.002
     private var liveSilence = 0
     private var liveQueue: Task<Void, Never>?
     private var livePending = 0
@@ -554,7 +556,18 @@ final class TranscriptionLab: ObservableObject {
         liveRate = buffer.format.sampleRate
         var sum: Float = 0
         for i in 0..<frames { sum += data[i] * data[i] }
-        let speaking = (sum / Float(frames)).squareRoot() > 0.008
+        let level = (sum / Float(frames)).squareRoot()
+        // "Is someone speaking" is judged against the room's own background
+        // level, not a fixed loudness: a fixed bar threw away quiet speech from
+        // across the room. The background estimate drops quickly to any quieter
+        // moment and creeps up slowly, so talk doesn't raise it.
+        if level < liveNoiseFloor {
+            liveNoiseFloor = liveNoiseFloor * 0.5 + level * 0.5
+        } else {
+            liveNoiseFloor *= 1.0005
+        }
+        liveNoiseFloor = min(max(liveNoiseFloor, 0.0002), 0.02)
+        let speaking = level > max(0.0012, liveNoiseFloor * 2.2)
 
         liveSamples.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
         if speaking {
