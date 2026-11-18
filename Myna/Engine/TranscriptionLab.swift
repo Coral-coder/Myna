@@ -156,7 +156,7 @@ enum LabKeychain {
 }
 
 /// Downloads one file with byte-level progress.
-private final class LabDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+final class LabDownloadDelegate: NSObject, URLSessionDownloadDelegate {
     private let destination: URL
     private let progress: @Sendable (Int64) -> Void
     private var continuation: CheckedContinuation<Void, Error>?

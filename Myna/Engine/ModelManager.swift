@@ -5,6 +5,7 @@ import MLXLLM
 import MLXLMCommon
 import SwiftUI
 import UIKit
+import ZIPFoundation
 
 /// Downloads, stores, loads and runs the local language models.
 ///
@@ -65,7 +66,11 @@ final class ModelManager: ObservableObject {
 
     /// Characters of transcript to feed the active model per pass.
     var promptCharacterBudget: Int {
-        activeModel?.backend == .appleFoundation ? AppleIntelligenceEngine.promptCharacterBudget / 2 : 6_000
+        switch activeModel?.backend {
+        case .appleFoundation: return AppleIntelligenceEngine.promptCharacterBudget / 2
+        case .coreAI: return CoreAIEngine.promptCharacterBudget
+        default: return 6_000
+        }
     }
 
     var activeModel: CatalogModel? { ModelCatalog.model(withID: activeModelID) }
@@ -96,12 +101,93 @@ final class ModelManager: ObservableObject {
         ModelConfiguration(id: model.id)
     }
 
+    private var coreAIRoot: URL { modelsRoot.appendingPathComponent("coreai", isDirectory: true) }
+
     private func directory(for model: CatalogModel) -> URL {
-        configuration(for: model).modelDirectory(hub: hub)
+        if model.backend == .coreAI { return coreAIRoot.appendingPathComponent(model.coreAISlug, isDirectory: true) }
+        return configuration(for: model).modelDirectory(hub: hub)
     }
 
     private func isInstalled(_ model: CatalogModel) -> Bool {
-        FileManager.default.fileExists(atPath: directory(for: model).appendingPathComponent("config.json").path)
+        if model.backend == .coreAI {
+            let marker = directory(for: model).appendingPathComponent("\(model.coreAISlug).aimodel")
+            return FileManager.default.fileExists(atPath: marker.path)
+        }
+        return FileManager.default.fileExists(atPath: directory(for: model).appendingPathComponent("config.json").path)
+    }
+
+    // MARK: - Core AI models (Neural Engine)
+
+    private static let coreAIReleaseBase = "https://github.com/Coral-coder/Myna/releases/download/llm-models"
+
+    private struct CoreAIManifest: Decodable {
+        let parts: [String]
+        let bytes: Int64
+    }
+
+    /// Fetch a Core AI export from this repo's `llm-models` release: a manifest
+    /// naming the zip's parts (GitHub caps a file at 2 GB), the parts
+    /// themselves, then unzip into place.
+    private func downloadCoreAI(_ model: CatalogModel) async throws {
+        let slug = model.coreAISlug
+        guard let manifestURL = URL(string: "\(Self.coreAIReleaseBase)/\(slug).json") else { throw MynaModelError.noModelInstalled }
+        let (manifestData, manifestResponse) = try await URLSession.shared.data(from: manifestURL)
+        if let http = manifestResponse as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw CoreAIDownloadError.notPublished
+        }
+        let manifest = try JSONDecoder().decode(CoreAIManifest.self, from: manifestData)
+        let total = Double(max(1, manifest.bytes))
+
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("coreai-\(slug)", isDirectory: true)
+        try? FileManager.default.removeItem(at: work)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+
+        let zip = work.appendingPathComponent("\(slug).zip")
+        FileManager.default.createFile(atPath: zip.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: zip)
+        let id = model.id
+        coreAIBytes[id] = 0
+        for name in manifest.parts {
+            guard let url = URL(string: "\(Self.coreAIReleaseBase)/\(name)") else { continue }
+            let part = work.appendingPathComponent(name)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let delegate = LabDownloadDelegate(destination: part, progress: { [weak self] bytes in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.coreAIBytes[id, default: 0] += bytes
+                        self.states[id] = .downloading(min(0.99, Double(self.coreAIBytes[id] ?? 0) / total))
+                    }
+                }, continuation: continuation)
+                URLSession(configuration: .default, delegate: delegate, delegateQueue: nil).downloadTask(with: url).resume()
+            }
+            // Append this part to the zip in chunks (parts are up to ~2 GB).
+            let reader = try FileHandle(forReadingFrom: part)
+            while let chunk = try reader.read(upToCount: 8 * 1_048_576), !chunk.isEmpty {
+                try handle.write(contentsOf: chunk)
+            }
+            try reader.close()
+            try? FileManager.default.removeItem(at: part)
+        }
+        try handle.close()
+
+        try FileManager.default.createDirectory(at: coreAIRoot, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: directory(for: model))
+        try FileManager.default.unzipItem(at: zip, to: coreAIRoot)
+        guard isInstalled(model) else { throw CoreAIDownloadError.incomplete }
+    }
+
+    private var coreAIBytes: [String: Int64] = [:]
+
+    enum CoreAIDownloadError: LocalizedError {
+        case notPublished
+        case incomplete
+        var errorDescription: String? {
+            switch self {
+            case .notPublished: return "This model hasn't been converted and published yet."
+            case .incomplete: return "The download was incomplete. Try again."
+            }
+        }
     }
 
     func sizeOnDisk(of model: CatalogModel) -> Int64 {
@@ -134,6 +220,24 @@ final class ModelManager: ObservableObject {
         default:
             break
         }
+        if model.backend == .coreAI {
+            if isInstalled(model) {
+                activeModelID = model.id
+                refreshInstalledStates()
+                return
+            }
+            states[model.id] = .downloading(0)
+            Task {
+                do {
+                    try await self.downloadCoreAI(model)
+                    self.activeModelID = model.id
+                    self.refreshInstalledStates()
+                } catch {
+                    self.states[model.id] = .failed(error.localizedDescription)
+                }
+            }
+            return
+        }
         states[model.id] = isInstalled(model) ? .loading : .downloading(0)
 
         Task {
@@ -161,6 +265,12 @@ final class ModelManager: ObservableObject {
     }
 
     func delete(_ model: CatalogModel) {
+        if model.backend == .coreAI {
+            if activeModelID == model.id { Task { await CoreAIEngine.shared.unload() } }
+            try? FileManager.default.removeItem(at: directory(for: model))
+            refreshInstalledStates()
+            return
+        }
         guard model.backend == .mlx else { return }
         if loadedModelID == model.id {
             container = nil
@@ -211,10 +321,23 @@ final class ModelManager: ObservableObject {
             }
         }
         HomeServer.shared.noteLocal("writing")
+        // A Core AI model runs on the Neural Engine, which Myna may use on
+        // screen, in the background and locked — no GPU, no hand-over needed.
+        if let model = activeModel, model.backend == .coreAI, isInstalled(model) {
+            let finalPrompt = model.wantsThinkingDisabled ? prompt + "\n/no_think" : prompt
+            do {
+                return try await CoreAIEngine.shared.respond(
+                    modelFolder: directory(for: model), instructions: instructions, prompt: finalPrompt, maxTokens: maxTokens)
+            } catch {
+                // Fall through to the other engines rather than lose the request.
+                CrashReporter.log("Core AI failed: \(error.localizedDescription)")
+            }
+        }
         let onScreen = UIApplication.shared.applicationState == .active
         let appleFirst = activeModel?.backend == .appleFoundation
             || (!onScreen && AppleIntelligenceEngine.isAvailable)
             || (!hasMLXModelInstalled && AppleIntelligenceEngine.isAvailable)
+            || (activeModel?.backend == .coreAI && AppleIntelligenceEngine.isAvailable)
         if appleFirst {
             do {
                 return try await AppleIntelligenceEngine.respond(instructions: instructions, prompt: prompt, maxTokens: maxTokens)

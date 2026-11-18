@@ -156,7 +156,7 @@ private struct ModelCard: View {
                     }
                 }
                 Spacer()
-                if model.backend == .mlx {
+                if model.backend != .appleFoundation {
                     Button(role: .destructive) {
                         modelManager.delete(model)
                     } label: {
