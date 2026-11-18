@@ -9,7 +9,7 @@ from urllib.parse import quote
 from . import catalog
 from .store import Store
 
-TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"))
+TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"))
 
 _STYLE = """<style>
 body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
@@ -127,11 +127,24 @@ def list_page(store: Store, kind: str, query: str, before: float | None) -> str:
                 f'<div class="row">{mark} {_e(row.get("text"))} <span class="dim">{_e(row.get("kind"))}</span>'
                 f'<div class="dim">{_e(row.get("detail"))}</div></div>'
             )
+        elif kind == "song":
+            found = quote(f"{row.get('title', '')} {row.get('artist', '')}")
+            links = f'<a href="https://open.spotify.com/search/{found}">Spotify</a>'
+            if str(row.get("appleMusicURL") or "").startswith("https://"):
+                links = f'<a href="{_e(row.get("appleMusicURL"))}">Apple Music</a> · ' + links
+            times = row.get("timesHeard") or 1
+            parts.append(
+                f'<div class="row">{_e(row.get("title"))} <span class="dim">— {_e(row.get("artist"))}</span>'
+                f'<div class="dim">{_e(_when(row["at"], "%d %b %Y %H:%M"))}'
+                f'{f" · heard {_e(times)} times" if times > 1 else ""} · {links}</div></div>'
+            )
         elif kind == "person":
             parts.append(
                 f'<div class="row">{_e(row.get("name") or "Unnamed voice")}'
                 f' <span class="dim">heard {_e(row.get("sampleCount", 0))} times</span></div>'
             )
+    if kind == "song" and parts:
+        parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
     if not parts:
         parts.append('<p class="dim">Nothing here yet. It fills in as the phone syncs.</p>')
     elif len(rows) >= 300:
@@ -245,3 +258,10 @@ def models_page(store: Store, config, state: dict) -> str:
         "The Live tab shows when it is ready.</p>"
     )
     return _frame("models", "", "".join(parts), store.counts())
+
+
+def playlist_text(store: Store) -> str:
+    """The heard music as a plain list, one song per line, newest first."""
+    return "\n".join(
+        f"{song.get('title', '')} - {song.get('artist', '')}" for song in store.browse("song", limit=5000)
+    )

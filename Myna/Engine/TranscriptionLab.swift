@@ -570,6 +570,7 @@ final class TranscriptionLab: ObservableObject {
         let speaking = level > max(0.0012, liveNoiseFloor * 2.2)
 
         liveSamples.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
+        MusicSpotter.shared.ingest(data, count: frames, sampleRate: liveRate)
         if speaking {
             liveVoiced += frames
             liveSilence = 0

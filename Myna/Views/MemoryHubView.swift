@@ -8,6 +8,7 @@ struct MemoryHubView: View {
         case memories = "Memories"
         case notes = "Notes"
         case lists = "Lists"
+        case music = "Music"
         case inbox = "Inbox"
     }
 
@@ -23,8 +24,8 @@ struct MemoryHubView: View {
                         stored = item.rawValue
                     } label: {
                         Text(item.rawValue)
-                            .font(MynaTheme.mono(12))
-                            .tracking(1.2)
+                            .font(MynaTheme.mono(11))
+                            .tracking(0.8)
                             .textCase(.uppercase)
                             .foregroundStyle(section == item ? MynaTheme.ink : MynaTheme.faint)
                             .frame(maxWidth: .infinity)
@@ -42,6 +43,7 @@ struct MemoryHubView: View {
                 case .memories: MemoriesView()
                 case .notes: NotesListView()
                 case .lists: ListsView()
+                case .music: HeardMusicView()
                 case .inbox: SuggestionsView()
                 }
             }

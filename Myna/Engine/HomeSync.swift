@@ -202,6 +202,36 @@ extension MynaItem: HomeSyncRecord {
     }
 }
 
+extension HeardSong: HomeSyncRecord {
+    static var syncKind: String { "song" }
+    var syncID: String { id.uuidString }
+
+    func syncData() -> [String: Any] {
+        ["shazamID": shazamID, "title": title, "artist": artist, "appleMusicURL": appleMusicURL,
+         "artworkURL": artworkURL, "isrc": isrc, "firstHeard": syncSeconds(firstHeard),
+         "lastHeard": syncSeconds(lastHeard), "timesHeard": timesHeard]
+    }
+
+    func syncApply(_ data: [String: Any]) {
+        shazamID = syncText(data["shazamID"])
+        title = syncText(data["title"])
+        artist = syncText(data["artist"])
+        appleMusicURL = syncText(data["appleMusicURL"])
+        artworkURL = syncText(data["artworkURL"])
+        isrc = syncText(data["isrc"])
+        firstHeard = syncDate(data["firstHeard"]) ?? firstHeard
+        lastHeard = syncDate(data["lastHeard"]) ?? lastHeard
+        timesHeard = data["timesHeard"] as? Int ?? timesHeard
+    }
+
+    static func syncMake(id: String) -> HeardSong? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        let record = HeardSong(shazamID: "", title: "", artist: "", appleMusicURL: "", artworkURL: "", isrc: "")
+        record.id = uuid
+        return record
+    }
+}
+
 extension VoicePerson: HomeSyncRecord {
     static var syncKind: String { "person" }
     var syncID: String { key }
@@ -357,7 +387,7 @@ enum HomeSyncRun {
         var shelves: [String: Shelf] = [:]
         let all = try [makeShelf(Utterance.self, in: context), makeShelf(ConversationNote.self, in: context),
                        makeShelf(Memory.self, in: context), makeShelf(MynaItem.self, in: context),
-                       makeShelf(VoicePerson.self, in: context)]
+                       makeShelf(VoicePerson.self, in: context), makeShelf(HeardSong.self, in: context)]
         for one in all { shelves[one.kind] = one }
 
         // What to send: new or changed records, and ones deleted here since.

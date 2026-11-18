@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-KINDS = ("utterance", "note", "memory", "item", "person")
+KINDS = ("utterance", "note", "memory", "item", "person", "song")
 
 # Which field of a record places it in time, per kind.
 _TIME_FIELDS = {
@@ -23,6 +23,7 @@ _TIME_FIELDS = {
     "memory": ("createdAt",),
     "item": ("createdAt",),
     "person": ("createdAt",),
+    "song": ("lastHeard", "firstHeard"),
 }
 
 

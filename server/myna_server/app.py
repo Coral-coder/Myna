@@ -187,6 +187,14 @@ def create_app(
             config.save()
         return RedirectResponse("/browse/models", status_code=303)
 
+    @app.get("/browse/playlist")
+    def browse_playlist(_: None = Depends(paired)):
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(
+            browse.playlist_text(store), headers={"Content-Disposition": 'attachment; filename="myna-heard-music.txt"'}
+        )
+
     @app.get("/browse/note", response_class=HTMLResponse)
     def browse_note(id: str, _: None = Depends(paired)) -> str:
         return browse.note_page(store, id)

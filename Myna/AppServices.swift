@@ -79,6 +79,7 @@ final class AppServices {
         pilot.brain = brain
         TranscriptionLab.shared.attach(listener: listener, container: container)
         HomeSync.shared.start(container: container)
+        MusicSpotter.shared.attach(container: container)
         TranscriptSorter.shared.start(container: container) { [modelManager] instructions, prompt in
             try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 80)
         }
@@ -131,7 +132,7 @@ final class AppServices {
     private static func makeContainer() -> ModelContainer {
         for attempt in 0..<4 {
             do {
-                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self)
+                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self, HeardSong.self)
             } catch {
                 CrashReporter.log("ModelContainer attempt \(attempt) failed: \(error.localizedDescription)")
                 if attempt < 3 { Thread.sleep(forTimeInterval: 0.25) }

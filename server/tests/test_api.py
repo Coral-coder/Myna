@@ -199,3 +199,13 @@ def test_models_page_lists_choices_and_switches(stt):
     reply = client.post("/browse/models", headers=AUTH, data={"repo": "x/y", "file": "z.gguf"}, follow_redirects=False)
     assert reply.status_code == 303
     assert config.llm_file == "z.gguf" and client.get("/health", headers=AUTH).json()["writer"] == "z"
+
+
+def test_heard_music_lists_and_exports(client):
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("song", "s1", {"title": "Blue in Green", "artist": "Miles Davis", "lastHeard": 1_700_000_000,
+                              "appleMusicURL": "https://music.apple.com/x", "timesHeard": 2}, 1),
+    ]})
+    page = client.get("/browse?kind=song", headers=AUTH).text
+    assert "Blue in Green" in page and "music.apple.com/x" in page and "open.spotify.com/search/" in page
+    assert client.get("/browse/playlist", headers=AUTH).text == "Blue in Green - Miles Davis"
