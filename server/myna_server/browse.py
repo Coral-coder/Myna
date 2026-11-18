@@ -34,11 +34,15 @@ pre{white-space:pre-wrap;font:13px/1.5 system-ui,sans-serif}
 # scroll position, the search box and any selected text alone.
 _REFRESH = """<script>
 let last = document.getElementById('page').innerHTML;
+// Don't swap the page out from under a click (see the Settings page).
+let holdUntil = 0;
+document.addEventListener('pointerdown', () => { holdUntil = Date.now() + 2500; }, true);
 setInterval(async () => {
   try {
-    if (String(window.getSelection())) return;
+    if (Date.now() < holdUntil || String(window.getSelection())) return;
     const reply = await fetch(location.href, {cache: 'no-store'});
     if (reply.status === 401) { location.reload(); return; }
+    if (!reply.ok) return;
     const text = await reply.text();
     const next = new DOMParser().parseFromString(text, 'text/html').getElementById('page');
     if (!next || next.innerHTML === last) return;

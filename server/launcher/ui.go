@@ -52,7 +52,25 @@ func statusPage(st *status, token string, settings *launcherSettings) http.Handl
 	database := workerProxy()
 	// While the worker is still being set up, show the status page instead.
 	database.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// The worker isn't answering: it is being set up, updated or
+		// restarted. Say so (and what it is doing) rather than bounce to
+		// Settings, and try again by itself.
+		snap, lines := st.snapshot()
+		if r.Header.Get("Sec-Fetch-Dest") == "empty" || r.Method != http.MethodGet {
+			http.Error(w, "the server is still starting", http.StatusServiceUnavailable)
+			return
+		}
+		last := ""
+		if len(lines) > 0 {
+			last = lines[len(lines)-1]
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>Myna Server</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:560px;margin:110px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
+h1{font-weight:300;font-size:26px;margin:0 0 6px}p{color:#9b9d9e}a{color:#e9e9e6}code{font-size:12px;color:#9b9d9e;word-break:break-word}</style>
+<h1>Getting ready…</h1><p>This part of Myna Server isn't running yet. After an update it reinstalls its components, which can take a few minutes. This page opens by itself when it is ready.</p>
+<p>Now: %s</p><p><code>%s</code></p><p><a href="/">Open Settings</a></p>`, html.EscapeString(snap.Setup), html.EscapeString(last))
 	}
 	mux.HandleFunc("/browse", func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -159,9 +177,13 @@ nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
 		// the activity list) stays where you put it.
 		b.WriteString(`<script>
 let last = document.getElementById('page').innerHTML;
+// Don't swap the page out from under a click: hold off for a moment after
+// any press, or the button being pressed is replaced before the click lands.
+let holdUntil = 0;
+document.addEventListener('pointerdown', () => { holdUntil = Date.now() + 2500; }, true);
 setInterval(async () => {
   try {
-    if (String(window.getSelection())) return;
+    if (Date.now() < holdUntil || String(window.getSelection())) return;
     const reply = await fetch('/', {cache: 'no-store'});
     if (reply.status === 401) { location.reload(); return; }
     const text = await reply.text();
