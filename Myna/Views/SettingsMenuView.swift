@@ -1,14 +1,12 @@
 import SwiftUI
 
-/// Settings: one plain menu holding everything that isn't Ask, Today or Memory.
+/// Settings: one plain menu for how Myna works — engines, devices, appearance.
 /// Picking a row replaces the menu with that page; a back row returns.
 struct SettingsMenuView: View {
     enum Page: String, CaseIterable, Identifiable {
         case transcription = "Transcription"
+        case server = "Home server"
         case general = "Listening, bracelet & appearance"
-        case notes = "Notes"
-        case lists = "Lists"
-        case inbox = "Inbox"
         case models = "AI models"
 
         var id: String { rawValue }
@@ -16,10 +14,8 @@ struct SettingsMenuView: View {
         var blurb: String {
             switch self {
             case .transcription: return "Choose, download and test the engine that turns bracelet audio into text."
+            case .server: return "Send the heavy work to your computer at home, with this iPhone as the fallback."
             case .general: return "Microphone, Bee bracelet, voices, automation, Daylight / Dusk, diagnostics."
-            case .notes: return "Conversations Myna has written up."
-            case .lists: return "To-dos, reminders and other lists."
-            case .inbox: return "Suggestions waiting for a yes or no."
             case .models: return "The on-device language models Myna thinks with."
             }
         }
@@ -27,6 +23,7 @@ struct SettingsMenuView: View {
 
     @State private var page: Page?
     @ObservedObject private var lab = TranscriptionLab.shared
+    @ObservedObject private var server = HomeServer.shared
 
     var body: some View {
         if let page {
@@ -59,10 +56,8 @@ struct SettingsMenuView: View {
                 Group {
                     switch page {
                     case .transcription: TranscriptionLabView()
+                    case .server: HomeServerView()
                     case .general: SettingsView()
-                    case .notes: NotesListView()
-                    case .lists: ListsView()
-                    case .inbox: SuggestionsView()
                     case .models: ModelHubView()
                     }
                 }
@@ -70,6 +65,16 @@ struct SettingsMenuView: View {
             }
         } else {
             menu
+        }
+    }
+
+    private func subtitle(_ item: Page) -> String {
+        switch item {
+        case .transcription: return "In use: \(lab.activeEngine.name)"
+        case .server where server.isPaired:
+            if !server.enabled { return "Paired · switched off" }
+            return server.reachable == false ? "Not answering — this iPhone is doing the work" : "Paired"
+        default: return item.blurb
         }
     }
 
@@ -91,7 +96,7 @@ struct SettingsMenuView: View {
                                 Text(item.rawValue)
                                     .font(.system(size: 17, weight: .regular))
                                     .foregroundStyle(MynaTheme.ink)
-                                Text(item == .transcription ? "In use: \(lab.activeEngine.name)" : item.blurb)
+                                Text(subtitle(item))
                                     .font(.system(size: 13, weight: .light))
                                     .foregroundStyle(MynaTheme.muted)
                                     .multilineTextAlignment(.leading)

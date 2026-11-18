@@ -607,10 +607,21 @@ final class TranscriptionLab: ObservableObject {
             var text = ""
             var usedName = ""
             var lastError = ""
-            for (index, engine) in engines.enumerated() {
+            // The home computer first, when it's paired and answering. If it
+            // fails, the same audio falls through to the phone's own engines.
+            if HomeServer.shared.shouldTry {
+                do {
+                    text = try await HomeServer.shared.transcribe(wav: LabWav.data(samples: chunk, sampleRate: rate), audioSeconds: seconds)
+                    usedName = "Home server"
+                } catch {
+                    lastError = "Home server: \(error.localizedDescription)"
+                }
+            }
+            for (index, engine) in engines.enumerated() where usedName.isEmpty {
                 do {
                     text = try await LabRunner.shared.transcribe(engine: engine, modelDir: dirs[index], samples: chunk, sampleRate: rate)
                     usedName = engine.name
+                    HomeServer.shared.noteLocal("transcription")
                     break
                 } catch {
                     lastError = "\(engine.name) failed: \(error.localizedDescription)"

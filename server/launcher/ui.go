@@ -1,0 +1,99 @@
+package main
+
+import (
+	"encoding/base64"
+	"fmt"
+	"html"
+	"net/http"
+	"strings"
+
+	qrcode "github.com/skip2/go-qrcode"
+)
+
+const (
+	uiPort    = "8788"
+	lanPort   = "8789"
+	statusURL = "http://127.0.0.1:" + uiPort + "/"
+)
+
+func qrImage(text string) string {
+	png, err := qrcode.Encode(text, qrcode.Medium, 320)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+}
+
+// statusPage is the server's only window: a page in your browser, served only
+// to this computer.
+func statusPage(st *status, token string, settings *launcherSettings) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/lan", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			settings.AllowLAN = !settings.AllowLAN
+			settings.save()
+			st.set(func(s *status) { s.AllowLAN = settings.AllowLAN })
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		snap, lines := st.snapshot()
+		var b strings.Builder
+		b.WriteString(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="4"><title>Myna Server</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#1b1c1d;background:#e9e9e6}
+h1{font-weight:300;font-size:30px;margin:0 0 4px}.k{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#8a8b88;margin-top:22px}
+.v{font-size:17px;font-weight:300}a{color:#1b1c1d}pre{font:12px ui-monospace,monospace;background:#dededb;padding:12px;overflow:auto;max-height:220px}
+img{background:#fff;padding:10px;margin-top:8px}button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border:1px solid #1b1c1d;background:none;border-radius:99px;cursor:pointer}
+code{word-break:break-all;font-size:12px}</style>`)
+		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
+
+		row := func(label, value string) {
+			fmt.Fprintf(&b, `<div class="k">%s</div><div class="v">%s</div>`, html.EscapeString(label), html.EscapeString(value))
+		}
+		worker := snap.Setup
+		if snap.WorkerUp {
+			worker = "Running"
+		}
+		row("Transcription and writing", worker)
+		row("Private network", snap.Tailnet)
+		if snap.LoginURL != "" {
+			fmt.Fprintf(&b, `<div class="v"><a href="%s" target="_blank">Sign in to Tailscale to connect this computer</a> (once)</div>`, html.EscapeString(snap.LoginURL))
+		}
+		if snap.Update != "" {
+			row("Updates", snap.Update)
+		}
+
+		if snap.TailnetIP != "" {
+			link := pairingLink("http://"+snap.TailnetIP, token)
+			b.WriteString(`<div class="k">Pair your iPhone (works anywhere)</div><div class="v">Scan with the iPhone camera, or paste the link in Myna › Settings › Home server.</div>`)
+			fmt.Fprintf(&b, `<img src="%s" width="240" height="240" alt="pairing code"><div><code>%s</code></div>`, qrImage(link), html.EscapeString(link))
+		}
+		b.WriteString(`<div class="k">Home Wi-Fi</div>`)
+		if snap.AllowLAN && snap.LANAddress != "" {
+			link := pairingLink("http://"+snap.LANAddress+":"+lanPort, token)
+			fmt.Fprintf(&b, `<div class="v">On. This link only works while the phone is on your home network.</div><img src="%s" width="240" height="240" alt="home pairing code"><div><code>%s</code></div>`, qrImage(link), html.EscapeString(link))
+		} else if snap.AllowLAN {
+			b.WriteString(`<div class="v">Turning on…</div>`)
+		} else {
+			b.WriteString(`<div class="v">Off. The server answers only over the private network.</div>`)
+		}
+		label := "Allow home Wi-Fi too"
+		if snap.AllowLAN {
+			label = "Turn home Wi-Fi off (restart to apply)"
+		}
+		fmt.Fprintf(&b, `<form method="post" action="/lan" style="margin-top:10px"><button>%s</button></form>`, label)
+
+		b.WriteString(`<div class="k">Recent activity</div><pre>`)
+		start := 0
+		if len(lines) > 40 {
+			start = len(lines) - 40
+		}
+		for _, line := range lines[start:] {
+			b.WriteString(html.EscapeString(line) + "\n")
+		}
+		b.WriteString(`</pre>`)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(b.String()))
+	})
+	return mux
+}

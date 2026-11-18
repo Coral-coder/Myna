@@ -24,7 +24,7 @@ struct RootView: View {
                 switch tab {
                 case .ask: ChatView()
                 case .today: TodayView()
-                case .memory: MemoriesView()
+                case .memory: MemoryHubView()
                 case .settings: SettingsMenuView()
                 }
             }
