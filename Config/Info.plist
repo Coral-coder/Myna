@@ -44,6 +44,8 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Myna uses the camera only to scan the pairing code shown by Myna Server on your computer.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Myna connects to your home server on your own network to transcribe and write notes there.</string>
 	<key>CFBundleURLTypes</key>

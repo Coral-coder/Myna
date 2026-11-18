@@ -5,6 +5,7 @@ import SwiftUI
 struct HomeServerView: View {
     @ObservedObject private var server = HomeServer.shared
     @State private var link = ""
+    @State private var scanning = false
 
     var body: some View {
         ScrollView {
@@ -71,9 +72,20 @@ struct HomeServerView: View {
                 .font(MynaTheme.mono(11))
                 .tracking(2)
                 .foregroundStyle(MynaTheme.faint)
-            Text("Start Myna Server on the computer. It shows a pairing link and a QR code. Scan the code with the iPhone camera, or paste the link here.")
+            Text("Open Myna Server on the computer. Its window shows a pairing code. Scan it here, or paste the link under it.")
                 .font(.system(size: 13, weight: .light))
                 .foregroundStyle(MynaTheme.muted)
+            HStack {
+                pill("Scan the code") { scanning = true }
+                Spacer()
+            }
+            .sheet(isPresented: $scanning) {
+                PairingScanner { code in
+                    scanning = false
+                    _ = server.pair(link: code)
+                }
+                .ignoresSafeArea()
+            }
             TextField("myna://pair?…", text: $link, axis: .vertical)
                 .font(MynaTheme.mono(12))
                 .textInputAutocapitalization(.never)
