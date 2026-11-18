@@ -33,7 +33,7 @@ func runWindow() {
 		DataPath:  sub("webview"),
 		WindowOptions: webview2.WindowOptions{
 			Title:  "Myna Server",
-			Width:  560,
+			Width:  820,
 			Height: 900,
 			Center: true,
 		},
@@ -45,7 +45,9 @@ func runWindow() {
 		return
 	}
 	defer view.Destroy()
-	view.Navigate(statusURL)
+	// Open on the home screen (the transcript); Status is the last tab. Until
+	// the worker is set up, this lands on Status by itself.
+	view.Navigate(statusURL + "browse")
 
 	view.Run()
 }
