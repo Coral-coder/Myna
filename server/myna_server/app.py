@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, resample_to_16k
 from .config import Config
-from . import browse, catalog
+from . import ask, browse, catalog, web
 from .engines import Transcriber, Writer
 from .store import KINDS, Store
 
@@ -32,6 +32,11 @@ _TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 class SyncRequest(BaseModel):
     since: int = 0
     changes: list[dict] = Field(default_factory=list, max_length=5000)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    history: list[dict] = Field(default_factory=list, max_length=40)
 
 
 class GenerateRequest(BaseModel):
@@ -155,6 +160,23 @@ def create_app(
             "writer": writer.name,
             "writer_status": getattr(writer, "status", ""),
         }
+
+    @app.get("/browse/ask", response_class=HTMLResponse)
+    def browse_ask(_: None = Depends(paired)) -> str:
+        return browse.ask_page(store)
+
+    @app.post("/browse/ask.json")
+    async def browse_ask_json(payload: AskRequest, _: None = Depends(paired)) -> dict:
+        began = time.perf_counter()
+        lookup = getattr(app.state, "web_lookup", web.lookup)
+        try:
+            result = await run_in_threadpool(ask.answer, store, writer.generate, lookup, payload.question, payload.history)
+        except Exception as error:
+            note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
+            raise HTTPException(status_code=500, detail=f"Couldn't answer: {error}") from error
+        stats["generated"] += 1
+        note("generate", writer.name, time.perf_counter() - began, f"Ask: {payload.question} → {result['reply']}")
+        return result
 
     @app.get("/browse/live", response_class=HTMLResponse)
     def browse_live(_: None = Depends(paired)) -> str:

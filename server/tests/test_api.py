@@ -244,3 +244,41 @@ def test_choosing_where_models_run_and_big_models_are_shared(stt):
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
                 data={"repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
     assert config.llm_device == "shared" and config.llm_file == "Qwen_Qwen3-32B-Q4_K_M.gguf"
+
+
+def test_ask_uses_saved_material_and_the_web(stt):
+    from myna_server import web
+
+    calls = []
+
+    class ScriptedWriter:
+        name = "scripted"
+
+        def generate(self, instructions, prompt, max_tokens):
+            calls.append(prompt)
+            if "WEB RESULTS" in prompt:
+                return '{"reply": "It is 31 metres tall.", "search": ""}'
+            if "lighthouse" in prompt.split("THE USER ASKS")[-1]:
+                return '{"reply": "", "search": "height of the lighthouse"}'
+            return '{"reply": "You said you would call the dentist.", "search": ""}'
+
+    app = create_app(Config(token="secret-token"), stt, ScriptedWriter())
+    app.state.web_lookup = lambda query: f"1. Lighthouse — 31 metres ({query})"
+    client = TestClient(app)
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "I need to call the dentist tomorrow", "heardAt": 1_700_000_000}, 1),
+    ]})
+    assert client.post("/browse/ask.json", json={"question": "hi"}).status_code == 401
+    first = client.post("/browse/ask.json", headers=AUTH, json={"question": "what about the dentist?"}).json()
+    assert first == {"reply": "You said you would call the dentist.", "searched": ""}
+    assert "call the dentist tomorrow" in calls[0]  # the saved line reached the model
+    second = client.post("/browse/ask.json", headers=AUTH, json={
+        "question": "how tall is the lighthouse?", "history": [{"role": "me", "text": "what about the dentist?"}]}).json()
+    assert second == {"reply": "It is 31 metres tall.", "searched": "height of the lighthouse"}
+    assert "EARLIER IN THIS CHAT" in calls[-1] and "31 metres" in calls[-1]
+    assert "Ask Myna" in client.get("/browse/ask", headers=AUTH).text
+
+    page = '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;x=1">A <b>title</b></a>' \
+           '<a class="result__snippet" href="#">Some &amp; text</a>'
+    assert web.parse_results(page) == [("A title", "Some & text", "https://example.com/a")]
+    assert web.readable("<head><title>x</title></head><script>var a</script><p>Hello <b>there</b></p>") == "Hello there"

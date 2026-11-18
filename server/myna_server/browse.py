@@ -67,9 +67,9 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     for kind, title in TABS:
         on = ' class="on"' if kind == active else ""
         links.append(f'<a{on} href="/browse?kind={kind}">{title} {counts.get(kind, 0)}</a>')
-    for key, title in (("live", "Live"), ("models", "Models")):
+    for key, title in (("ask", "Ask"), ("live", "Live"), ("models", "Models")):
         on = ' class="on"' if key == active else ""
-        links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "live" else ""}>{title}</a>')
+        links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "ask" else ""}>{title}</a>')
     links.append('<a href="/">Settings</a>')
     links.append(
         '<form method="post" action="/lock" style="margin:0"><button style="font:11px ui-monospace,monospace;'
@@ -77,7 +77,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
         'background:none;border-radius:99px;cursor:pointer">Lock</button></form>'
     )
     search = ""
-    if active not in ("live", "models"):
+    if active not in ("live", "models", "ask"):
         search = (
             f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
             f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
@@ -85,7 +85,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     return (
         '<!doctype html><meta charset="utf-8"><title>Myna Server</title>'
         f"{_STYLE}<nav>{''.join(links)}</nav>{search}"
-        f'<div id="page">{body}</div>{"" if active == "live" else _REFRESH}'
+        f'<div id="page">{body}</div>{"" if active in ("live", "ask") else _REFRESH}'
     )
 
 
@@ -278,3 +278,59 @@ def playlist_text(store: Store) -> str:
     return "\n".join(
         f"{song.get('title', '')} - {song.get('artist', '')}" for song in store.browse("song", limit=5000)
     )
+
+
+def ask_page(store: Store) -> str:
+    """Ask Myna on the computer: answers from what is saved here and the web."""
+    body = """
+<style>
+#chat{min-height:120px}
+.me{margin:10px 0 4px auto;max-width:80%;padding:8px 12px;border:1px solid #ffffff22;border-radius:12px;width:fit-content}
+.her{margin:4px auto 10px 0;max-width:88%;padding:8px 12px;background:#ffffff0d;border-radius:12px;width:fit-content;white-space:pre-wrap}
+#bar{display:flex;gap:8px;margin-top:14px}
+#bar button,#new{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;
+border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}
+</style>
+<div id="chat"><p class="dim">Ask about anything Myna has heard or saved, or anything it can look up on the web.</p></div>
+<form id="bar"><input id="q" placeholder="Ask Myna" autocomplete="off" autofocus><button>Ask</button></form>
+<p><button id="new" type="button">New chat</button></p>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+let history = [];
+try { history = JSON.parse(localStorage.getItem('myna-ask') || '[]'); } catch (e) {}
+const chat = document.getElementById('chat');
+function draw(waiting) {
+  if (!history.length && !waiting) return;
+  chat.innerHTML = history.map(t => '<div class="' + (t.role === 'me' ? 'me' : 'her') + '">' + esc(t.text) +
+    (t.searched ? '<div class="dim">looked up: ' + esc(t.searched) + '</div>' : '') + '</div>').join('') +
+    (waiting ? '<div class="her dim">Thinking…</div>' : '');
+  window.scrollTo(0, document.body.scrollHeight);
+}
+draw(false);
+document.getElementById('new').onclick = () => { history = []; localStorage.removeItem('myna-ask'); location.reload(); };
+document.getElementById('bar').onsubmit = async (event) => {
+  event.preventDefault();
+  const box = document.getElementById('q');
+  const question = box.value.trim();
+  if (!question) return;
+  box.value = '';
+  const before = history.slice(-10);
+  history.push({role: 'me', text: question});
+  draw(true);
+  let turn;
+  try {
+    const reply = await fetch('/browse/ask.json', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question, history: before})});
+    if (reply.status === 401) { location.reload(); return; }
+    const data = await reply.json();
+    turn = {role: 'myna', text: data.reply || data.detail || 'Something went wrong.', searched: data.searched || ''};
+  } catch (e) {
+    turn = {role: 'myna', text: 'The server did not answer.'};
+  }
+  history.push(turn);
+  history = history.slice(-200);
+  localStorage.setItem('myna-ask', JSON.stringify(history));
+  draw(false);
+};
+</script>"""
+    return _frame("ask", "", body, store.counts())
