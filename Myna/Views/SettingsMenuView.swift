@@ -1,14 +1,11 @@
 import SwiftUI
 
-/// Settings: one plain menu holding everything that isn't Ask, Today or Memory.
+/// Settings: one plain menu for how Myna works — engines, devices, appearance.
 /// Picking a row replaces the menu with that page; a back row returns.
 struct SettingsMenuView: View {
     enum Page: String, CaseIterable, Identifiable {
         case transcription = "Transcription"
         case general = "Listening, bracelet & appearance"
-        case notes = "Notes"
-        case lists = "Lists"
-        case inbox = "Inbox"
         case models = "AI models"
 
         var id: String { rawValue }
@@ -17,9 +14,6 @@ struct SettingsMenuView: View {
             switch self {
             case .transcription: return "Choose, download and test the engine that turns bracelet audio into text."
             case .general: return "Microphone, Bee bracelet, voices, automation, Daylight / Dusk, diagnostics."
-            case .notes: return "Conversations Myna has written up."
-            case .lists: return "To-dos, reminders and other lists."
-            case .inbox: return "Suggestions waiting for a yes or no."
             case .models: return "The on-device language models Myna thinks with."
             }
         }
@@ -60,9 +54,6 @@ struct SettingsMenuView: View {
                     switch page {
                     case .transcription: TranscriptionLabView()
                     case .general: SettingsView()
-                    case .notes: NotesListView()
-                    case .lists: ListsView()
-                    case .inbox: SuggestionsView()
                     case .models: ModelHubView()
                     }
                 }
