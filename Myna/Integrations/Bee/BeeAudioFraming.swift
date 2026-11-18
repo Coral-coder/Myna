@@ -61,7 +61,10 @@ struct BeeADTSAssembler {
     private var buffer: [UInt8] = []
     private var warmup: Int
 
-    init(warmup: Int = 3) {
+    // No warm-up drop by default: decode every valid ADTS frame from the start.
+    // Apple's AAC decoder has its own priming delay, so the very first frame may
+    // still yield no PCM, but nothing useful is thrown away.
+    init(warmup: Int = 0) {
         self.warmup = warmup
     }
 
@@ -81,7 +84,10 @@ struct BeeADTSAssembler {
             let length = (Int(buffer[i + 3] & 0x03) << 11) | (Int(buffer[i + 4]) << 3) | (Int(buffer[i + 5]) >> 5)
             // Bee breaks (waits for more bytes) on a too-short or not-yet-complete
             // frame rather than resyncing — match that.
-            guard length > 7 else { break }
+            // An impossible length means this "sync" was a false one inside
+            // payload bytes (e.g. after a dropped BLE packet). Step past it and
+            // keep hunting — breaking here would stall the stream on it.
+            guard length > 7 else { i += 1; continue }
             guard i + length <= buffer.count else { break }
             let protectionAbsent = buffer[i + 1] & 0x01 == 1
             let headerLength = protectionAbsent ? 7 : 9
@@ -112,6 +118,6 @@ struct BeeADTSAssembler {
 
     mutating func reset() {
         buffer.removeAll()
-        warmup = 3
+        warmup = 0
     }
 }

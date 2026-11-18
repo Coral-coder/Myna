@@ -6,6 +6,93 @@ import CommonCrypto
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import Security
+
+/// Trusts Bee's private CA for its compute-edge hosts (`*.ce-beeai-services.com`
+/// and `*.ce.bee.amazon.dev`). Those hosts — including the `api` endpoint that
+/// serves `/ble/secure-key` — present short-lived certs issued by
+/// `BeeCertificateAuthority`, a root iOS doesn't ship, so a default URLSession
+/// aborts the TLS handshake ("a TLS error caused the secure connection to
+/// fail"). The Bee app trusts this CA via its own trust manager; Myna does the
+/// same, scoped to Bee's hosts. Every other host falls through to system trust,
+/// so auth.beeai-services.com (a public cert) is unaffected.
+final class BeeTLSDelegate: NSObject, URLSessionDelegate {
+    static let shared = BeeTLSDelegate()
+
+    /// Diagnostic breadcrumbs from the last handshakes, surfaced in the device log.
+    static private(set) var events: [String] = []
+    static func drain() -> [String] { let e = events; events = []; return e }
+    private static func note(_ s: String) {
+        events.append(s)
+        if events.count > 16 { events.removeFirst(events.count - 16) }
+    }
+
+    // Bee's private PKI (DER, base64): the self-signed root
+    // "BeeCertificateAuthority" (valid 2025..2035) and "Bee Intermediate CA".
+    private static let rootCABase64 = "MIIDfzCCAmegAwIBAgIRANp9rGecKAk6t6XGd3GWVHkwDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MDgyMTE5MjUyNloXDTM1MDgyMTIwMjUyNlowWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7a4dWfEBlstJGQWx2MG9fInEWw4v5e2Sasiw8D09fW77VbSskLEectYlt8XgM8a2O9JAPkCQ3vNJmIO+6etyPj/DEtjwllSPR5/1qcZXGFMbjRGzmDz2Y6MruPlrGYZZQgSNrnuSSndADCrqSEGLdBzkjXqkuXLXDqdLLTzseNQVfCiN2LDCwFRDUgjw4KuiJzSBZ1CQEdug4qauitcif6NOFEiTViAOkXjSmjAdTjN0GDKQdTmDtQYgNfLuhhfmEB9mdiEm3++AUURQ2Cn+MfP2YAy/5gr3t+ydPRx361mbA1UiWnx7lmLUxRmZhzeaDmO8vUxxM1jHSXLNxMPMUwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRAKKN5ASGNfQOKcsdpaFwNki78xzAOBgNVHQ8BAf8EBAMCAYYwDQYJKoZIhvcNAQELBQADggEBADXy/YcenRwuAbCH57sFcwe/akWsdh7bs9ZNb7dqg6qzDpitO8yhpEK1DSW2Nmbtxd59rhV5jmnAfFHLEoeOlsSeBLADH3/3uRLV1kIRM3kUPKOv1FJq7UkK2VzgabpehyeJ4lfozfT983b3AoDvI6quf3Dl2NrCmmUUewrZ6g+RSR6n6Q/PalGUPtoV+W4OT5j9hS1d0PSNO6QbRRFzW+NZ+aQdLwHQPzwjofShvM1JjV7Hz2KOPJwmqHQbCiaayGq5lZIVI3UrqnTIqB/hySEBIJNeyHN3ggORH2JJwzMF+xiaNYUCir9ZzsgYiEsuaxEyiS96ydDImWJboALiWmE="
+    private static let intermediateCABase64 = "MIID6jCCAtKgAwIBAgIRALHrmuGK83fptFytnWZnJ+0wDQYJKoZIhvcNAQELBQAwWTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxIDAeBgNVBAMMF0JlZUNlcnRpZmljYXRlQXV0aG9yaXR5MB4XDTI1MTExODAzNDE1M1oXDTM1MDYxOTA0NDE1M1owVTELMAkGA1UEBhMCVVMxDDAKBgNVBAoMA0JlZTEaMBgGA1UECwwRVHJ1c3QgYW5kIFByaXZhY3kxHDAaBgNVBAMME0JlZSBJbnRlcm1lZGlhdGUgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDPPcMIALGM6yf0Uv4saeCmRBjOGWkAFQsu9Rm3+kyvxJTfnz4Y+QcTdLNdf4THLLL65tsMPUTfN+Fx/B3fvlIjal/v68gnqTaHZNKSXDuJmMU3mxU6QJhHqZy8Ca8EwZuyXM7bOQfUGBPyFYHdUj0kGAOOQNdNg+yv5zoV370kSQko//KqZhrZbziYT3LDpDiovrKHViya8OJOzxChgOH4MW8fsWrOvmGfSpDohE792Ht3s4WwT8OQIWUqz8z6OQlp55cFrScgQXhhvEsBy+H++dAX79Kkwztx38GAPun8nC3NMn4GQVhInkhllHd1F2uXV2bFH7u2bjWq0e+LgDB7AgMBAAGjgbAwga0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBRAKKN5ASGNfQOKcsdpaFwNki78xzAdBgNVHQ4EFgQUyd7ed5D+oqLfhQb7WwY0wHXX0TIwDgYDVR0PAQH/BAQDAgGGMEcGCCsGAQUFBwEBBDswOTA3BggrBgEFBQcwAYYraHR0cDovL29jc3AuYWNtLXBjYS51cy1lYXN0LTIuYW1hem9uYXdzLmNvbTANBgkqhkiG9w0BAQsFAAOCAQEADmaCGso/Lln694Pm9VKlZ5S9WOJypDnTbgTzEC8HkqTl1/Qb+Jt3/o0m/9y7tXY63HVDAf0PqSyk0Oaf51yN6yt8l15nDzqlaXSwbOfKKSmC33Vqlds/2tpuK2VVPhOi8MIsIcl7WhW76/qcLOW/KQWmtyi5ivFl+v23iW9Oc0xUVy8rhmtpeu9q9EVpLz0IN3KLmWO3XcrjB47BxdcUmpCT77eQi1L8A5q0glQkppQ00VsRSz/vsOIOytrxwjWqFYS8qaeUs5sd3LE9dj2eiSXfO7DQDauCiADKtu32MihtwqC6dHwZl9B9Ss5rIFNcYZSpNg5KAKq5KDVeoqDf2g=="
+
+    private let anchors: [SecCertificate] = {
+        [BeeTLSDelegate.rootCABase64, BeeTLSDelegate.intermediateCABase64].compactMap { b64 in
+            Data(base64Encoded: b64).flatMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+        }
+    }()
+    private let pinnedDERs: [Data] = {
+        [BeeTLSDelegate.rootCABase64, BeeTLSDelegate.intermediateCABase64].compactMap { Data(base64Encoded: $0) }
+    }()
+
+    private func isBeeHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h.hasSuffix(".ce-beeai-services.com") || h.hasSuffix(".ce.bee.amazon.dev")
+    }
+
+    private func chainDERs(_ trust: SecTrust) -> [Data] {
+        if #available(iOS 15.0, *) {
+            guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return [] }
+            return chain.map { SecCertificateCopyData($0) as Data }
+        } else {
+            let n = SecTrustGetCertificateCount(trust)
+            return (0..<n).compactMap { SecTrustGetCertificateAtIndex(trust, $0) }.map { SecCertificateCopyData($0) as Data }
+        }
+    }
+
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        let host = challenge.protectionSpace.host
+        guard isBeeHost(host), !anchors.isEmpty else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // Trust the chain against Bee's CA (plus system roots), full hostname +
+        // chain validation. The leaf's SANs cover the ce-beeai-services.com hosts.
+        SecTrustSetAnchorCertificates(trust, anchors as CFArray)
+        SecTrustSetAnchorCertificatesOnly(trust, false)
+        var err: CFError?
+        if SecTrustEvaluateWithError(trust, &err) {
+            Self.note("TLS \(host): trusted via Bee CA")
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        // Fallback: if the server actually presents Bee's CA in its chain, accept
+        // it — this is a Bee host serving a Bee-issued cert, which is the whole
+        // point. Guards against SecTrust policy quirks on a private PKI.
+        let chain = chainDERs(trust)
+        let evalMsg = (err.map { ($0 as Error).localizedDescription }) ?? "eval failed"
+        if chain.contains(where: { pinnedDERs.contains($0) }) {
+            Self.note("TLS \(host): Bee CA in chain, accepted (eval: \(evalMsg))")
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        Self.note("TLS \(host): REJECTED — Bee CA not in \(chain.count)-cert chain (eval: \(evalMsg))")
+        completionHandler(.performDefaultHandling, nil)
+    }
+}
 
 /// Reproduces the Bee app's own account auth so Myna can fetch a bracelet's
 /// sealed key the way the app does — no per-use capture.
@@ -25,6 +112,10 @@ import FoundationNetworking
 /// byte layouts) are recovered from the Bee app's `BackgroundSecureAuth` and
 /// `MnemonicCryptoEngine`.
 enum BeeAccountAuth {
+    /// URLSession that trusts Bee's private CA for its compute-edge hosts, so the
+    /// TLS handshake to the api endpoint (api-N.ce-beeai-services.com) succeeds.
+    static let beeSession: URLSession = URLSession(configuration: .default, delegate: BeeTLSDelegate.shared, delegateQueue: nil)
+
     static let authHost = "auth.beeai-services.com"
     /// Candidate API hosts (the app discovers this at runtime; these cover the
     /// known production + enclave domains).
@@ -35,9 +126,11 @@ enum BeeAccountAuth {
     // recovery) is served by api-3.ce-beeai-services.com; auth.beeai-services.com
     // handles /users/sessions/token (session exchange). Try the API host first.
     static let apiHostCandidates = ["api-3.ce-beeai-services.com", "auth.beeai-services.com"]
-    /// Candidate recovery-blob endpoints (the exact path is built at runtime in
-    /// the app; these are the observed `/encryption/*` surface).
-    static let recoveryPaths = ["/encryption/recovery", "/encryption/recovery-blob", "/users/me/recovery", "/encryption/recovery-key"]
+    /// The recovery-blob endpoint. The Bee RN app fetches the mnemonic-encrypted
+    /// account keys with GET /encryption/recovery (Accept: application/json),
+    /// returning {"cipherText": "...", "version": N}. This is the only real path
+    /// (confirmed in the app bundle), tried across the api/auth bases.
+    static let recoveryPaths = ["/encryption/recovery"]
 
     enum AuthError: LocalizedError {
         case http(String, Int, String)
@@ -70,23 +163,48 @@ enum BeeAccountAuth {
     /// Full chain: session token + passphrase + device id → the 108-byte sealed
     /// key token (its bytes 12..<28 are the AES key). Self-verifies before the
     /// final fetch so a wrong constant fails loudly instead of yielding garbage.
-    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, passphrase: String, deviceIDHex: String, session: URLSession = BeeAccountAuth.beeSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
 
-        // Try each API host; the recovery blob + verify + key all live on it.
-        var lastError: Error = AuthError.noRecoveryBlob
-        for apiHost in apiHostCandidates {
-            do {
-                let blob = try await fetchRecoveryBlob(apiHost: apiHost, ephemeral: ephemeral, session: session)
-                let (proof, secret) = try deriveProofSecret(passphrase: passphrase, recoveryBlob: blob)
-                guard try await verify(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, session: session) else {
-                    throw AuthError.verifyFailed
-                }
-                let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
-                return Result(keyToken: token, apiHost: apiHost)
-            } catch {
-                lastError = error
+        // The recovery blob and the key endpoint can live on DIFFERENT hosts
+        // (observed: recovery blob on auth.beeai-services.com, /ble/secure-key on
+        // the resolved api host). So decouple: derive proof/secret from wherever
+        // the recovery blob is served, then call secure-key on the api endpoint.
+        let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
+        log?("device_id=\(deviceIDHex)")
+
+        var proofSecret: (proof: String, secret: String)?
+        for base in bases {
+            guard let blob = try? await fetchRecoveryBlob(base: base, ephemeral: ephemeral, session: session) else {
+                log?("no recovery blob on \(base)")
                 continue
+            }
+            if let ps = try? deriveProofSecret(passphrase: passphrase, recoveryBlob: blob) {
+                log?("recovery blob + proof/secret from \(base)")
+                proofSecret = ps
+                break
+            }
+            log?("recovery blob on \(base) but passphrase didn't decrypt it")
+        }
+        guard let (proof, secret) = proofSecret else { throw AuthError.decryptFailed }
+
+        return try await fetchKeyOnApi(bases: bases, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session, log: log)
+    }
+
+    /// POST /ble/secure-key on the account's api host. `bases` is already ordered
+    /// with the resolved api endpoint first (apiBases prepends it), and secure-key
+    /// lives on the api host, not auth — so trying bases in order hits api first.
+    static func fetchKeyOnApi(bases: [String], ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
+        var lastError: Error = AuthError.http("secure-key", 0, "")
+        for base in bases {
+            let ok = (try? await verify(base: base, ephemeral: ephemeral, proof: proof, secret: secret, session: session)) ?? false
+            log?("verify=\(ok) on \(base) → POST \(base)/ble/secure-key")
+            do {
+                let token = try await fetchKeyToken(base: base, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
+                return Result(keyToken: token, apiHost: base)
+            } catch {
+                log?("secure-key \(base): \(error.localizedDescription)")
+                lastError = error
             }
         }
         throw lastError
@@ -95,19 +213,75 @@ enum BeeAccountAuth {
     /// Same fetch, but with proof/secret you captured directly (no recovery
     /// passphrase). Still mints a fresh ephemeral from the durable session
     /// token each time, so the stored credentials never expire.
-    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = .shared) async throws -> Result {
+    static func fetchBraceletKey(sessionToken: String, proof: String, secret: String, deviceIDHex: String, session: URLSession = BeeAccountAuth.beeSession, log: (@Sendable (String) -> Void)? = nil) async throws -> Result {
         let ephemeral = try await mintEphemeral(sessionToken: sessionToken, session: session)
-        var lastError: Error = AuthError.http("secure-key", 0, "")
-        for apiHost in apiHostCandidates {
-            do {
-                let token = try await fetchKeyToken(apiHost: apiHost, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session)
-                return Result(keyToken: token, apiHost: apiHost)
-            } catch {
-                lastError = error
-                continue
+        let bases = try await apiBases(ephemeral: ephemeral, session: session, log: log)
+        log?("device_id=\(deviceIDHex)")
+        return try await fetchKeyOnApi(bases: bases, ephemeral: ephemeral, proof: proof, secret: secret, deviceIDHex: deviceIDHex, session: session, log: log)
+    }
+
+    /// The API base URLs to try, discovered endpoint first (the way the Bee app
+    /// resolves it: GET {auth}/endpoints → the entry with type "api"), then the
+    /// known fallbacks. A base is a scheme+host string with no trailing slash.
+    static func apiBases(ephemeral: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> [String] {
+        var bases: [String] = []
+        if let discovered = try? await discoverApiBase(ephemeral: ephemeral, session: session, log: log), !discovered.isEmpty {
+            bases.append(discovered)
+        } else {
+            log?("No API endpoint from /endpoints — using fallback hosts.")
+        }
+        for host in apiHostCandidates where !bases.contains("https://\(host)") {
+            bases.append("https://\(host)")
+        }
+        log?("API bases: \(bases.joined(separator: ", "))")
+        return bases
+    }
+
+    /// GET {auth}/endpoints (ephemeral-authed) → the account's API endpoint URL
+    /// (the `url` of the entry whose `type` is "api"), normalized to scheme+host.
+    static func discoverApiBase(ephemeral: String, session: URLSession, log: (@Sendable (String) -> Void)? = nil) async throws -> String? {
+        var request = URLRequest(url: URL(string: "https://\(authHost)/endpoints")!)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
+        guard let (data, response) = try? await session.data(for: request) else {
+            log?("/endpoints request errored")
+            return nil
+        }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            log?("/endpoints HTTP \(code): \(String(data: data, encoding: .utf8)?.prefix(160) ?? "")")
+            return nil
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let endpoints = obj["endpoints"] as? [[String: Any]] else {
+            log?("/endpoints unparseable: \(String(data: data, encoding: .utf8)?.prefix(160) ?? "")")
+            return nil
+        }
+        log?("/endpoints: " + endpoints.map { "\(($0["type"] as? String) ?? "?")=\(($0["url"] as? String) ?? "?")" }.joined(separator: ", "))
+        for entry in endpoints {
+            if (entry["type"] as? String) == "api",
+               let url = (entry["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !url.isEmpty {
+                return baseURLString(url)
             }
         }
-        throw lastError
+        return nil
+    }
+
+    /// Normalize an endpoint URL to `scheme://host[:port]` (no path, no trailing slash).
+    static func baseURLString(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !s.lowercased().hasPrefix("http") { s = "https://" + s }
+        if let u = URL(string: s), let host = u.host {
+            let scheme = u.scheme ?? "https"
+            if let port = u.port { return "\(scheme)://\(host):\(port)" }
+            return "\(scheme)://\(host)"
+        }
+        let host = s.replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .components(separatedBy: "/").first ?? s
+        return "https://\(host)"
     }
 
     // MARK: - Steps
@@ -129,9 +303,10 @@ enum BeeAccountAuth {
 
     /// GET {api}/encryption/<recovery> (ephemeral-authed) → the encrypted
     /// recovery blob (base64 or raw bytes). Tries known paths.
-    static func fetchRecoveryBlob(apiHost: String, ephemeral: String, session: URLSession) async throws -> Data {
+    static func fetchRecoveryBlob(base: String, ephemeral: String, session: URLSession) async throws -> Data {
         for path in recoveryPaths {
-            var request = URLRequest(url: URL(string: "https://\(apiHost)\(path)")!)
+            guard let url = URL(string: "\(base)\(path)") else { continue }
+            var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
@@ -144,8 +319,9 @@ enum BeeAccountAuth {
 
     /// POST {api}/encryption/verify with proof/secret — confirms the derived
     /// pair before we rely on it.
-    static func verify(apiHost: String, ephemeral: String, proof: String, secret: String, session: URLSession) async throws -> Bool {
-        var request = URLRequest(url: URL(string: "https://\(apiHost)/encryption/verify")!)
+    static func verify(base: String, ephemeral: String, proof: String, secret: String, session: URLSession) async throws -> Bool {
+        guard let url = URL(string: "\(base)/encryption/verify") else { return false }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
@@ -158,14 +334,17 @@ enum BeeAccountAuth {
 
     /// POST {api}/ble/secure-key — the same call BeeCloudAPI makes, now with
     /// self-derived auth.
-    static func fetchKeyToken(apiHost: String, ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession) async throws -> Data {
-        var request = URLRequest(url: URL(string: "https://\(apiHost)/ble/secure-key")!)
+    static func fetchKeyToken(base: String, ephemeral: String, proof: String, secret: String, deviceIDHex: String, session: URLSession) async throws -> Data {
+        guard let url = URL(string: "\(base)/ble/secure-key") else { throw AuthError.malformed("secure-key url") }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue(ephemeral, forHTTPHeaderField: "x-bee-ephemeral-token")
         request.setValue(proof, forHTTPHeaderField: "x-bee-proof")
         request.setValue(secret, forHTTPHeaderField: "x-bee-secret")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+        // Exactly the Bee app's body: a single snake_case device_id, the lowercase
+        // hex of the secure-IDs' first 8 bytes (ConnectionGuard.fetchKeyFromBackend).
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw AuthError.http("secure-key", code, String(data: data, encoding: .utf8) ?? "") }
@@ -178,8 +357,15 @@ enum BeeAccountAuth {
 
     /// recovery passphrase + encrypted recovery blob → (proof, secret).
     static func deriveProofSecret(passphrase: String, recoveryBlob: Data) throws -> (proof: String, secret: String) {
-        let aesKey = try mnemonicAESKey(passphrase: passphrase)
-        let plaintext = try gcmOpen(recoveryBlob, key: aesKey)
+        // The Bee app picks modern vs legacy derivation by the mnemonic shape
+        // (hyphenated words = legacy). We don't need to guess: try modern first,
+        // then legacy, and use whichever actually opens the GCM box.
+        let normalized = normalizeMnemonic(passphrase)
+        var plaintext: Data?
+        for aesKey in [try modernAESKey(normalized), try legacyAESKey(normalized)] {
+            if let pt = try? gcmOpen(recoveryBlob, key: aesKey) { plaintext = pt; break }
+        }
+        guard let plaintext else { throw AuthError.decryptFailed }
         // The decrypted recovery blob is JSON that carries the account's proof and
         // secret directly (confirmed from the Bee app's MnemonicCryptoEngine):
         //   {"x-bee-proof":"…","x-bee-secret":"…","x-bee-ephemeral-token":"…",…}
@@ -192,20 +378,33 @@ enum BeeAccountAuth {
         return (proof, secret)
     }
 
-    /// Modern Bee derivation: PBKDF2-HMAC-SHA512 → HKDF-SHA256 → 32-byte AES key.
-    private static func mnemonicAESKey(passphrase: String) throws -> SymmetricKey {
-        let normalized = passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Bee's mnemonic normalization: trim, lowercase, collapse runs of
+    /// whitespace to single spaces.
+    static func normalizeMnemonic(_ passphrase: String) -> String {
+        passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+            .split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" })
             .joined(separator: " ")
-        let pbkdf = try pbkdf2SHA512(password: normalized, salt: "bee-mnemonic-seed-v2", iterations: 210_000, keyLength: 64)
-        let hkdf = HKDF<SHA256>.deriveKey(
+    }
+
+    /// Modern Bee derivation: PBKDF2-HMAC-SHA512 (salt "bee-mnemonic-seed-v2",
+    /// 210k) → HKDF-SHA256 (salt "bee-hkdf-salt-v2", info "bee-aes-key-v2") →
+    /// 32-byte AES key. `normalized` is already normalizeMnemonic'd.
+    private static func modernAESKey(_ normalized: String) throws -> SymmetricKey {
+        let pbkdf = try pbkdf2(password: normalized, salt: "bee-mnemonic-seed-v2", iterations: 210_000, keyLength: 64, prf: kCCPRFHmacAlgSHA512)
+        return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: pbkdf),
             salt: Data("bee-hkdf-salt-v2".utf8),
             info: Data("bee-aes-key-v2".utf8),
             outputByteCount: 32
         )
-        return hkdf
+    }
+
+    /// Legacy Bee derivation: PBKDF2-HMAC-SHA256 (salt "bee-mnemonic-seed-v1",
+    /// 120k) → 32-byte AES key directly (no HKDF).
+    private static func legacyAESKey(_ normalized: String) throws -> SymmetricKey {
+        let pbkdf = try pbkdf2(password: normalized, salt: "bee-mnemonic-seed-v1", iterations: 120_000, keyLength: 32, prf: kCCPRFHmacAlgSHA256)
+        return SymmetricKey(data: pbkdf)
     }
 
     /// AES-256-GCM: blob = [12-byte IV][ciphertext][16-byte tag].
@@ -225,26 +424,83 @@ enum BeeAccountAuth {
 
     // MARK: - Helpers
 
+    /// Peel Bee's recovery wrapper down to the raw AES-GCM input `[IV|ct|tag]`.
+    ///
+    /// The server (or a pasted blob) wraps the ciphertext in one or more layers:
+    /// it may be base64 of a JSON object `{"cipherText":"<base64>","version":N}`,
+    /// where `cipherText` itself base64-decodes to `[12-byte IV | ciphertext |
+    /// 16-byte tag]`. Earlier builds grabbed the wrong layer (the JSON bytes, or
+    /// the outer base64 string) and fed that straight to AES-GCM, which failed
+    /// with a bad-tag error that looked exactly like a wrong passphrase. This
+    /// peels every layer — base64-of-JSON, the `cipherText` field, nested
+    /// base64 — until it reaches the GCM envelope.
     private static func extractBlob(from data: Data) -> Data? {
+        unwrapToGCM(data, depth: 0)
+    }
+
+    /// Known field names that carry the ciphertext envelope, best first.
+    private static let cipherFields = ["cipherText", "ciphertext", "cipher_text", "data", "blob", "recoveryBlob", "recovery_blob", "encrypted", "payload"]
+
+    private static func unwrapToGCM(_ data: Data, depth: Int) -> Data? {
+        guard depth < 6 else { return nil }
+
+        // 1) A JSON object/array: look for the ciphertext field, else the largest
+        //    base64-decodable string, and keep peeling.
         if let obj = try? JSONSerialization.jsonObject(with: data) {
-            var found: Data?
-            func consider(_ s: String) {
-                if let b = Data(base64Encoded: s.padding(toLength: ((s.count + 3) / 4) * 4, withPad: "=", startingAt: 0)), b.count > 28 {
-                    if found == nil || b.count > found!.count { found = b }
+            if let dict = obj as? [String: Any] {
+                for key in cipherFields {
+                    if let s = dict[key] as? String, let b = decodeBase64(s) {
+                        return unwrapToGCM(b, depth: depth + 1) ?? b
+                    }
                 }
             }
-            func walk(_ v: Any) {
-                if let s = v as? String { consider(s) }
-                else if let d = v as? [String: Any] { d.values.forEach(walk) }
-                else if let a = v as? [Any] { a.forEach(walk) }
+            if let best = largestBase64(in: obj) {
+                return unwrapToGCM(best, depth: depth + 1) ?? best
             }
-            walk(obj)
-            if let found { return found }
+            return nil
         }
+
+        // 2) Not JSON: the bytes may be an ASCII base64 string of a deeper layer.
+        if let s = String(data: data, encoding: .utf8),
+           let b = decodeBase64(s.trimmingCharacters(in: .whitespacesAndNewlines)), b != data {
+            if let peeled = unwrapToGCM(b, depth: depth + 1) { return peeled }
+            if b.count > 28 { return b }
+        }
+
+        // 3) Already raw `[IV|ct|tag]`.
         return data.count > 28 ? data : nil
     }
 
-    private static func pbkdf2SHA512(password: String, salt: String, iterations: Int, keyLength: Int) throws -> Data {
+    /// Lenient base64 decode: tolerates URL-safe alphabet and missing padding.
+    /// Returns nil for anything that isn't plausibly base64 (so binary GCM bytes
+    /// aren't mistaken for an encoded string).
+    private static func decodeBase64(_ s: String) -> Data? {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 16 else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_=")
+        guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        var t = trimmed.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        t.removeAll { $0 == "=" }
+        let pad = (4 - t.count % 4) % 4
+        t += String(repeating: "=", count: pad)
+        return Data(base64Encoded: t)
+    }
+
+    private static func largestBase64(in obj: Any) -> Data? {
+        var best: Data?
+        func consider(_ s: String) {
+            if let b = decodeBase64(s), b.count > 28, best == nil || b.count > best!.count { best = b }
+        }
+        func walk(_ v: Any) {
+            if let s = v as? String { consider(s) }
+            else if let d = v as? [String: Any] { d.values.forEach(walk) }
+            else if let a = v as? [Any] { a.forEach(walk) }
+        }
+        walk(obj)
+        return best
+    }
+
+    private static func pbkdf2(password: String, salt: String, iterations: Int, keyLength: Int, prf: Int) throws -> Data {
         #if canImport(CommonCrypto)
         var derived = Data(count: keyLength)
         let saltData = Data(salt.utf8)
@@ -256,7 +512,7 @@ enum BeeAccountAuth {
                         CCPBKDFAlgorithm(kCCPBKDF2),
                         passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self), passwordData.count,
                         saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self), saltData.count,
-                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA512),
+                        CCPseudoRandomAlgorithm(prf),
                         UInt32(iterations),
                         derivedBytes.baseAddress?.assumingMemoryBound(to: UInt8.self), keyLength
                     )

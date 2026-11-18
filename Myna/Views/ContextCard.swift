@@ -104,7 +104,7 @@ private struct PlacesEditor: View {
                     Button {
                         location.removePlace(place)
                     } label: {
-                        Image(systemName: "trash").foregroundStyle(.white.opacity(0.45))
+                        Image(systemName: "trash").foregroundStyle(MynaTheme.ink.opacity(0.45))
                     }
                     .buttonStyle(.plain)
                 }
@@ -112,9 +112,9 @@ private struct PlacesEditor: View {
             HStack(spacing: 8) {
                 TextField("Name this spot, e.g. Home", text: $newName)
                     .font(.system(size: 13, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
                 Button {
                     saving = true
                     Task {
@@ -143,11 +143,11 @@ private struct PlacesEditor: View {
 private extension Text {
     func contextLabel() -> Text {
         font(.system(size: 14, weight: .medium, design: .rounded))
-            .foregroundColor(.white.opacity(0.9))
+            .foregroundColor(MynaTheme.ink.opacity(0.9))
     }
 
     func contextCaption() -> Text {
         font(.system(size: 12, design: .rounded))
-            .foregroundColor(.white.opacity(0.5))
+            .foregroundColor(MynaTheme.ink.opacity(0.5))
     }
 }

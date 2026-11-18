@@ -28,7 +28,7 @@ struct PermissionsView: View {
                         .auroraText()
                     Text("A second brain that listens for you — notes,\nlists, reminders and plans, all on this iPhone.")
                         .font(.system(size: 14, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.65))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.65))
                         .multilineTextAlignment(.center)
                 }
 
@@ -96,14 +96,14 @@ struct PermissionsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                 Text(detail)
                     .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.55))
             }
             Spacer()
             Image(systemName: granted ? "checkmark.circle.fill" : "circle.dotted")
-                .foregroundStyle(granted ? MynaTheme.mint : .white.opacity(0.3))
+                .foregroundStyle(granted ? MynaTheme.mint : MynaTheme.ink.opacity(0.3))
         }
         .padding(14)
         .glassCard(cornerRadius: 18, glow: tint)

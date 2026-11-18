@@ -190,74 +190,100 @@ final class SpeechListener: NSObject, ObservableObject {
 
     func start() {
         guard !isListening else { return }
+
+        // The device microphone opens ONLY when the user allows it AND the
+        // bracelet isn't the source. With the mic off, or while the bracelet is
+        // streaming, Myna never touches the phone's or the headphones' mic.
+        let micEnabled = UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
+        let useDeviceMic = micEnabled && !externalSourceActive
+        guard useDeviceMic || externalSourceActive else {
+            // Nothing to listen to (mic off, no bracelet). Do not grab any
+            // microphone — this is what turning "Use the iPhone mic" off must mean.
+            wantsToListen = false
+            lastError = "The iPhone mic is off. Turn it on in Backstage, or connect the bracelet."
+            return
+        }
+
         // Remember the intent even if we can't start right now, so we resume
         // when the app is next active (see handleBecameActive).
         wantsToListen = true
-        // Started (or resumed after a call) while backgrounded: with the "audio"
-        // background mode iOS usually allows it. If it doesn't, the guards
-        // below fail softly and we resume when Myna is next opened.
         lastError = nil
         do {
             let session = AVAudioSession.sharedInstance()
-            // playAndRecord so Myna can answer out loud without dropping the mic.
-            // .default (not .measurement) keeps Apple's automatic gain and noise
-            // handling on, which picks up farther, quieter voices in a room;
-            // .measurement disables that processing and left distant speech faint.
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
 
-            let inputNode = audioEngine.inputNode
-            let format = inputNode.outputFormat(forBus: 0)
-            // When the mic is unavailable (just backgrounded, taken by a call, or
-            // revoked) the input format comes back with a 0 sample rate, and
-            // installTap would hit a fatal assertion. Bail gracefully instead —
-            // this is the background-crash fix.
-            guard format.sampleRate > 0, format.channelCount > 0 else {
-                lastError = "The microphone isn't available right now."
-                try? session.setActive(false, options: .notifyOthersOnDeactivation)
-                CrashReporter.log("mic unavailable (rate \(format.sampleRate)) state=\(UIApplication.shared.applicationState.rawValue)")
-                notifyStoppedIfBackground()
-                return
-            }
-            captureFormat = format
-            inputNode.removeTap(onBus: 0)
-            // Pass format: nil so CoreAudio uses the input node's own format. An
-            // explicit format that doesn't exactly match the node makes installTap
-            // raise an Objective-C exception (which Swift can't catch) and the app
-            // aborts — seen on iOS 26/27. nil is the mismatch-proof choice.
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
-                // While the bracelet is the source, the mic stays off the request.
-                guard let self else { return }
-                let fromMic = !self.externalSourceActive
-                if fromMic {
-                    // Lift distant, quiet speech so the recognizer can hear it.
-                    Self.boost(buffer, gain: self.sensitivity)
-                    self.tapLock.lock()
-                    self.tapRequest?.append(buffer)
-                    // Also capture the audio for Whisper, if a segment is recording.
-                    if self.captureActive { try? self.segmentFile?.write(from: buffer) }
-                    self.tapLock.unlock()
+            if useDeviceMic {
+                // Record from the iPhone's own mic. Deliberately NOT
+                // .allowBluetooth: that option switches a Bluetooth headset into
+                // HFP "call" mode, which turns on the headphone mic and drops
+                // playback to low quality. .allowBluetoothA2DP keeps headphones in
+                // hi-fi for playback while the built-in iPhone mic does the
+                // listening. .default keeps Apple's gain/noise handling on.
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+                let inputNode = audioEngine.inputNode
+                let format = inputNode.outputFormat(forBus: 0)
+                // When the mic is unavailable (just backgrounded, taken by a call,
+                // or revoked) the input format comes back with a 0 sample rate, and
+                // installTap would hit a fatal assertion. Bail gracefully instead.
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    lastError = "The microphone isn't available right now."
+                    try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                    CrashReporter.log("mic unavailable (rate \(format.sampleRate)) state=\(UIApplication.shared.applicationState.rawValue)")
+                    notifyStoppedIfBackground()
+                    return
                 }
-                let level = Self.rms(of: buffer)
-                Task { @MainActor [weak self] in
+                captureFormat = format
+                inputNode.removeTap(onBus: 0)
+                // Pass format: nil so CoreAudio uses the input node's own format. An
+                // explicit format that doesn't exactly match the node makes installTap
+                // raise an Objective-C exception (which Swift can't catch) and the app
+                // aborts — seen on iOS 26/27. nil is the mismatch-proof choice.
+                inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+                    // While the bracelet is the source, the mic stays off the request.
                     guard let self else { return }
-                    // Attack fast, decay slow — feels alive without flickering.
-                    self.audioLevel = max(level, self.audioLevel * 0.86)
-                    if fromMic, level > 0.3, Date.now.timeIntervalSince(self.lastVoiceActivity) > 2 {
-                        self.lastVoiceActivity = .now
-                        self.onVoiceActivity?()
+                    let fromMic = !self.externalSourceActive
+                    if fromMic {
+                        // Lift distant, quiet speech so the recognizer can hear it.
+                        Self.boost(buffer, gain: self.sensitivity)
+                        self.tapLock.lock()
+                        self.tapRequest?.append(buffer)
+                        // Also capture the audio for Whisper, if a segment is recording.
+                        if self.captureActive { try? self.segmentFile?.write(from: buffer) }
+                        self.tapLock.unlock()
+                    }
+                    let level = Self.rms(of: buffer)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        // Attack fast, decay slow — feels alive without flickering.
+                        self.audioLevel = max(level, self.audioLevel * 0.86)
+                        if fromMic, level > 0.3, Date.now.timeIntervalSince(self.lastVoiceActivity) > 2 {
+                            self.lastVoiceActivity = .now
+                            self.onVoiceActivity?()
+                        }
                     }
                 }
+
+                audioEngine.prepare()
+                try audioEngine.start()
+            } else {
+                // The bracelet is the source: a play-only session so Myna can still
+                // speak its replies, with NO microphone opened at all. Recognition
+                // is driven entirely by feedExternalAudio.
+                // (.allowBluetoothA2DP is only valid with .playAndRecord; passing it
+                // here is what failed with OSStatus -50. Playback routes to A2DP on
+                // its own.) Recognition of bracelet audio doesn't need the session
+                // at all, so a session hiccup must never stop it.
+                try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try? session.setActive(true, options: .notifyOthersOnDeactivation)
             }
 
-            audioEngine.prepare()
-            try audioEngine.start()
             isListening = true
             isPaused = false
             quickFailures = 0
             lastStartAt = .now
             startRecognitionTask()
-            CrashReporter.log("listening started state=\(UIApplication.shared.applicationState.rawValue)")
+            CrashReporter.log("listening started (\(useDeviceMic ? "iPhone mic" : "bracelet")) state=\(UIApplication.shared.applicationState.rawValue)")
 
             rotationTimer?.invalidate()
             rotationTimer = Timer.scheduledTimer(withTimeInterval: taskRotationInterval, repeats: true) { [weak self] _ in
@@ -324,16 +350,91 @@ final class SpeechListener: NSObject, ObservableObject {
     func beginExternalSource() {
         externalSourceActive = true
         usingExternalSource = true
+        // If the device mic was open, close it now — the bracelet is the source,
+        // so the phone/headphone mic must go quiet. Recognition (and its request)
+        // stays up; feedExternalAudio keeps driving it with no gap.
+        if isListening {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        }
     }
 
-    /// Hand the recognizer a buffer of PCM decoded from the bracelet.
+    /// Bracelet audio that arrived while no recognition request could take it
+    /// (recognizer unavailable, restarting, or paused while Myna speaks). It is
+    /// replayed, in order, the moment a request is live again.
+    private var externalBacklog: [AVAudioPCMBuffer] = []
+    /// ~30 minutes of 16 kHz AAC frames. Past this the oldest audio is let go
+    /// from the replay queue only — the segment recording on disk still has it.
+    private let externalBacklogLimit = 28_000
+    private var lastTaskAttempt: Date = .distantPast
+    /// A second listener for bracelet audio (the Transcription Lab records its
+    /// test clip through this). Never affects what the recognizer receives.
+    var externalAudioSink: ((AVAudioPCMBuffer) -> Void)?
+    /// When set, bracelet audio goes to this transcriber (the engine chosen in
+    /// Settings) INSTEAD of Apple's live recognizer; it reports text back
+    /// through `deliverExternalText`.
+    var externalTranscriber: ((AVAudioPCMBuffer) -> Void)?
+
+    /// Called with every finalized piece of text, after the pilot has it.
+    var onDelivered: ((String) -> Void)?
+
+    /// Text for an utterance, from the engine chosen in Settings.
+    func deliverExternalText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        recognitionTicks += 1
+        deliver(trimmed)
+    }
+
+    /// Take a buffer of PCM decoded from the bracelet. Never refused: it is
+    /// recorded to the conversation's audio file, and either handed to the
+    /// recognizer now or queued until the recognizer is back.
     func feedExternalAudio(_ buffer: AVAudioPCMBuffer) {
-        guard externalSourceActive, !isPaused else { return }
-        tapLock.lock()
-        tapRequest?.append(buffer)
-        tapLock.unlock()
+        externalAudioSink?(buffer)
         let level = Self.rms(of: buffer)
         audioLevel = max(level, audioLevel * 0.86)
+
+        // Let a conversation (and its Whisper recording) start from the bracelet
+        // alone, even when Apple's recognizer is producing nothing.
+        if captureFormat == nil || segmentURL == nil { captureFormat = buffer.format }
+        if level > 0.3, Date.now.timeIntervalSince(lastVoiceActivity) > 2 {
+            lastVoiceActivity = .now
+            onVoiceActivity?()
+        }
+
+        tapLock.lock()
+        if captureActive { try? segmentFile?.write(from: buffer) }
+        let liveRequest = isPaused ? nil : tapRequest
+        tapLock.unlock()
+
+        // The engine chosen in Settings produces the transcript. Apple's
+        // recognizer still gets the audio below, but only to drive the live
+        // ticker and the spoken wake word — its text is not kept.
+        if let externalTranscriber, !isPaused { externalTranscriber(buffer) }
+
+        guard let liveRequest else {
+            externalBacklog.append(buffer)
+            if externalBacklog.count > externalBacklogLimit {
+                externalBacklog.removeFirst(externalBacklog.count - externalBacklogLimit)
+            }
+            // Nobody else retries a recognizer that failed to start; do it here.
+            if isListening, !isPaused, !restartPending, request == nil, Date.now.timeIntervalSince(lastTaskAttempt) > 5 {
+                startRecognitionTask()
+            }
+            return
+        }
+        flushExternalBacklog(into: liveRequest)
+        liveRequest.append(buffer)
+    }
+
+    private func flushExternalBacklog(into request: SFSpeechAudioBufferRecognitionRequest) {
+        guard !externalBacklog.isEmpty else { return }
+        let pending = externalBacklog
+        externalBacklog.removeAll()
+        for buffer in pending { request.append(buffer) }
     }
 
     /// Hand audio back to the phone's microphone.
@@ -341,11 +442,20 @@ final class SpeechListener: NSObject, ObservableObject {
         externalSourceActive = false
         usingExternalSource = false
         audioLevel = 0
+        // The bracelet stopped. If the user allows the iPhone mic, hand listening
+        // back to it (beginExternalSource closed it). With the mic off, the
+        // session just stays up, mic-free, waiting for the bracelet to resume.
+        let micEnabled = UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
+        if isListening, micEnabled, !audioEngine.isRunning {
+            stopForInterruption()
+            start()
+        }
     }
 
     // MARK: - Recognition
 
     private func startRecognitionTask() {
+        lastTaskAttempt = .now
         guard let recognizer, recognizer.isAvailable else {
             lastError = "Speech recognition is not available on this device."
             return
@@ -360,6 +470,8 @@ final class SpeechListener: NSObject, ObservableObject {
             newRequest.requiresOnDeviceRecognition = true
         }
         setRequest(newRequest)
+        // Anything the bracelet sent while there was no request goes in first.
+        flushExternalBacklog(into: newRequest)
         generation += 1
         let taskGeneration = generation
         taskStartedAt = .now
@@ -373,7 +485,7 @@ final class SpeechListener: NSObject, ObservableObject {
                     let text = result.bestTranscription.formattedString
                     self.liveTranscript = text
                     if result.isFinal {
-                        self.deliver(text)
+                        if self.externalTranscriber == nil { self.deliver(text) }
                         self.liveTranscript = ""
                         self.onTaskFinished?(text)
                         if self.isListening && !self.isPaused {
@@ -432,6 +544,11 @@ final class SpeechListener: NSObject, ObservableObject {
     private func rotateRecognitionTask() {
         guard isListening, !isPaused else { return }
         request?.endAudio()
+        // The ended request can't take more audio. Detach it so bracelet audio
+        // queues for the next task instead of vanishing into a closed request.
+        tapLock.lock()
+        tapRequest = nil
+        tapLock.unlock()
     }
 
     /// Tears down the current task without waiting for its result.
@@ -448,7 +565,7 @@ final class SpeechListener: NSObject, ObservableObject {
     private func flushPartialIfMeaningful() {
         let text = liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
-            deliver(text)
+            if externalTranscriber == nil { deliver(text) }
             liveTranscript = ""
         }
     }
@@ -457,6 +574,7 @@ final class SpeechListener: NSObject, ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onFinalText?(trimmed, .now)
+        onDelivered?(trimmed)
     }
 
     // MARK: - Interruptions

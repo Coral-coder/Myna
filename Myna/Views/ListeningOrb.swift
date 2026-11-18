@@ -49,7 +49,7 @@ struct ListeningOrb: View {
                     .overlay {
                         Circle().strokeBorder(
                             LinearGradient(
-                                colors: [.white.opacity(0.5), MynaTheme.cyan.opacity(0.2), .clear],
+                                colors: [MynaTheme.ink.opacity(0.5), MynaTheme.cyan.opacity(0.2), .clear],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),

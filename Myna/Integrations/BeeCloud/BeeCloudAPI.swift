@@ -157,7 +157,8 @@ struct BeeCloudAPI {
         var lastError: Error = Failure.malformed
         for host in Self.keyHosts {
             do {
-                return try await Self.postSecureKey(host: host, deviceIDHex: deviceIDHex, bearer: token, session: session)
+                // Bee's compute-edge hosts use a private CA; beeSession trusts it.
+                return try await Self.postSecureKey(host: host, deviceIDHex: deviceIDHex, bearer: token, session: BeeAccountAuth.beeSession)
             } catch {
                 lastError = error
             }
@@ -174,8 +175,8 @@ struct BeeCloudAPI {
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        // Bee's app sends camelCase "deviceId".
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+        // Exactly the Bee app's body: a single snake_case device_id.
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
         let (data, response) = try await session.data(for: request)
         let http = response as? HTTPURLResponse
         let code = http?.statusCode ?? 0
@@ -208,7 +209,7 @@ struct BeeCloudAPI {
         secret: String,
         sessionToken: String,
         amazonToken: String? = nil,
-        session: URLSession = .shared
+        session: URLSession = BeeAccountAuth.beeSession
     ) async throws -> Data {
         let cleanHost = host.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: "https://", with: "")
@@ -230,7 +231,7 @@ struct BeeCloudAPI {
         if let amazonToken = amazonToken?.trimmingCharacters(in: .whitespacesAndNewlines), !amazonToken.isEmpty {
             request.setValue(amazonToken, forHTTPHeaderField: "x-amazon-access-token")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["deviceId": deviceIDHex])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["device_id": deviceIDHex])
 
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0

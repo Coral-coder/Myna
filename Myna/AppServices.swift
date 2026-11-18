@@ -47,9 +47,20 @@ final class AppServices {
             .filter { !$0.isEmpty }
     }
 
+    /// One-time: automatic calendar entries were on by default and fired on
+    /// casual conversation. Turn them off for everyone once; it can be switched
+    /// back on in Settings.
+    private static func resetAutoScheduleOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "myna.autoScheduleReset.v1") else { return }
+        defaults.set(false, forKey: "myna.autoSchedule")
+        defaults.set(true, forKey: "myna.autoScheduleReset.v1")
+    }
+
     private init() {
         CrashReporter.shared.start()
         Self.restoreOnDeviceListening()
+        Self.resetAutoScheduleOnce()
         container = Self.makeContainer()
 
         Self.applyCustomWakeWords()
@@ -66,6 +77,8 @@ final class AppServices {
         neuralVoice = NeuralVoice()
 
         pilot.brain = brain
+        TranscriptionLab.shared.attach(listener: listener, container: container)
+        HomeSync.shared.start(container: container)
         beeCloud.brain = brain
         // Extraction runs on the user's downloaded model (a bigger MLX model when
         // installed and on screen, Apple Intelligence otherwise). Foreground only.
@@ -78,6 +91,9 @@ final class AppServices {
         bee.fetchSecureKeyToken = { [beeCloud] deviceIDHex in
             try await beeCloud.braceletKeyToken(deviceIDHex: deviceIDHex)
         }
+        // The linked Bee account's token doubles as the session token for the
+        // automatic key fetch, so a linked account needs no pasted token.
+        bee.linkedSessionToken = { [beeCloud] in beeCloud.storedToken }
         // When the bracelet's key can't be fetched, Myna removes the bracelet and
         // falls back to syncing conversations from Bee's cloud instead.
         bee.onSyncFallback = { [beeCloud] in beeCloud.importIfEnabled() }
@@ -112,14 +128,14 @@ final class AppServices {
     private static func makeContainer() -> ModelContainer {
         for attempt in 0..<4 {
             do {
-                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self)
+                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self)
             } catch {
                 CrashReporter.log("ModelContainer attempt \(attempt) failed: \(error.localizedDescription)")
                 if attempt < 3 { Thread.sleep(forTimeInterval: 0.25) }
             }
         }
         if let fallback = try? ModelContainer(
-            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self,
+            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         ) {
             CrashReporter.log("ModelContainer: in-memory fallback (on-disk store unavailable this launch).")

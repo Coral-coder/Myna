@@ -111,15 +111,22 @@ final class BeeAudioDecoder {
         deinit { descPtr.deinitialize(count: 1); descPtr.deallocate() }
     }
 
+    /// Returned by the input proc to mean "no more data for THIS fill." It must
+    /// be non-zero: returning 0 packets with noErr tells the AudioConverter the
+    /// whole stream ended, after which it refuses all further input — which left
+    /// the decoder producing only the very first frame and then going silent.
+    private static let noMoreDataNow: OSStatus = -1
+
     /// Supplies the single compressed packet to the decoder, then reports "no
-    /// more" so the fill call returns what it decoded from that one frame.
+    /// more for this fill" (a non-zero status, NOT end-of-stream) so the
+    /// converter returns what it decoded but stays alive for the next frame.
     private static let aacInputProc: AudioConverterComplexInputDataProc = {
         _, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData in
-        guard let inUserData else { ioNumberDataPackets.pointee = 0; return noErr }
+        guard let inUserData else { ioNumberDataPackets.pointee = 0; return BeeAudioDecoder.noMoreDataNow }
         let ctx = Unmanaged<AACInput>.fromOpaque(inUserData).takeUnretainedValue()
         if ctx.consumed {
             ioNumberDataPackets.pointee = 0
-            return noErr
+            return BeeAudioDecoder.noMoreDataNow
         }
         ctx.consumed = true
         ioNumberDataPackets.pointee = 1
@@ -145,9 +152,17 @@ final class BeeAudioDecoder {
 
         let ch = UInt32(min(2, max(1, Int(frame.channels))))
         let sr = frame.sampleRate
+        // For kAudioFormatMPEG4AAC the input ASBD's mFormatFlags carries the
+        // MPEG-4 audio object type. It MUST be set — with 0 the converter is
+        // created but has no profile, so it decodes nothing (the long-standing
+        // "initialised but emitted no PCM"). The ADTS header's object type IS the
+        // MPEG-4 audio object type value CoreAudio wants here (AAC-LC = 2, the
+        // same as kMPEG4Object_AAC_LC), so pass it straight through; clamp to
+        // AAC-LC for anything out of the sane 1…5 range.
+        let objectID = UInt32((1...5).contains(frame.objectType) ? frame.objectType : 2)
         var inASBD = AudioStreamBasicDescription(
             mSampleRate: sr, mFormatID: kAudioFormatMPEG4AAC,
-            mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket,
+            mFormatFlags: objectID, mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket,
             mBytesPerFrame: 0, mChannelsPerFrame: ch, mBitsPerChannel: 0, mReserved: 0)
         var outASBD = AudioStreamBasicDescription(
             mSampleRate: sr, mFormatID: kAudioFormatLinearPCM,
@@ -161,19 +176,18 @@ final class BeeAudioDecoder {
             fail("iOS wouldn't start the AAC decoder (status \(st)).")
             return
         }
-        // AudioSpecificConfig: 5 bits objectType, 4 bits sampleRateIndex,
-        // 4 bits channelConfig, 3 bits zero → 2 bytes. Same as Bee's csd-0.
+        // The magic cookie (AudioSpecificConfig) is OPTIONAL for raw AAC-LC once
+        // mFormatFlags names the object type — Apple's own sample treats a cookie
+        // error as "this format has no cookie, carry on." So set it best-effort
+        // and NEVER fail the decoder on it (the bare 2-byte ASC is not the
+        // ESDS-form cookie AudioConverter expects, which is what returned '!dat'
+        // and blocked decoding on every prior build).
         let cookie: [UInt8] = [
             UInt8((frame.objectType << 3) | (frame.sampleRateIndex >> 1)),
             UInt8(((frame.sampleRateIndex & 1) << 7) | (Int(ch) << 3))
         ]
-        let cookieStatus = cookie.withUnsafeBytes {
+        _ = cookie.withUnsafeBytes {
             AudioConverterSetProperty(conv, kAudioConverterDecompressionMagicCookie, UInt32($0.count), $0.baseAddress!)
-        }
-        guard cookieStatus == noErr else {
-            AudioConverterDispose(conv)
-            fail("iOS rejected the AAC config (status \(cookieStatus)).")
-            return
         }
 
         releaseAAC()
@@ -183,7 +197,7 @@ final class BeeAudioDecoder {
         cfgObjectType = frame.objectType
         sampleRate = sr
         channels = ch
-        aacOutputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: AVAudioChannelCount(ch), interleaved: true)
+        aacOutputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: AVAudioChannelCount(ch), interleaved: ch != 1)
         if let f = aacOutputFormat { outputFormat = f }
         unavailableReason = nil
     }
@@ -208,7 +222,10 @@ final class BeeAudioDecoder {
         let abl = output.mutableAudioBufferList
         abl.pointee.mBuffers.mDataByteSize = output.frameCapacity * UInt32(4 * cfgChannels)
 
-        var packets = output.frameCapacity
+        // Ask for exactly one access unit's worth of PCM: one AAC packet in,
+        // 1024 frames out, so the converter normally never needs to call the
+        // input proc a second time.
+        var packets: UInt32 = framesPerPacket
         _ = withExtendedLifetime(ctx) {
             AudioConverterFillComplexBuffer(converter, BeeAudioDecoder.aacInputProc, ctxPtr, &packets, abl, nil)
         }

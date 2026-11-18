@@ -16,7 +16,7 @@ struct DiagnosticsCard: View {
                  ? "No crashes or unexpected exits recorded. Build \(CrashReporter.buildString)."
                  : "\(reports.count) report\(reports.count == 1 ? "" : "s") — tap one to read it.")
                 .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(MynaTheme.ink.opacity(0.5))
 
             ForEach(reports.prefix(12)) { report in
                 VStack(alignment: .leading, spacing: 4) {
@@ -30,11 +30,11 @@ struct DiagnosticsCard: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(report.title)
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.9))
+                                    .foregroundStyle(MynaTheme.ink.opacity(0.9))
                                     .multilineTextAlignment(.leading)
                                 Text(report.date.formatted(date: .abbreviated, time: .shortened))
                                     .font(.system(size: 11, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.4))
+                                    .foregroundStyle(MynaTheme.ink.opacity(0.4))
                             }
                             Spacer()
                         }
@@ -43,7 +43,7 @@ struct DiagnosticsCard: View {
                     if expanded == report.id {
                         Text(String(report.body.prefix(6000)))
                             .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.6))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.6))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }

@@ -81,6 +81,10 @@ final class BeeManager: ObservableObject {
     /// Fetches the bracelet's sealed key token from Bee (set by AppServices).
     /// Returns the full token; the 16-byte CTR key is extracted from it.
     var fetchSecureKeyToken: ((String) async throws -> Data)?
+    /// The session token from your linked Bee account (the cloud-import
+    /// connection), set by AppServices. Used as the session token for the
+    /// automatic key fetch so you never have to paste one by hand.
+    var linkedSessionToken: (() -> String?)?
     private var decryptor: BeeAudioDecryptor?
     private var decoder: BeeAudioDecoder?
     private var feedingSpeech = false
@@ -148,6 +152,35 @@ final class BeeManager: ObservableObject {
         pairing = .scanning
         central.activate()
         central.startScan()
+        scheduleLinkWatchdog()
+    }
+
+    private var linkWatchdogToken = 0
+
+    /// If the bracelet hasn't come up shortly after launch (a restored link that
+    /// never finished its handshake, typically after an app update), restart the
+    /// link ourselves instead of waiting for the user to toggle the bracelet.
+    private func scheduleLinkWatchdog() {
+        linkWatchdogToken += 1
+        let token = linkWatchdogToken
+        Task { [weak self] in
+            for attempt in 0..<3 {
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, self.linkWatchdogToken == token, self.isEnabled else { return }
+                switch self.pairing {
+                case .streaming, .needsFactoryReset, .bluetoothOff, .unauthorized, .off, .error, .audioUnavailable:
+                    return
+                case .scanning, .connecting, .provisioning:
+                    // Still scanning with nothing connected is normal when the
+                    // bracelet is out of range; only a stuck link needs a kick.
+                    if self.central.phase == .scanning { continue }
+                    self.log("Bracelet link stuck (attempt \(attempt + 1)) — restarting it.")
+                    self.reset()
+                    self.pairing = .scanning
+                    self.central.restartLink()
+                }
+            }
+        }
     }
 
     // MARK: - Direct control
@@ -221,6 +254,7 @@ final class BeeManager: ObservableObject {
         deviceState = nil
         codec = nil
         firstPacketLogged = false
+        decryptProbed = false
     }
 
     // MARK: - Handshake
@@ -297,22 +331,25 @@ final class BeeManager: ObservableObject {
         // A captured Bee-signed token (pasted in Backstage) gives the AES key
         // directly — bytes 12..<28 — with no Bee server at all.
         let capturedToken = BeeKeyVault.existingToken(deviceID: deviceID)
+        // Keep the token around for the audio decryption probe, whichever path
+        // sets up the key (fresh install or reusing the sealed/stored key).
+        if let capturedToken { installedToken = capturedToken }
 
         if isSealed {
             if let heldKey {
                 // Already sealed with a key we hold — reuse it.
                 key = heldKey
                 installDecryptor()
-                log("Reusing stored key. Requesting session nonce (0xC019)…")
-                central.writeControl(BeeCommand.getSessionNonce.frame())
+                log("Reusing stored key. Fetching the session nonce…")
+                requestSessionNonce()
             } else if let capturedToken, let ctr = BeeCloudAPI.ctrKey(fromToken: capturedToken) {
                 // Sealed with the key this token carries (Bee installed it, we
                 // captured it): decrypt with the token's key, no re-install.
                 key = ctr
                 BeeKeyVault.store(ctr, deviceID: deviceID)
                 installDecryptor()
-                log("Using captured key. Requesting session nonce (0xC019)…")
-                central.writeControl(BeeCommand.getSessionNonce.frame())
+                log("Using captured key. Fetching the session nonce…")
+                requestSessionNonce()
             } else {
                 log("Sealed with a key Myna doesn't hold → capture the key or factory reset.")
                 pairing = .needsFactoryReset
@@ -328,14 +365,78 @@ final class BeeManager: ObservableObject {
         // Bee account rather than jamming a key the firmware will reject.
         if let capturedToken, capturedToken.count >= 44 {
             installToken(capturedToken, deviceID: deviceID, source: "captured")
+        } else if attemptAutoAccountFetch() {
+            // Saved Bee login on file — re-mint the key automatically.
         } else {
-            // No installable token yet. The connect-time Bearer fetch can't
-            // authenticate — the key requires the account session token + recovery
-            // passphrase — so DON'T attempt it and DON'T remove the bracelet.
-            // Leave it connected and point the user at the manual account login.
-            log("Unsealed — no key yet. In Backstage → Bee, open ‘Advanced: fetch key with Bee login’, paste your x-bee-token + recovery passphrase, and tap Fetch.")
-            pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, paste your x-bee-token and recovery passphrase, then tap Fetch.")
+            // No installable token and no saved secret. Point the user at the
+            // account login. If Bee is linked, they only need the passphrase.
+            let linked = (linkedSessionToken?()?.isEmpty == false)
+            if linked {
+                log("Unsealed — no key yet. Your Bee account is linked, so in Backstage → Bee → ‘Advanced: fetch key with Bee login’, just enter your recovery passphrase and tap Fetch. Myna remembers it and re-fetches automatically after that.")
+                pairing = .error("This bracelet needs Bee's key. In Backstage → Bee → ‘Advanced: fetch key with Bee login’, enter your recovery passphrase and tap Fetch (your linked Bee account supplies the token).")
+            } else {
+                log("Unsealed — no key yet. In Backstage → Bee, link your Bee account (for the token) or open ‘Advanced: fetch key with Bee login’ and paste your x-bee-token, then enter your recovery passphrase and tap Fetch. Myna remembers it after the first time.")
+                pairing = .error("This bracelet needs Bee's key. In Backstage → Bee, link your Bee account, then open ‘Advanced: fetch key with Bee login’, enter your recovery passphrase and tap Fetch. Myna remembers it for next time.")
+            }
         }
+    }
+
+    /// The session token to authenticate Bee with, preferring a token you pasted
+    /// but falling back to the one from your linked Bee account — so a linked
+    /// account means no paste at all.
+    func effectiveSessionToken() -> String? {
+        let pasted = BeeAccountVault.load().sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pasted.isEmpty { return pasted }
+        if let linked = linkedSessionToken?()?.trimmingCharacters(in: .whitespacesAndNewlines), !linked.isEmpty {
+            return linked
+        }
+        return nil
+    }
+
+    /// If we have a secret (saved passphrase or proof/secret) and a session token
+    /// from either source, re-mint the bracelet key automatically — once per
+    /// connection. Returns true when a fetch was kicked off.
+    @discardableResult
+    private func attemptAutoAccountFetch() -> Bool {
+        guard !autoAccountFetchTried, !deviceID.isEmpty else { return false }
+        let creds = BeeAccountVault.load()
+        guard creds.hasSecret, let sessionToken = effectiveSessionToken() else { return false }
+        autoAccountFetchTried = true
+        let source = BeeAccountVault.load().sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "linked Bee account" : "saved login"
+        log("Unsealed — fetching the key with your \(source)…")
+        pairing = .provisioning
+        if !creds.passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fetchKeyFromBeeAccount(sessionToken: sessionToken, passphrase: creds.passphrase)
+        } else {
+            fetchKeyFromBeeAccount(sessionToken: sessionToken, proof: creds.proof, secret: creds.secret)
+        }
+        return true
+    }
+
+    /// Whether Myna can fetch the key with no paste: a saved secret plus a
+    /// session token from either the paste or the linked Bee account.
+    var canAutoFetchKey: Bool { BeeAccountVault.load().hasSecret && effectiveSessionToken() != nil }
+
+    /// Whether a secret (passphrase or proof/secret) is saved.
+    var hasSavedBeeLogin: Bool { BeeAccountVault.load().hasSecret }
+
+    /// The saved Bee login, for prefilling the Backstage fields.
+    var savedBeeLogin: BeeAccountVault.Credentials { BeeAccountVault.load() }
+
+    /// Persist the login, but don't store a session token that just mirrors the
+    /// linked Bee account's (that token self-refreshes; a saved copy would shadow
+    /// it and go stale). The durable secret is always kept.
+    private func rememberLogin(sessionToken: String, passphrase: String? = nil, proof: String? = nil, secret: String? = nil) {
+        let linked = linkedSessionToken?()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokenToStore: String? = (trimmedToken == linked) ? nil : trimmedToken
+        BeeAccountVault.remember(sessionToken: tokenToStore, passphrase: passphrase, proof: proof, secret: secret)
+    }
+
+    /// Forget the saved Bee login (stops automatic key fetches).
+    func forgetBeeAccount() {
+        BeeAccountVault.clear()
+        log("Forgot the saved Bee login.")
     }
 
     /// Install a full Bee-signed key token on the bracelet and keep its AES key.
@@ -346,10 +447,15 @@ final class BeeManager: ObservableObject {
             return
         }
         key = ctr
+        installedToken = token
         installDecryptor()
         log("Installing \(source) key on the bracelet (0xC018, \(token.count) bytes)…")
         central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](token)))
     }
+
+    /// The full key token last installed, so the audio probe can test key offsets.
+    private var installedToken: Data?
+    private var decryptProbed = false
 
     /// Save a token captured from the bracelet's BLE pairing (hex, optionally
     /// with the leading 18 C0 command bytes) and retry the handshake with it.
@@ -389,11 +495,15 @@ final class BeeManager: ObservableObject {
             pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
             return
         }
+        // Remember the login so the next connect can re-mint the key with no
+        // paste. The passphrase is durable; the session token may later expire.
+        rememberLogin(sessionToken: sessionToken, passphrase: passphrase)
         log("Deriving your Bee account keys from the recovery passphrase…")
+        let logger: @Sendable (String) -> Void = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
         Task { [weak self] in
             do {
                 let result = try await BeeAccountAuth.fetchBraceletKey(
-                    sessionToken: sessionToken, passphrase: passphrase, deviceIDHex: deviceHex
+                    sessionToken: sessionToken, passphrase: passphrase, deviceIDHex: deviceHex, log: logger
                 )
                 guard let self else { return }
                 guard BeeCloudAPI.ctrKey(fromToken: result.keyToken) != nil else {
@@ -406,6 +516,7 @@ final class BeeManager: ObservableObject {
                 self.retry()
             } catch {
                 guard let self else { return }
+                BeeTLSDelegate.drain().forEach { self.log($0) }
                 self.log("Bee account key fetch failed: \(error.localizedDescription)")
                 self.pairing = .error("Couldn't fetch the key: \(error.localizedDescription)")
             }
@@ -422,11 +533,15 @@ final class BeeManager: ObservableObject {
             pairing = .error("Connect to the bracelet first so Myna knows its device id, then fetch the key.")
             return
         }
+        // Remember the login so the next connect can re-mint the key with no
+        // paste. proof/secret are durable; the session token may later expire.
+        rememberLogin(sessionToken: sessionToken, proof: proof, secret: secret)
         log("Minting a fresh token and fetching your bracelet key from Bee…")
+        let logger: @Sendable (String) -> Void = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
         Task { [weak self] in
             do {
                 let result = try await BeeAccountAuth.fetchBraceletKey(
-                    sessionToken: sessionToken, proof: proof, secret: secret, deviceIDHex: deviceHex
+                    sessionToken: sessionToken, proof: proof, secret: secret, deviceIDHex: deviceHex, log: logger
                 )
                 guard let self else { return }
                 guard BeeCloudAPI.ctrKey(fromToken: result.keyToken) != nil else {
@@ -439,6 +554,7 @@ final class BeeManager: ObservableObject {
                 self.retry()
             } catch {
                 guard let self else { return }
+                BeeTLSDelegate.drain().forEach { self.log($0) }
                 self.log("Bee account key fetch failed: \(error.localizedDescription)")
                 self.pairing = .error("Couldn't fetch the key: \(error.localizedDescription)")
             }
@@ -515,19 +631,28 @@ final class BeeManager: ObservableObject {
         switch result {
         case .installed:
             if let key { BeeKeyVault.store(key, deviceID: deviceID) }
-            log("Key installed. Requesting session nonce (0xC019)…")
-            central.writeControl(BeeCommand.getSessionNonce.frame())
+            log("Key installed. Fetching the session nonce…")
+            requestSessionNonce()
         case .alreadySet:
             // We just installed a freshly fetched key; the bracelet reports it
             // already had one. Persist and continue — if it was a different key,
             // decryption simply yields nothing and the log shows no audio.
             if let key { BeeKeyVault.store(key, deviceID: deviceID) }
-            log("Key already set. Requesting session nonce (0xC019)…")
-            central.writeControl(BeeCommand.getSessionNonce.frame())
+            log("Key already set. Fetching the session nonce…")
+            requestSessionNonce()
         case .unknown(let code):
             log("Key reply code \(code) (unrecognized).")
             pairing = .error("The bracelet rejected the key (code \(code)).")
         }
+    }
+
+    /// Ask the bracelet for its current session nonce. This is the whole secure
+    /// handshake step the Bee app does once the key is set (ConnectionGuard
+    /// requestSessionNonce → SessionNonce → configureDecryptor). We do NOT mute
+    /// or force a record: the nonce is for the live session and AES-CTR decrypts
+    /// the ongoing stream at any sequence. Muting here was what desynced it.
+    private func requestSessionNonce() {
+        central.writeControl(BeeCommand.getSessionNonce.frame())
     }
 
     private func handleNonce(_ value: Data) {
@@ -542,6 +667,13 @@ final class BeeManager: ObservableObject {
         }
         // Bee subscribes to audio only once the key and nonce are in place.
         central.startAudioNotifications()
+        // Nothing else to send: the nonce we just read belongs to the bracelet's
+        // live session, and AES-CTR is seekable — every packet carries its own
+        // sequence number, so the decryptor lines up on the ongoing stream from
+        // whatever sequence it's currently at. This mirrors the Bee app exactly
+        // (ConnectionGuard: SetEncryptionKey → SessionNonce → configure, no
+        // device-state change). If the bracelet is muted, handleDeviceState asks
+        // it to record — that's orthogonal and never re-latches the nonce.
         scheduleAudioWatchdog(handshakeToken)
         central.writeControl(BeeCommand.getDeviceState.frame())
         central.writeControl(BeeCommand.getBatteryAndChargeState.frame())
@@ -581,9 +713,13 @@ final class BeeManager: ObservableObject {
             // Start the bracelet recording ourselves so Myna doesn't need the
             // Bee app to "unlock" it. Once per connection; the rate limiter in
             // setRecording keeps the device's own VAD toggles from spamming.
-            if state == .mute, !autoRecordTried {
+            // The bracelet is meant to record continuously: whenever it reports
+            // anything but recording (muted, or dozing on its own VAD), put it
+            // back. State events only arrive on a change and setRecording is
+            // rate-limited, so this can't spin.
+            if state != .recording, state != .powerOff {
+                if !autoRecordTried { log("Asking the bracelet to start recording…") }
                 autoRecordTried = true
-                log("Asking the bracelet to start recording…")
                 setRecording(true)
             }
         }
@@ -591,6 +727,10 @@ final class BeeManager: ObservableObject {
 
     /// Reset when a connection ends so the next one tries auto-record again.
     private var autoRecordTried = false
+
+    /// So we attempt the automatic account key fetch at most once per connection
+    /// (a failure must not loop into a fetch storm).
+    private var autoAccountFetchTried = false
 
     private func installDecryptor() {
         guard let key else { return }
@@ -670,21 +810,68 @@ final class BeeManager: ObservableObject {
             let adts = plaintext.count >= 2 && plaintext[plaintext.startIndex] == 0xFF && (plaintext[plaintext.index(after: plaintext.startIndex)] & 0xF0) == 0xF0
             log("First decrypted packet: \(plaintext.count)B seq \(packet.sequence) [\(head)] \(adts ? "✓ ADTS" : "✗ not ADTS")")
         }
+        if !decryptProbed { decryptProbed = true; probeDecryption(ciphertext: packet.ciphertext, nonce: nonce, seq: packet.sequence) }
         let buffers = decoder.decodeStream(plaintext)
         guard !buffers.isEmpty else { return dropOnce("decoder produced no PCM (codec \(codec?.description ?? "?"))") }
         if packetsDecoded == 0 { log("Audio decoding (\(Int(decoder.sampleRate)) Hz)."); audioDropReasonLogged = false }
         packetsDecoded += buffers.count
         audioActive = true
         lastAudioAt = .now
-        if !feedingSpeech { beginSpeechFeed() }
+        // (Re)start the feed if it isn't running — including when recognition was
+        // stopped underneath us (mic toggled off, an interruption).
+        if !feedingSpeech || listener?.isListening != true { beginSpeechFeed() }
         for pcm in buffers { listener?.feedExternalAudio(pcm) }
+    }
+
+    /// One-shot diagnostic: try candidate AES-CTR key offsets and counter layouts
+    /// against the real first packet and report which (if any) yields an ADTS
+    /// sync. Pins down a key/nonce/seq mismatch deterministically, no guessing.
+    private func probeDecryption(ciphertext: Data, nonce: Data, seq: UInt32) {
+        guard let token = installedToken else { log("probe: no installed token."); return }
+        func be(_ v: UInt32) -> Data { Data([UInt8((v >> 24) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)]) }
+        func le(_ v: UInt32) -> Data { Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)]) }
+        func adtsAt(_ d: Data) -> Int? {
+            let b = [UInt8](d); var i = 0
+            while i + 1 < b.count { if b[i] == 0xFF, (b[i + 1] & 0xF0) == 0xF0 { return i }; i += 1 }
+            return nil
+        }
+        var keys: [(String, Data)] = []
+        if let k = key, k.count == 16 { keys.append(("currentKey", k)) }
+        if token.count >= 28 { keys.append(("tok[12:28]", token.subdata(in: 12..<28))) }
+        if token.count >= 16 { keys.append(("tok[0:16]", token.subdata(in: 0..<16))) }
+        if token.count >= 44 { keys.append(("tok[28:44]", token.subdata(in: 28..<44))) }
+        if token.count >= 16 { keys.append(("tok[last16]", Data(token.suffix(16)))) }
+        var ctrs: [(String, Data)] = [
+            ("nonce||seqBE", nonce + be(seq)),
+            ("nonce||seqLE", nonce + le(seq)),
+            ("nonce||0", nonce + Data([0, 0, 0, 0])),
+            ("seqBE||nonce", be(seq) + nonce),
+        ]
+        ctrs.removeAll { $0.1.count != 16 }
+        let probe = Data(ciphertext.prefix(64))
+        var hits = 0
+        for (kn, k) in keys {
+            guard let dec = try? BeeAudioDecryptor(key: k) else { continue }
+            for (cn, c) in ctrs {
+                guard let pt = try? dec.decrypt(probe, counter: c), let idx = adtsAt(pt) else { continue }
+                hits += 1
+                let h = pt.prefix(6).map { String(format: "%02x", $0) }.joined(separator: " ")
+                log("probe HIT: key=\(kn) ctr=\(cn) sync@\(idx) [\(h)]")
+            }
+        }
+        log("probe done (token \(token.count)B, nonce \(nonce.count)B, seq \(seq)): \(hits) hit(s).")
     }
 
     private func beginSpeechFeed() {
         feedingSpeech = true
         listener?.beginExternalSource()
         // Make sure recognition is actually running to receive the buffers.
-        if let pilot, pilot.phase == .idle { pilot.startListening() }
+        if let pilot, pilot.phase == .idle {
+            pilot.startListening()
+        } else if listener?.isListening != true {
+            // The pilot thinks it's listening but the recognizer was stopped.
+            listener?.start()
+        }
     }
 
     private func endSpeechFeed() {
@@ -740,6 +927,7 @@ extension BeeManager: BeeCentralDelegate {
     func beeCentral(_ central: BeeCentral, didDisconnectWithError error: Error?) {
         endSpeechFeed()
         autoRecordTried = false
+        autoAccountFetchTried = false
         audioDropReasonLogged = false
         reset()
         if isEnabled { pairing = .scanning }

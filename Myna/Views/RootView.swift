@@ -1,73 +1,41 @@
 import SwiftUI
 
-/// Reports the floating dock's real rendered height so content can clear it.
-private struct DockHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 100
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-/// The stage: aurora backdrop, the active scene, and a floating glass dock.
+/// The stage. Three places plus Settings, stacked top to bottom with nothing
+/// floating over anything else: an optional notice line, the active screen, and
+/// a plain text tab bar.
 struct RootView: View {
     enum Tab: String, CaseIterable {
         case ask = "Ask"
-        case memories = "Memory"
-        case notes = "Notes"
-        case lists = "Lists"
-        case inbox = "Inbox"
-        case models = "Neural Core"
-        case settings = "Backstage"
-
-        var icon: String {
-            switch self {
-            case .ask: return "bubble.left.and.bubble.right.fill"
-            case .memories: return "brain"
-            case .inbox: return "tray.full"
-            case .notes: return "sparkles.rectangle.stack"
-            case .lists: return "checklist"
-            case .models: return "cpu"
-            case .settings: return "slider.horizontal.3"
-            }
-        }
+        case today = "Today"
+        case memory = "Memory"
+        case settings = "Settings"
     }
 
     @State private var tab: Tab = .ask
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage("myna.onboarded") private var onboarded = false
-    /// Measured height of the floating dock (+ margin), so every scrolling
-    /// screen insets its content enough to clear it on any device.
-    @State private var dockClearance: CGFloat = 100
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            AuroraBackground(energy: pilot.phase == .listening ? 0.9 : 0.35)
+        VStack(spacing: 0) {
+            notice
 
             Group {
                 switch tab {
                 case .ask: ChatView()
-                case .memories: MemoriesView()
-                case .inbox: SuggestionsView()
-                case .notes: NotesListView()
-                case .lists: ListsView()
-                case .models: ModelHubView()
-                case .settings: SettingsView()
+                case .today: TodayView()
+                case .memory: MemoryHubView()
+                case .settings: SettingsMenuView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .safeAreaPadding(.bottom, dockClearance)
-            // Rebuild the active screen when the look changes so cards and
-            // headings pick up the new chrome.
-            .id(themeStore.style)
+            // Rebuild the active screen when the mood flips so every card and
+            // heading resolves its Daylight / Dusk tones.
+            .id(themeStore.mood)
 
-            dock
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: DockHeightKey.self, value: geo.size.height + 12)
-                    }
-                )
+            tabBar
         }
-        .onPreferenceChange(DockHeightKey.self) { dockClearance = $0 }
-        .overlay(alignment: .top) { bannerView }
+        .background { AuroraBackground(energy: pilot.phase == .listening ? 0.9 : 0.35) }
         .fullScreenCover(isPresented: .constant(!onboarded)) {
             PermissionsView(onboarded: $onboarded)
         }
@@ -76,55 +44,52 @@ struct RootView: View {
         }
     }
 
-    private var dock: some View {
-        HStack(spacing: 0) {
-            ForEach(Tab.allCases, id: \.self) { item in
-                Button {
-                    withAnimation(.bouncy(duration: 0.35)) { tab = item }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: item.icon)
-                            .font(.system(size: 19, weight: .semibold))
-                            .symbolEffect(.bounce, value: tab == item)
+    // MARK: - Tab bar (a row of its own, below the content)
+
+    private var tabBar: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(MynaTheme.hair).frame(height: 1)
+            HStack(spacing: 0) {
+                ForEach(Tab.allCases, id: \.self) { item in
+                    Button {
+                        tab = item
+                    } label: {
                         Text(item.rawValue)
-                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                            .tracking(0.5)
+                            .font(MynaTheme.mono(12))
+                            .tracking(1.4)
+                            .textCase(.uppercase)
+                            .foregroundStyle(tab == item ? MynaTheme.ink : MynaTheme.faint)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .contentShape(Rectangle())
                     }
-                    .foregroundStyle(tab == item ? AnyShapeStyle(MynaTheme.auroraGradient) : AnyShapeStyle(.white.opacity(0.45)))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background {
-                        if tab == item {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(.white.opacity(0.07))
-                                .padding(4)
-                        }
-                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
-        .glassCard(cornerRadius: 26)
-        .padding(.horizontal, 18)
-        .padding(.bottom, 8)
+        .background(MynaTheme.paper)
     }
 
+    // MARK: - Notice (a row of its own, above the content)
+
     @ViewBuilder
-    private var bannerView: some View {
+    private var notice: some View {
         if let banner = pilot.banner {
-            Text(banner)
-                .font(MynaTheme.display(13, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .glassCard(cornerRadius: 16, glow: MynaTheme.gold)
-                .padding(.horizontal, 24)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .task {
-                    try? await Task.sleep(for: .seconds(4))
-                    withAnimation { pilot.banner = nil }
-                }
+            VStack(spacing: 0) {
+                Text(banner)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(MynaTheme.ink)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                Rectangle().fill(MynaTheme.hair).frame(height: 1)
+            }
+            .background(MynaTheme.paper2)
+            .task {
+                try? await Task.sleep(for: .seconds(5))
+                pilot.banner = nil
+            }
         }
     }
 }

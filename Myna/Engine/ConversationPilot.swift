@@ -46,7 +46,9 @@ final class ConversationPilot: ObservableObject {
     }
 
     var autoSchedule: Bool {
-        UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? true
+        // Off unless you turn it on: a calendar entry is too intrusive to make
+        // from casual talk on a guess.
+        UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? false
     }
 
     static let composeNotesKey = "myna.composeNotes"
@@ -250,8 +252,11 @@ final class ConversationPilot: ObservableObject {
                 enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 banner = "Heard a conversation — it'll become a note once a model is installed."
             } catch {
-                if UIApplication.shared.applicationState == .background {
-                    // e.g. Apple Intelligence's background budget ran out — try again later.
+                var needsScreen = false
+                if case MynaModelError.needsForeground = error { needsScreen = true }
+                if needsScreen || UIApplication.shared.applicationState != .active {
+                    // The model was stopped because Myna left the screen (or Apple
+                    // Intelligence's background budget ran out) — try again later.
                     enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 } else {
                     fileTranscriptOnly(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, error: error)
@@ -266,7 +271,11 @@ final class ConversationPilot: ObservableObject {
         var engine = "Apple Speech"
         // Prefer Whisper's transcript of the captured audio when it's enabled and
         // produced something; otherwise keep Apple's live transcript.
-        if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
+        let chosen = TranscriptionLab.shared.activeEngine
+        if chosen.id != TranscriptionLab.legacyID, listener.externalTranscriber != nil {
+            // The lines already came from the engine picked in Settings.
+            engine = chosen.name
+        } else if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
             transcript = better
             engine = "Whisper"
         }
@@ -411,7 +420,12 @@ final class ConversationPilot: ObservableObject {
     private func scheduleEvents(in note: ConversationNote) {
         guard scheduler.hasAccess else { return }
         var events = note.detectedEvents
-        for index in events.indices where events[index].startDate != nil && (events[index].confidence ?? 1.0) >= 0.6 {
+        for index in events.indices {
+            // Only a clearly stated, future appointment goes on the calendar by
+            // itself. A missing confidence means "unknown", not "certain" (it
+            // used to count as certain, which is how small talk became events).
+            guard let start = events[index].startDate, start > Date.now,
+                  (events[index].confidence ?? 0) >= 0.85 else { continue }
             if let identifier = try? scheduler.schedule(events[index]) {
                 events[index].calendarEventID = identifier
                 eventsScheduledToday += 1

@@ -79,10 +79,10 @@ struct NotesListView: View {
                 .foregroundStyle(MynaTheme.auroraGradient)
             Text("No notes yet")
                 .font(MynaTheme.display(17, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(MynaTheme.ink)
             Text("Start listening from the Listen tab.\nWhen a conversation winds down, its note will appear here like magic.")
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MynaTheme.ink.opacity(0.55))
                 .multilineTextAlignment(.center)
         }
         .padding(.vertical, 70)
@@ -97,16 +97,16 @@ private struct NoteCard: View {
             HStack {
                 Text(note.title)
                     .font(MynaTheme.display(16, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MynaTheme.ink)
                     .lineLimit(2)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(MynaTheme.ink.opacity(0.35))
             }
             Text(note.overview.isEmpty ? String(note.transcript.prefix(120)) : note.overview)
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(MynaTheme.ink.opacity(0.6))
                 .lineLimit(3)
             HStack(spacing: 8) {
                 GlowChip(text: note.startedAt.formatted(date: .omitted, time: .shortened), icon: "clock", tint: MynaTheme.mint)

@@ -118,7 +118,7 @@ struct NoteDetailView: View {
             }
             Text("Composed entirely on this iPhone")
                 .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(.white.opacity(0.4))
+                .foregroundStyle(MynaTheme.ink.opacity(0.4))
         }
         .padding(.top, 8)
     }
@@ -152,15 +152,15 @@ struct NoteDetailView: View {
                 } label: {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(item.isDone ? MynaTheme.mint : .white.opacity(0.4))
+                            .foregroundStyle(item.isDone ? MynaTheme.mint : MynaTheme.ink.opacity(0.4))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.task)
-                                .strikethrough(item.isDone, color: .white.opacity(0.5))
+                                .strikethrough(item.isDone, color: MynaTheme.ink.opacity(0.5))
                                 .noteBody()
                             if item.owner != nil || item.due != nil {
                                 Text([item.owner, item.due.map { "due \($0)" }].compactMap { $0 }.joined(separator: " · "))
                                     .font(.system(size: 11, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.45))
+                                    .foregroundStyle(MynaTheme.ink.opacity(0.45))
                             }
                         }
                         Spacer()
@@ -178,14 +178,14 @@ struct NoteDetailView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(event.title)
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MynaTheme.ink)
                         Text(event.startDate?.formatted(date: .abbreviated, time: .shortened) ?? "“\(event.rawWhen)”")
                             .font(.system(size: 12, design: .rounded))
                             .foregroundStyle(MynaTheme.magenta)
                         if let location = event.location, !location.isEmpty {
                             Text(location)
                                 .font(.system(size: 11, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.5))
+                                .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         }
                     }
                     Spacer()
@@ -208,13 +208,13 @@ struct NoteDetailView: View {
         DisclosureGroup {
             Text(note.transcript)
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MynaTheme.ink.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 8)
         } label: {
             SectionHeading(icon: "waveform", title: "Full Transcript", tint: MynaTheme.mint)
         }
-        .tint(.white.opacity(0.6))
+        .tint(MynaTheme.ink.opacity(0.6))
         .padding(18)
         .glassCard(cornerRadius: 22, glow: MynaTheme.mint)
     }
@@ -289,7 +289,7 @@ private struct NotePhotoStrip: View {
 private extension Text {
     func noteBody() -> some View {
         font(.system(size: 14, design: .rounded))
-            .foregroundStyle(.white.opacity(0.85))
+            .foregroundStyle(MynaTheme.ink.opacity(0.85))
             .lineSpacing(3)
     }
 }

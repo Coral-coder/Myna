@@ -28,7 +28,7 @@ struct LiveDebugCard: View {
                 Text("Level").debugKey()
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.08))
+                        Capsule().fill(MynaTheme.ink.opacity(0.08))
                         Capsule().fill(MynaTheme.mint)
                             .frame(width: max(2, geo.size.width * CGFloat(min(1, listener.audioLevel))))
                     }
@@ -44,7 +44,7 @@ struct LiveDebugCard: View {
                 ForEach(pilot.liveTranscriptTail) { line in
                     Text(line.text)
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !listener.liveTranscript.isEmpty {
@@ -56,7 +56,7 @@ struct LiveDebugCard: View {
                 if pilot.liveTranscriptTail.isEmpty && listener.liveTranscript.isEmpty {
                     Text(bee.audioActive ? "Audio is flowing but no words yet — check Recognizer above." : "Nothing yet.")
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.35))
                         .italic()
                 }
             }
@@ -93,7 +93,7 @@ struct LiveDebugCard: View {
             Text(key).debugKey().frame(width: 120, alignment: .leading)
             Text(value)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(MynaTheme.ink.opacity(0.85))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
@@ -103,6 +103,6 @@ struct LiveDebugCard: View {
 private extension Text {
     func debugKey() -> some View {
         self.font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.4))
+            .foregroundStyle(MynaTheme.ink.opacity(0.4))
     }
 }

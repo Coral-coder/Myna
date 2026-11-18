@@ -194,28 +194,109 @@ final class ModelManager: ObservableObject {
     /// One-shot generation: a fresh chat session per request keeps long days
     /// from accumulating context (and memory).
     ///
-    /// iOS won't let MLX use the GPU while the app is in the background, so a
-    /// locked phone falls back to Apple Intelligence when it's available and
-    /// otherwise throws `needsForeground` — callers queue the work for later.
+    /// Works on screen, in the background and with the phone locked. iOS takes
+    /// the GPU away from an app that isn't on screen, so:
+    ///   - on screen, the MLX model runs on the GPU (fast);
+    ///   - off screen, Apple Intelligence answers when it's available, and
+    ///     otherwise the same MLX model runs on the CPU (slower, but it runs);
+    ///   - if Myna leaves the screen mid-answer, the GPU run is stopped before
+    ///     iOS can fail it (which aborts the app) and the request is run again
+    ///     on the CPU, so nothing is dropped.
     func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
-        let inBackground = UIApplication.shared.applicationState == .background
-        let useApple = activeModel?.backend == .appleFoundation
-            || (inBackground && AppleIntelligenceEngine.isAvailable)
+        // The home computer first, when it's paired and answering. Any failure
+        // falls through to this iPhone's own models, so nothing is lost.
+        if HomeServer.shared.shouldTry {
+            if let answer = try? await HomeServer.shared.generate(instructions: instructions, prompt: prompt, maxTokens: maxTokens) {
+                return answer
+            }
+        }
+        HomeServer.shared.noteLocal("writing")
+        let onScreen = UIApplication.shared.applicationState == .active
+        let appleFirst = activeModel?.backend == .appleFoundation
+            || (!onScreen && AppleIntelligenceEngine.isAvailable)
             || (!hasMLXModelInstalled && AppleIntelligenceEngine.isAvailable)
-        if useApple {
-            return try await AppleIntelligenceEngine.respond(instructions: instructions, prompt: prompt, maxTokens: maxTokens)
+        if appleFirst {
+            do {
+                return try await AppleIntelligenceEngine.respond(instructions: instructions, prompt: prompt, maxTokens: maxTokens)
+            } catch {
+                // Off screen, Apple Intelligence can run out of budget. If the
+                // user's own model is installed, carry on with it on the CPU.
+                guard hasMLXModelInstalled, activeModel?.backend == .mlx else { throw error }
+            }
         }
-        if inBackground {
-            throw MynaModelError.needsForeground
+        guard hasMLXModelInstalled else {
+            throw AppleIntelligenceEngine.isAvailable ? MynaModelError.appleIntelligenceUnavailable : MynaModelError.noModelInstalled
         }
-        let container = try await ensureContainer()
+
+        // Ask iOS for time to finish if Myna gets backgrounded part-way.
+        let grace = UIApplication.shared.beginBackgroundTask(withName: "myna.generate")
+        defer { if grace != .invalid { UIApplication.shared.endBackgroundTask(grace) } }
+
+        // Runs last (after the count drops): off screen, don't keep 1–3 GB of
+        // model resident between conversations.
+        defer { if UIApplication.shared.applicationState != .active { releaseForBackground() } }
         generating += 1
         defer { generating -= 1 }
+
+        if UIApplication.shared.applicationState == .active {
+            if let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: false) {
+                return answer
+            }
+            // Stopped because Myna left the screen — fall through to the CPU.
+            CrashReporter.log("generation moved to CPU (left the screen)")
+        }
+        guard let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: true) else {
+            throw MynaModelError.needsForeground
+        }
+        return answer
+    }
+
+    /// One MLX generation. Returns nil when a GPU run was stopped because Myna
+    /// left the screen (the caller then repeats it on the CPU).
+    private func runMLX(instructions: String, prompt: String, maxTokens: Int, onCPU: Bool) async throws -> String? {
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0.3, topP: 0.9)
-        let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
         // Qwen 3's chat template honours a /no_think switch; skip the musing.
         let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
-        return try await session.respond(to: finalPrompt)
+
+        if onCPU {
+            // Every MLX operation created inside this scope (including the
+            // model load and the generation task it spawns) runs on the CPU,
+            // which iOS allows off screen.
+            return try await Device.withDefaultDevice(.cpu) {
+                let container = try await self.ensureContainer()
+                let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
+                return try await session.respond(to: finalPrompt)
+            }
+        }
+
+        let container = try await ensureContainer()
+        let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
+        stoppedForBackground = false
+        let work = Task { try await session.respond(to: finalPrompt) }
+        mlxWork = work
+        defer { mlxWork = nil }
+        do {
+            let answer = try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            return stoppedForBackground ? nil : answer
+        } catch {
+            if stoppedForBackground { return nil }
+            throw error
+        }
+    }
+
+    private var mlxWork: Task<String, Error>?
+    private var stoppedForBackground = false
+
+    /// Myna is leaving the screen: stop any GPU generation now, before iOS
+    /// takes the GPU away. `respond` then repeats it on the CPU.
+    func stopGenerationForBackground() {
+        guard let mlxWork else { return }
+        stoppedForBackground = true
+        mlxWork.cancel()
     }
 
     /// MLX generations in flight; the model is only released when idle.
