@@ -71,5 +71,5 @@ func main() {
 	if !background {
 		showWindow()
 	}
-	<-ctx.Done()
+	runTray(ctx, stop)
 }

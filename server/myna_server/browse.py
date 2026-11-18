@@ -11,19 +11,19 @@ from .store import Store
 TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"))
 
 _STYLE = """<style>
-body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#1b1c1d;background:#e9e9e6}
+body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
 a{color:inherit}
-nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #0002;padding-bottom:10px;margin-bottom:14px}
-nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6c6d6b}
-nav a.on{color:#1b1c1d;border-bottom:1px solid #1b1c1d}
-input{font:inherit;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #0003;border-radius:8px;background:#fff8}
-.day{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#9b9c99;margin:22px 0 6px}
-.row{padding:7px 0;border-bottom:1px solid #00000012}
-.t{font:11px ui-monospace,monospace;color:#9b9c99;margin-right:8px}
-.who{color:#6c6d6b;margin-right:6px}
-.dim{color:#6c6d6b;font-size:13px}
+nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #ffffff22;padding-bottom:10px;margin-bottom:14px}
+nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#9b9d9e}
+nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}
+input{font:inherit;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #ffffff33;border-radius:8px;background:#ffffff0d;color:#e9e9e6}
+.day{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#6a6c6e;margin:22px 0 6px}
+.row{padding:7px 0;border-bottom:1px solid #ffffff12}
+.t{font:11px ui-monospace,monospace;color:#6a6c6e;margin-right:8px}
+.who{color:#9b9d9e;margin-right:6px}
+.dim{color:#9b9d9e;font-size:13px}
 h1{font-weight:300;font-size:24px;margin:6px 0}
-h2{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#9b9c99;margin:20px 0 4px}
+h2{font:11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#6a6c6e;margin:20px 0 4px}
 pre{white-space:pre-wrap;font:13px/1.5 system-ui,sans-serif}
 </style>"""
 
