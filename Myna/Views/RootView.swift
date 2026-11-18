@@ -23,7 +23,7 @@ struct RootView: View {
             Group {
                 switch tab {
                 case .ask: ChatView()
-                case .today: DashboardView()
+                case .today: TodayView()
                 case .memory: MemoriesView()
                 case .settings: SettingsMenuView()
                 }

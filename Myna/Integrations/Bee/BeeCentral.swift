@@ -84,6 +84,20 @@ final class BeeCentral: NSObject, ObservableObject {
     /// Whether an unexpected drop should trigger an automatic reconnect. Cleared
     /// when the user turns the bracelet off, so we don't fight for the link.
     private var shouldReconnect = false
+    /// A peripheral handed back by iOS state restoration, waiting for power-on.
+    private var restoredPeripheral: CBPeripheral?
+
+    /// Drop whatever half-open link exists and start over from a scan — what
+    /// turning the bracelet off and on in Settings does, without the user.
+    func restartLink() {
+        restoredPeripheral = nil
+        if let peripheral { manager?.cancelPeripheralConnection(peripheral) }
+        peripheral = nil
+        controlCharacteristic = nil
+        audioCharacteristic = nil
+        if phase != .poweredOff, phase != .unauthorized { phase = .idle }
+        startScan()
+    }
 
     func disconnect() {
         shouldReconnect = false
@@ -179,6 +193,17 @@ extension BeeCentral: CBCentralManagerDelegate {
             switch central.state {
             case .poweredOn:
                 if phase == .poweredOff || phase == .idle { phase = .idle }
+                // A link iOS kept alive for us across a relaunch (e.g. after an
+                // app update) can only be picked up now that Bluetooth is on.
+                if let restored = restoredPeripheral {
+                    restoredPeripheral = nil
+                    if restored.state == .connected {
+                        phase = .discovering
+                        restored.discoverServices([Self.serviceUUID])
+                    } else {
+                        connect(restored)
+                    }
+                }
             case .poweredOff: phase = .poweredOff
             case .unauthorized: phase = .unauthorized
             default: phase = .idle
@@ -194,8 +219,19 @@ extension BeeCentral: CBCentralManagerDelegate {
                 self.peripheral = peripheral
                 peripheral.delegate = self
                 discoveredName = peripheral.name
-                phase = peripheral.state == .connected ? .discovering : .connecting
-                if peripheral.state == .connected { peripheral.discoverServices([Self.serviceUUID]) }
+                phase = .connecting
+                // Bluetooth isn't powered on yet at this point, so commands sent
+                // now are dropped. Finish in centralManagerDidUpdateState.
+                if manager?.state == .poweredOn {
+                    if peripheral.state == .connected {
+                        phase = .discovering
+                        peripheral.discoverServices([Self.serviceUUID])
+                    } else {
+                        connect(peripheral)
+                    }
+                } else {
+                    restoredPeripheral = peripheral
+                }
             }
         }
     }

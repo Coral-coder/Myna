@@ -378,12 +378,14 @@ final class SpeechListener: NSObject, ObservableObject {
     /// through `deliverExternalText`.
     var externalTranscriber: ((AVAudioPCMBuffer) -> Void)?
 
+    /// Called with every finalized piece of text, after the pilot has it.
+    var onDelivered: ((String) -> Void)?
+
     /// Text for an utterance, from the engine chosen in Settings.
     func deliverExternalText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         recognitionTicks += 1
-        liveTranscript = trimmed
         deliver(trimmed)
     }
 
@@ -408,12 +410,10 @@ final class SpeechListener: NSObject, ObservableObject {
         let liveRequest = isPaused ? nil : tapRequest
         tapLock.unlock()
 
-        // A chosen engine takes the audio instead of Apple's recognizer.
-        if let externalTranscriber {
-            externalBacklog.removeAll()
-            if !isPaused { externalTranscriber(buffer) }
-            return
-        }
+        // The engine chosen in Settings produces the transcript. Apple's
+        // recognizer still gets the audio below, but only to drive the live
+        // ticker and the spoken wake word — its text is not kept.
+        if let externalTranscriber, !isPaused { externalTranscriber(buffer) }
 
         guard let liveRequest else {
             externalBacklog.append(buffer)
@@ -485,7 +485,7 @@ final class SpeechListener: NSObject, ObservableObject {
                     let text = result.bestTranscription.formattedString
                     self.liveTranscript = text
                     if result.isFinal {
-                        self.deliver(text)
+                        if self.externalTranscriber == nil { self.deliver(text) }
                         self.liveTranscript = ""
                         self.onTaskFinished?(text)
                         if self.isListening && !self.isPaused {
@@ -565,7 +565,7 @@ final class SpeechListener: NSObject, ObservableObject {
     private func flushPartialIfMeaningful() {
         let text = liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
-            deliver(text)
+            if externalTranscriber == nil { deliver(text) }
             liveTranscript = ""
         }
     }
@@ -574,6 +574,7 @@ final class SpeechListener: NSObject, ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onFinalText?(trimmed, .now)
+        onDelivered?(trimmed)
     }
 
     // MARK: - Interruptions

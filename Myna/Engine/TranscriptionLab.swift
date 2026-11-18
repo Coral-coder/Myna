@@ -4,6 +4,7 @@ import Foundation
 import Security
 import SherpaOnnx
 import Speech
+import SwiftData
 import WhisperKit
 
 // The Transcription Lab: record one clip from the bracelet, run it through every
@@ -437,7 +438,12 @@ final class TranscriptionLab: ObservableObject {
     // MARK: - The engine Myna actually uses
 
     static let activeKey = "myna.transcriptionEngine"
-    static let defaultEngineID = "apple-legacy"
+    /// Apple's word-by-word recognizer: the one engine that streams by itself.
+    static let legacyID = "apple-legacy"
+    /// Parakeet TDT v2 — the model Omi runs on the phone.
+    static let defaultEngineID = "sh-parakeet-v2"
+    /// What Omi falls back to on iOS when Parakeet can't run.
+    static let fallbackIDs = ["apple-transcriber", "apple-legacy"]
 
     /// The engine that transcribes bracelet audio. Persisted.
     @Published private(set) var activeEngineID: String = UserDefaults.standard.string(forKey: TranscriptionLab.activeKey) ?? TranscriptionLab.defaultEngineID
@@ -448,19 +454,39 @@ final class TranscriptionLab: ObservableObject {
         LabCatalog.all.first { $0.id == activeEngineID } ?? LabCatalog.all[0]
     }
 
+    /// The engine that will really run right now: the chosen one if its model is
+    /// here, otherwise the first fallback.
+    var effectiveEngine: LabEngine {
+        let chosen = activeEngine
+        if isReady(chosen) { return chosen }
+        return LabCatalog.all.first { $0.id == Self.fallbackIDs[0] } ?? chosen
+    }
+
     func setActive(_ engine: LabEngine) {
         activeEngineID = engine.id
         UserDefaults.standard.set(engine.id, forKey: Self.activeKey)
         liveStatus = ""
         applyActiveEngine()
+        if !isReady(engine), !engine.isCloud { download(engine) }
     }
 
     private weak var liveListener: SpeechListener?
+    private var container: ModelContainer?
 
-    /// Called once at launch: route bracelet audio to the chosen engine.
-    func attach(listener: SpeechListener) {
+    /// Called once at launch: route bracelet audio to the chosen engine, and
+    /// fetch its model (and the voice-print model) if they aren't here yet.
+    func attach(listener: SpeechListener, container: ModelContainer) {
         liveListener = listener
+        self.container = container
+        listener.onDelivered = { [weak self] text in
+            // Apple's own recognizer produced this line (no audio to voice-print).
+            guard let self, listener.externalTranscriber == nil else { return }
+            self.record(text: text, heardAt: .now, duration: 0, engine: "Apple Speech", voicePrint: nil)
+        }
         applyActiveEngine()
+        let chosen = activeEngine
+        if !isReady(chosen), !chosen.isCloud { download(chosen) }
+        Task { await VoiceID.shared.prepare() }
     }
 
     /// Apple's live recognizer handles the stream itself. Any other engine gets
@@ -469,8 +495,7 @@ final class TranscriptionLab: ObservableObject {
         liveSamples.removeAll()
         liveVoiced = 0
         liveSilence = 0
-        let engine = activeEngine
-        if engine.id == Self.defaultEngineID || !isReady(engine) {
+        if activeEngineID == Self.legacyID {
             liveListener?.externalTranscriber = nil
         } else {
             liveListener?.externalTranscriber = { [weak self] buffer in
@@ -520,37 +545,122 @@ final class TranscriptionLab: ObservableObject {
         liveVoiced = 0
         liveSilence = 0
         guard voicedSeconds >= 0.3 else { return }
-        enqueueLive(chunk, rate: Int(liveRate))
+        enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: voicedSeconds)
     }
 
     /// Utterances are transcribed strictly in order, one at a time; nothing is
-    /// skipped if the engine is slower than the talking.
-    private func enqueueLive(_ chunk: [Float], rate: Int) {
-        let engine = activeEngine
-        let dir = sherpaDir(engine)
+    /// skipped if the engine is slower than the talking. If the chosen engine
+    /// fails, the fallbacks are tried on the same audio.
+    private func enqueueLive(_ chunk: [Float], rate: Int, voicedSeconds: Double) {
+        var candidates = [effectiveEngine]
+        for id in Self.fallbackIDs where !candidates.contains(where: { $0.id == id }) {
+            if let engine = LabCatalog.all.first(where: { $0.id == id }) { candidates.append(engine) }
+        }
+        let engines = candidates
+        let dirs = engines.map { sherpaDir($0) }
+        let seconds = Double(chunk.count) / Double(rate)
+        let heardAt = Date().addingTimeInterval(-seconds)
         let previous = liveQueue
         livePending += 1
-        liveStatus = "Transcribing with \(engine.name)… (\(livePending) waiting)"
+        liveStatus = "Transcribing with \(engines[0].name)… (\(livePending) waiting)"
         liveQueue = Task { [weak self] in
             await previous?.value
             let started = Date()
-            let result: Result<String, Error>
-            do {
-                result = .success(try await LabRunner.shared.transcribe(engine: engine, modelDir: dir, samples: chunk, sampleRate: rate))
-            } catch {
-                result = .failure(error)
+            var text = ""
+            var usedName = ""
+            var lastError = ""
+            for (index, engine) in engines.enumerated() {
+                do {
+                    text = try await LabRunner.shared.transcribe(engine: engine, modelDir: dirs[index], samples: chunk, sampleRate: rate)
+                    usedName = engine.name
+                    break
+                } catch {
+                    lastError = "\(engine.name) failed: \(error.localizedDescription)"
+                }
             }
+            let voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate)
             guard let self else { return }
             self.livePending = max(0, self.livePending - 1)
-            switch result {
-            case .success(let text):
-                let took = Date().timeIntervalSince(started)
-                self.liveStatus = String(format: "%@ · last utterance %.1f s of audio in %.1f s", engine.name, Double(chunk.count) / Double(rate), took)
-                self.liveListener?.deliverExternalText(text)
-            case .failure(let error):
-                self.liveStatus = "\(engine.name) failed: \(error.localizedDescription)"
+            guard !usedName.isEmpty else {
+                self.liveStatus = lastError
+                return
+            }
+            let took = Date().timeIntervalSince(started)
+            self.liveStatus = String(format: "%@ · %.1f s of audio in %.1f s", usedName, seconds, took)
+            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { return }
+            self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
+            self.liveListener?.deliverExternalText(cleaned)
+        }
+    }
+
+    // MARK: - The transcript and the voices in it
+
+    /// How alike two voice prints must be to count as the same person.
+    private static let sameVoice: Float = 0.5
+
+    /// Saves one utterance, attributing it to a known voice or starting a new
+    /// "Speaker N" when the voice isn't one Myna has heard.
+    private func record(text: String, heardAt: Date, duration: Double, engine: String, voicePrint: [Float]?) {
+        guard let context = container?.mainContext else { return }
+        var speakerKey = ""
+        if let voicePrint {
+            let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
+            var best: VoicePerson?
+            var bestScore: Float = -1
+            for person in people {
+                let score = VoicePrint.similarity(VoicePrint.vector(person.centroid), voicePrint)
+                if score > bestScore { bestScore = score; best = person }
+            }
+            if let best, bestScore >= Self.sameVoice {
+                best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
+                best.sampleCount += 1
+                speakerKey = best.key
+            } else {
+                let person = VoicePerson(name: "Speaker \(people.count + 1)", centroid: VoicePrint.data(voicePrint))
+                context.insert(person)
+                speakerKey = person.key
             }
         }
+        context.insert(Utterance(text: text, heardAt: heardAt, duration: duration, engine: engine,
+                                 speakerKey: speakerKey, embedding: voicePrint.map(VoicePrint.data)))
+        try? context.save()
+    }
+
+    /// "This voice is …": name the person behind an utterance. If someone with
+    /// that name already exists, the voice is merged into them.
+    func name(_ person: VoicePerson, as rawName: String) {
+        guard let context = container?.mainContext else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
+        if let existing = people.first(where: { $0.key != person.key && $0.isNamed && $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            let oldKey = person.key
+            let newKey = existing.key
+            let lines = (try? context.fetch(FetchDescriptor<Utterance>(predicate: #Predicate<Utterance> { $0.speakerKey == oldKey }))) ?? []
+            for line in lines { line.speakerKey = newKey }
+            existing.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(existing.centroid), count: existing.sampleCount,
+                                                                 with: VoicePrint.vector(person.centroid)))
+            existing.sampleCount += person.sampleCount
+            context.delete(person)
+        } else {
+            person.name = name
+            person.isNamed = true
+        }
+        try? context.save()
+    }
+
+    /// "That wasn't them, it was …": move one utterance to another person and
+    /// teach that person's voice print with it.
+    func assign(_ utterance: Utterance, to person: VoicePerson) {
+        guard let context = container?.mainContext else { return }
+        utterance.speakerKey = person.key
+        if let data = utterance.embedding {
+            person.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(person.centroid), count: person.sampleCount,
+                                                               with: VoicePrint.vector(data)))
+            person.sampleCount += 1
+        }
+        try? context.save()
     }
 }
 

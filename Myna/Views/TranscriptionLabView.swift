@@ -56,13 +56,13 @@ struct TranscriptionLabView: View {
 
     private var activeNote: String {
         let engine = lab.activeEngine
-        if engine.id == TranscriptionLab.defaultEngineID {
-            return "Apple's live recognizer transcribes the bracelet. Download any engine below and tap Use to switch."
+        if engine.id == TranscriptionLab.legacyID {
+            return "Apple's word-by-word recognizer transcribes the bracelet. Tap Use on any engine below to switch."
         }
         if !lab.isReady(engine) {
-            return "This engine isn't ready (model not downloaded or no API key), so Apple's recognizer is filling in."
+            return "Its model isn't here yet (downloading, or no API key). Until it is, \(lab.effectiveEngine.name) fills in."
         }
-        return "Bracelet audio is transcribed by this engine, one utterance at a time, each time you pause."
+        return "Bracelet audio is transcribed by this engine each time you pause. If it fails, Apple SpeechTranscriber takes that utterance."
     }
 
     // MARK: - Clip
@@ -181,11 +181,17 @@ struct TranscriptionLabView: View {
                         if lab.hasClip { pill("Test") { lab.runOne(engine) } }
                         if engine.megabytes > 0 { pill("Remove") { lab.remove(engine) } }
                     } else if engine.isCloud {
+                        if lab.activeEngineID != engine.id { pill("Use") { lab.setActive(engine) } }
                         Text("Add a key to run")
                             .font(MynaTheme.mono(10))
                             .foregroundStyle(MynaTheme.faint)
                     } else {
                         pill("Download") { lab.download(engine) }
+                        if lab.activeEngineID == engine.id {
+                            Text("CHOSEN · NOT DOWNLOADED")
+                                .font(MynaTheme.mono(10))
+                                .foregroundStyle(MynaTheme.faint)
+                        }
                     }
                 }
                 Spacer()

@@ -66,7 +66,7 @@ final class AppServices {
         neuralVoice = NeuralVoice()
 
         pilot.brain = brain
-        TranscriptionLab.shared.attach(listener: listener)
+        TranscriptionLab.shared.attach(listener: listener, container: container)
         beeCloud.brain = brain
         // Extraction runs on the user's downloaded model (a bigger MLX model when
         // installed and on screen, Apple Intelligence otherwise). Foreground only.
@@ -116,14 +116,14 @@ final class AppServices {
     private static func makeContainer() -> ModelContainer {
         for attempt in 0..<4 {
             do {
-                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self)
+                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self)
             } catch {
                 CrashReporter.log("ModelContainer attempt \(attempt) failed: \(error.localizedDescription)")
                 if attempt < 3 { Thread.sleep(forTimeInterval: 0.25) }
             }
         }
         if let fallback = try? ModelContainer(
-            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self,
+            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         ) {
             CrashReporter.log("ModelContainer: in-memory fallback (on-disk store unavailable this launch).")

@@ -152,6 +152,35 @@ final class BeeManager: ObservableObject {
         pairing = .scanning
         central.activate()
         central.startScan()
+        scheduleLinkWatchdog()
+    }
+
+    private var linkWatchdogToken = 0
+
+    /// If the bracelet hasn't come up shortly after launch (a restored link that
+    /// never finished its handshake, typically after an app update), restart the
+    /// link ourselves instead of waiting for the user to toggle the bracelet.
+    private func scheduleLinkWatchdog() {
+        linkWatchdogToken += 1
+        let token = linkWatchdogToken
+        Task { [weak self] in
+            for attempt in 0..<3 {
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, self.linkWatchdogToken == token, self.isEnabled else { return }
+                switch self.pairing {
+                case .streaming, .needsFactoryReset, .bluetoothOff, .unauthorized, .off, .error, .audioUnavailable:
+                    return
+                case .scanning, .connecting, .provisioning:
+                    // Still scanning with nothing connected is normal when the
+                    // bracelet is out of range; only a stuck link needs a kick.
+                    if self.central.phase == .scanning { continue }
+                    self.log("Bracelet link stuck (attempt \(attempt + 1)) — restarting it.")
+                    self.reset()
+                    self.pairing = .scanning
+                    self.central.restartLink()
+                }
+            }
+        }
     }
 
     // MARK: - Direct control
