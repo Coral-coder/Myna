@@ -238,13 +238,10 @@ final class ModelManager: ObservableObject {
         generating += 1
         defer { generating -= 1 }
 
-        if UIApplication.shared.applicationState == .active {
-            if let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: false) {
-                return answer
-            }
-            // Stopped because Myna left the screen — fall through to the CPU.
-            CrashReporter.log("generation moved to CPU (left the screen)")
-        }
+        // Always on the CPU. A graphics-chip run can't be stopped part-way
+        // through a step, and if Myna leaves the screen during one (build 88:
+        // switching to the browser to sign in) iOS fails it and MLX aborts the
+        // whole app. The CPU is slower but is allowed everywhere.
         guard let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: true) else {
             throw MynaModelError.needsForeground
         }
