@@ -583,39 +583,45 @@ enum LabSherpa {
             throw LabError("Model file missing: \(name). Download it again.")
         }
 
-        let modelConfig: SherpaOnnxOfflineModelConfig
+        // (The C config struct types aren't visible outside the SherpaOnnx module,
+        // so each case builds its recognizer without naming them.)
+        let recognizer: SherpaOnnxOfflineRecognizer
         switch spec.family {
         case .nemoTransducer:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(3),
                 transducer: sherpaOnnxOfflineTransducerModelConfig(encoder: path(0), decoder: path(1), joiner: path(2)),
-                numThreads: 4, modelType: "nemo_transducer")
+                numThreads: 4, modelType: "nemo_transducer"))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         case .zipformer:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(3),
                 transducer: sherpaOnnxOfflineTransducerModelConfig(encoder: path(0), decoder: path(1), joiner: path(2)),
-                numThreads: 4, modelType: "transducer")
+                numThreads: 4, modelType: "transducer"))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         case .moonshine:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(4), numThreads: 4,
-                moonshine: sherpaOnnxOfflineMoonshineModelConfig(preprocessor: path(0), encoder: path(1), uncachedDecoder: path(2), cachedDecoder: path(3)))
+                moonshine: sherpaOnnxOfflineMoonshineModelConfig(preprocessor: path(0), encoder: path(1), uncachedDecoder: path(2), cachedDecoder: path(3))))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         case .senseVoice:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(1), numThreads: 4,
-                senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(model: path(0), language: "en", useInverseTextNormalization: true))
+                senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(model: path(0), language: "en", useInverseTextNormalization: true)))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         case .whisper:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(2),
                 whisper: sherpaOnnxOfflineWhisperModelConfig(encoder: path(0), decoder: path(1), language: "en"),
-                numThreads: 4)
+                numThreads: 4))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         case .canary:
-            modelConfig = sherpaOnnxOfflineModelConfig(
+            var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: sherpaOnnxOfflineModelConfig(
                 tokens: path(2), numThreads: 4,
-                canary: sherpaOnnxOfflineCanaryModelConfig(encoder: path(0), decoder: path(1)))
+                canary: sherpaOnnxOfflineCanaryModelConfig(encoder: path(0), decoder: path(1))))
+            recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         }
 
-        var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(), modelConfig: modelConfig)
-        let recognizer = SherpaOnnxOfflineRecognizer(config: &config)
 
         var pieces: [String] = []
         for chunk in split(samples, sampleRate: sampleRate, maxSeconds: spec.chunkSeconds) {
