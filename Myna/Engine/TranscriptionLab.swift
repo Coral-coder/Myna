@@ -525,6 +525,8 @@ final class TranscriptionLab: ObservableObject {
     /// said, not only at the pause. Runs only when the engine is free, so it
     /// can't fall behind or delay the final pass.
     private func refreshLivePartial() {
+        // "Don't use this iPhone": no in-progress preview from the phone's engine.
+        guard !UserDefaults.standard.bool(forKey: Self.serverOnlyKey) else { return }
         let engine = effectiveEngine
         switch engine.kind {
         case .sherpa, .whisperKit: break

@@ -62,7 +62,7 @@ struct HomeServerView: View {
                         .foregroundStyle(MynaTheme.ink)
                     Text(lab.heldCount > 0
                          ? "\(lab.heldCount) recordings waiting for the home server."
-                         : "Saves battery. While the server can't be reached, audio is only recorded and notes wait; the server does it all when it's back.")
+                         : "Saves battery. The live ticker and \"Myna, …\" voice commands are off. While the server can't be reached, audio is only recorded and notes wait; the server does it all when it's back.")
                         .font(.system(size: 12, weight: .light))
                         .foregroundStyle(MynaTheme.muted)
                 }
