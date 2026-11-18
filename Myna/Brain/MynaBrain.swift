@@ -533,12 +533,15 @@ final class MynaBrain: ObservableObject {
 
         // The agent runs at most twice: once to answer or request a search, and —
         // if it searched — again with the web results in hand to answer from them.
+        // What was said earlier in the Ask chat, so follow-ups are understood.
+        let earlier = origin == .typed ? ChatLog.shared.recentContext(excluding: question) : ""
+        let earlierBlock = earlier.isEmpty ? "" : "\nEARLIER IN THIS CHAT (for context; answer only the new message):\n\(earlier)\n"
         var webResults: String?
         for round in 0..<2 {
             let webBlock = webResults.map { "\nWEB RESULTS (use these to answer; cite nothing, just answer naturally):\n\($0)\n" } ?? ""
             let prompt = """
             \(context(extra: deviceContext))
-            \(webBlock)
+            \(webBlock)\(earlierBlock)
             THE USER SAYS: "\(question)"
 
             Respond with JSON:

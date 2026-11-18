@@ -6,17 +6,13 @@ import SwiftUI
 struct ChatView: View {
     @EnvironmentObject private var brain: MynaBrain
 
-    @State private var messages: [Message] = []
+    @ObservedObject private var log = ChatLog.shared
+    private var messages: [Message] { log.messages }
     @State private var draft = ""
     @State private var sending = false
     @FocusState private var inputFocused: Bool
 
-    struct Message: Identifiable, Equatable {
-        enum Role { case me, myna }
-        let id = UUID()
-        let role: Role
-        var text: String
-    }
+    typealias Message = ChatLog.Message
 
     private let suggestions = [
         "What did I say I'd do today?",
@@ -59,7 +55,7 @@ struct ChatView: View {
             Spacer()
             if !messages.isEmpty {
                 Button {
-                    withAnimation { messages.removeAll() }
+                    withAnimation { log.clear() }
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 16, weight: .medium))
@@ -172,13 +168,13 @@ struct ChatView: View {
         guard !trimmed.isEmpty, !sending else { return }
         inputFocused = false
         draft = ""
-        messages.append(Message(role: .me, text: trimmed))
+        log.add(.me, trimmed)
         sending = true
         Task {
             let reply = await brain.handleTyped(trimmed)
             await MainActor.run {
                 sending = false
-                messages.append(Message(role: .myna, text: reply.isEmpty ? "…" : reply))
+                log.add(.myna, reply.isEmpty ? "…" : reply)
             }
         }
     }
