@@ -46,6 +46,13 @@ final class ModelManager: ObservableObject {
         // Keep MLX's GPU buffer cache small; an LLM on a phone wants every megabyte.
         MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
 
+        // By default an error inside MLX ends the whole app (build 98 crashed
+        // this way). Record it instead; `runMLX` turns it into an ordinary
+        // failure the caller can handle.
+        setErrorHandler({ message, _ in
+            CrashReporter.log("MLX error: " + (message.map { String(cString: $0) } ?? "unknown"))
+        })
+
         refreshInstalledStates()
     }
 
@@ -262,13 +269,21 @@ final class ModelManager: ObservableObject {
         let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
 
         if onCPU {
+            // One generation at a time. Notes, the transcript sorter, chiming
+            // in and Ask can all want the model at once, and MLX can't run two
+            // generations on one model together.
+            await acquireMLX()
+            defer { releaseMLX() }
             // Every MLX operation created inside this scope (including the
             // model load and the generation task it spawns) runs on the CPU,
-            // which iOS allows off screen.
-            return try await Device.withDefaultDevice(.cpu) {
-                let container = try await self.ensureContainer()
-                let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
-                return try await session.respond(to: finalPrompt)
+            // which iOS allows off screen. An MLX error inside it is thrown
+            // as an ordinary error rather than ending the app.
+            return try await withError {
+                try await Device.withDefaultDevice(.cpu) {
+                    let container = try await self.ensureContainer()
+                    let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
+                    return try await session.respond(to: finalPrompt)
+                }
             }
         }
 
@@ -288,6 +303,27 @@ final class ModelManager: ObservableObject {
         } catch {
             if stoppedForBackground { return nil }
             throw error
+        }
+    }
+
+    private var mlxBusy = false
+    private var mlxWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Wait for the model to be free, then take it.
+    private func acquireMLX() async {
+        if !mlxBusy {
+            mlxBusy = true
+            return
+        }
+        await withCheckedContinuation { mlxWaiters.append($0) }
+    }
+
+    /// Hand the model to the next waiter, or mark it free.
+    private func releaseMLX() {
+        if mlxWaiters.isEmpty {
+            mlxBusy = false
+        } else {
+            mlxWaiters.removeFirst().resume()
         }
     }
 
