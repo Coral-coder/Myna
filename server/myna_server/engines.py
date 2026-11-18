@@ -75,7 +75,9 @@ def keep_segments(segments) -> list[str]:
         confidence = getattr(segment, "avg_logprob", 0.0) or 0.0
         if any(phrase in bare for phrase in _ALWAYS_INVENTED):
             continue
-        if no_speech > 0.6 and confidence < -0.7:
+        # Quiet, far-away speech scores poorly on both counts, so only drop a
+        # segment when Whisper is nearly sure there was no speech at all.
+        if no_speech > 0.85 and confidence < -1.0:
             continue
         if bare in _INVENTED_WHEN_UNSURE and (no_speech > 0.25 or confidence < -0.6):
             continue

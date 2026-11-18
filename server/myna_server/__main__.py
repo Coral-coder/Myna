@@ -57,6 +57,11 @@ def main() -> None:
                     written = store.get("daily", day)
                     if written is None or float(written.get("writtenAt") or 0) < last:
                         app.state.run_daily(day)
+                # Tune the transcription model while things are quiet.
+                if (config.auto_tune and last > 0 and now - last >= 20 * 60
+                        and now - config.tuned_at >= config.tune_every_hours * 3600):
+                    config.tuned_at = now  # don't retry every minute if it can't run
+                    app.state.run_tune()
                 if now - last_purge > 3600:
                     last_purge = now
                     for path in store.drop_clips_before(now - max(config.keep_audio_days, 0) * 86400):

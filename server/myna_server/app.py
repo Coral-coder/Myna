@@ -18,9 +18,9 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .audio import AudioError, decode_wav, resample_to_16k
+from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, browse, catalog, daily, web
+from . import ask, browse, catalog, daily, tuner, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -135,7 +135,9 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         seconds = samples.size / rate if rate else 0.0
         began = time.perf_counter()
-        audio = resample_to_16k(samples, rate)
+        raw_audio = resample_to_16k(samples, rate)
+        # Quiet (far-away) speech is brought up to a working level first.
+        audio = level(raw_audio)
 
         def work() -> tuple[str, list[dict]]:
             """The text, and (when the voice models are there) the clip split
@@ -163,11 +165,23 @@ def create_app(
                     out.append({"text": whole, "start": round(pieces[0][0], 2),
                                 "duration": round(pieces[-1][1] - pieces[0][0], 2), "voice": prints[pieces[0][2]]})
                 return whole, out
+            # Every part of the clip is transcribed: each speaker's turns, and
+            # also the stretches between them, where the speaker separation
+            # found nobody but faint or distant speech may still be.
+            spans: list[tuple[float, float, int | None]] = []
+            cursor = 0.0
             for start, end, speaker in pieces:
+                if start - cursor >= 1.0:
+                    spans.append((cursor, start, None))
+                spans.append((start, end, speaker))
+                cursor = end
+            if len(audio) / 16000 - cursor >= 1.0:
+                spans.append((cursor, len(audio) / 16000, None))
+            for start, end, speaker in spans:
                 said = transcriber.transcribe(audio[int(start * 16000) : int(end * 16000)])
                 if said:
                     out.append({"text": said, "start": round(start, 2), "duration": round(end - start, 2),
-                                "voice": prints[speaker]})
+                                "voice": prints[speaker] if speaker is not None else []})
             return " ".join(piece["text"] for piece in out), out
 
         try:
@@ -189,7 +203,7 @@ def create_app(
                     out.setnchannels(1)
                     out.setsampwidth(2)
                     out.setframerate(16000)
-                    out.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+                    out.writeframes((np.clip(raw_audio, -1, 1) * 32767).astype("<i2").tobytes())
                 clip = store.add_clip(heard_at, seconds, str(path))
                 store.add_transcript(clip, transcriber.name, text, time.perf_counter() - began)
             except Exception:
@@ -234,6 +248,7 @@ def create_app(
             "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
             "reprocess": dict(reprocess),
+            "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "daily": dict(daily_state),
         }
 
@@ -253,7 +268,7 @@ def create_app(
                 try:
                     with wave.open(clip["path"], "rb") as source:
                         raw = source.readframes(source.getnframes())
-                    audio = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+                    audio = level(np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0)
                     began = time.perf_counter()
                     text = transcriber.transcribe(audio)
                     store.add_transcript(clip["id"], model, text, time.perf_counter() - began)
@@ -283,7 +298,102 @@ def create_app(
 
     @app.get("/browse/compare", response_class=HTMLResponse)
     def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
-        return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days)
+        return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days,
+                                   dict(tune_state), config.auto_tune)
+
+    # -- choosing the transcription model by itself ----------------------------
+
+    tune_state = {"running": False, "status": "", "report": []}
+
+    def run_tune() -> str:
+        """Try the candidate models on the hardest recent recordings and keep
+        the best. Returns the chosen model ("" if nothing was done). Stops and
+        puts things back if recording starts again."""
+        if tune_state["running"] or reprocess["running"] or not hasattr(transcriber, "use"):
+            return ""
+        tune_state.update(running=True, status="Picking the hardest recordings…", report=[])
+        original = config.stt_model
+        busy_at = store.last_clip_at()
+        try:
+            clips = store.clips_since(time.time() - 3 * 86400)
+            for clip in clips:
+                try:
+                    with wave.open(clip["path"], "rb") as source:
+                        clip["audio"] = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+                    clip["loudness"] = loudness(clip["audio"])
+                except Exception:
+                    clip["audio"], clip["loudness"] = None, 0.0
+            nothing = set(store.clips_heard_nothing(time.time() - 3 * 86400))
+            tests = tuner.hardest([clip for clip in clips if clip["audio"] is not None], nothing)
+            if len(tests) < 6:
+                tune_state["status"] = "Not enough recordings yet to tune on (needs at least six of three seconds or more)."
+                return ""
+            candidates = [model for model in getattr(app.state, "tune_candidates", tuner.CANDIDATES)]
+            if original not in candidates:
+                candidates.append(original)
+            results: dict[str, list[str]] = {}
+            speeds: dict[str, float] = {}
+            audio_seconds = sum(clip["seconds"] for clip in tests)
+            for number, model in enumerate(candidates):
+                tune_state["status"] = f"Trying {model} ({number + 1} of {len(candidates)}) on {len(tests)} hard recordings…"
+                try:
+                    transcriber.use(model)
+                    texts, spent = [], 0.0
+                    for clip in tests:
+                        if store.last_clip_at() != busy_at:
+                            tune_state["status"] = "Stopped: recording started again. It will try again when things are quiet."
+                            return ""
+                        began = time.perf_counter()
+                        text = transcriber.transcribe(level(clip["audio"]))
+                        took = time.perf_counter() - began
+                        spent += took
+                        texts.append(text)
+                        store.add_transcript(clip["id"], transcriber.name, text, took)
+                    results[model] = texts
+                    speeds[model] = audio_seconds / spent if spent > 0 else 0.0
+                except Exception as error:
+                    tune_state["report"].append({"model": model, "note": f"couldn't run: {error}"})
+            if len(results) < 2:
+                tune_state["status"] = "Couldn't compare: fewer than two models ran."
+                return ""
+            scores = tuner.score(results)
+            winner = tuner.choose(scores, speeds)
+            for model in results:
+                tune_state["report"].append({
+                    "model": model, "agreement": round(scores[model], 3), "speed": round(speeds[model], 1),
+                    "words": sum(len(tuner.words(text)) for text in results[model]), "chosen": model == winner,
+                })
+            tune_state["report"].sort(key=lambda row: -row.get("agreement", 0))
+            original = winner  # what `finally` puts in place
+            config.tuned_at = time.time()
+            tune_state["status"] = (
+                f"Tuned {time.strftime('%d %b %H:%M')}: {winner} did best on {len(tests)} hard recordings "
+                f"({audio_seconds / 60:.1f} minutes of audio)."
+            )
+            return winner
+        except Exception as error:
+            tune_state["status"] = f"Tuning failed: {error}"
+            return ""
+        finally:
+            try:
+                if transcriber.name != original or config.stt_model != original:
+                    transcriber.use(original)
+                config.stt_model = original
+                if getattr(app.state, "save_config", True):
+                    config.save()
+                if hasattr(transcriber, "warm"):
+                    threading.Thread(target=transcriber.warm, daemon=True).start()
+            finally:
+                tune_state["running"] = False
+
+    app.state.run_tune = run_tune
+
+    @app.post("/browse/tune")
+    async def start_tune(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        threading.Thread(target=run_tune, daemon=True).start()
+        return RedirectResponse("/browse/compare", status_code=303)
 
     # -- the end-of-day summary -------------------------------------------------
 

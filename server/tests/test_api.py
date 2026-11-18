@@ -295,10 +295,12 @@ def test_transcribe_splits_a_clip_by_speaker(stt):
     client = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=FakeVoices()))
     body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 5, dtype=np.float32))).json()
     segments = body["segments"]
-    # Two stretches: speaker 0's two pieces joined, then speaker 1; the sliver is dropped.
-    assert [(s["start"], s["duration"]) for s in segments] == [(0.0, 2.0), (2.5, 1.5)]
+    # Speaker 0's two pieces joined, then speaker 1; the sliver is dropped. The
+    # last second, where nobody was found, is still transcribed, with no voice.
+    assert [(s["start"], s["duration"]) for s in segments] == [(0.0, 2.0), (2.5, 1.5), (4.0, 1.0)]
     assert segments[0]["text"] == "heard 32000 samples" and segments[1]["text"] == "heard 24000 samples"
-    assert segments[0]["voice"] != segments[1]["voice"] and body["text"] == "heard 32000 samples heard 24000 samples"
+    assert segments[0]["voice"] != segments[1]["voice"] and segments[2]["voice"] == []
+    assert body["text"] == "heard 32000 samples heard 24000 samples heard 16000 samples"
 
 
 def test_one_speaker_is_transcribed_whole_and_no_voices_still_works(stt, client):
@@ -439,3 +441,61 @@ def test_models_page_assigns_jobs_to_models(stt):
     assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
     client.post("/browse/models", headers=AUTH, data={"clear": "helper"}, follow_redirects=False)
     assert helper.name == ""
+
+
+def test_quiet_audio_is_brought_up_before_transcribing():
+    from myna_server.audio import level
+
+    quiet = (np.sin(np.linspace(0, 200, 16000)) * 0.03).astype(np.float32)
+    louder = level(quiet)
+    assert 0.45 < float(np.abs(louder).max()) <= 0.55            # far-field speech reaches a working level
+    assert float(np.abs(level(quiet * 0.0001)).max()) < 0.01     # near-silence is not blown up into noise
+    loud = (np.sin(np.linspace(0, 200, 16000)) * 0.8).astype(np.float32)
+    assert np.array_equal(level(loud), loud)                     # already loud: untouched
+
+
+def test_tuner_prefers_the_model_the_others_agree_with_and_that_keeps_up():
+    from myna_server import tuner
+
+    results = {
+        "good": ["pass me the salt please", "", "we should leave at five"],
+        "also-good": ["pass me the salt please", "", "we should leave by five"],
+        "invents": ["thank you for watching", "thank you", "subscribe to my channel"],
+        "deaf": ["", "", ""],
+    }
+    scores = tuner.score(results)
+    assert scores["good"] > scores["invents"] and scores["good"] > scores["deaf"]
+    # Of two that score about the same, the faster one is chosen; one too slow to keep up is not.
+    assert tuner.choose(scores, {"good": 4.0, "also-good": 40.0, "invents": 90.0, "deaf": 90.0}) == "also-good"
+    assert tuner.choose({"best": 0.9, "ok": 0.6}, {"best": 0.5, "ok": 20.0}) == "ok"
+    # The test set: recordings a model heard nothing in first, then the quietest; short ones left out.
+    clips = [{"id": 1, "seconds": 10, "loudness": 0.2}, {"id": 2, "seconds": 10, "loudness": 0.01},
+             {"id": 3, "seconds": 1, "loudness": 0.001}, {"id": 4, "seconds": 8, "loudness": 0.05}]
+    assert [c["id"] for c in tuner.hardest(clips, heard_nothing={4})] == [4, 2, 1]
+
+
+def test_tuning_switches_to_the_best_model_and_reports(tmp_path):
+    class Tunable(NamedStt):
+        said = {
+            "careful": "pass me the salt please",
+            "careful-too": "pass me the salt please",
+            "sloppy": "thank you for watching",
+        }
+
+        def transcribe(self, samples):
+            return self.said.get(self.name, "")
+
+    stt = Tunable("sloppy")
+    config = Config(token="secret-token", stt_model="sloppy")
+    app = create_app(config, stt, FakeWriter(), audio_dir=tmp_path)
+    app.state.save_config = False
+    app.state.tune_candidates = ["careful", "careful-too"]
+    client = TestClient(app)
+    tone = (np.sin(np.linspace(0, 900, 16000 * 4)) * 0.02).astype(np.float32)
+    assert app.state.run_tune() == ""                         # nothing recorded yet
+    for _ in range(6):
+        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(tone))
+    winner = app.state.run_tune()
+    assert winner in ("careful", "careful-too") and config.stt_model == winner and stt.name == winner
+    page = client.get("/browse/compare", headers=AUTH).text
+    assert "CHOSEN" in page and "sloppy" in page and "Tune now" in page

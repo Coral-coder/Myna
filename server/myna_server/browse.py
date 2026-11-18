@@ -383,7 +383,8 @@ document.getElementById('bar').onsubmit = async (event) => {
     return _frame("ask", "", body, store.counts())
 
 
-def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: int) -> str:
+def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: int,
+                 tune: dict | None = None, auto_tune: bool = True) -> str:
     """Run the chosen transcription model over the kept recordings, and read
     off how each model did on the same audio."""
     since = (datetime.now() - timedelta(hours=hours)).timestamp()
@@ -407,6 +408,30 @@ def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: i
         parts.append(f'<p>Running {_e(job.get("model"))}: {job.get("done", 0)} of {job.get("total", 0)} recordings…</p>')
     elif job.get("note"):
         parts.append(f'<p class="dim">{_e(job.get("note"))}</p>')
+
+    tune = tune or {}
+    parts.append("<h2>Automatic tuning</h2>")
+    parts.append(
+        '<div class="dim">'
+        + ("On: while nothing is being recorded, " if auto_tune else "Off. When run, ")
+        + "the server takes the hardest recent recordings (the quietest, and ones a model heard nothing in), runs every "
+        "candidate model over them, and switches to the one that agrees best with the others while keeping up with "
+        "real time. There is no correct transcript to mark against, so agreement between models is the measure.</div>"
+        '<form method="post" action="/browse/tune" style="margin-top:10px"><button>Tune now</button></form>'
+    )
+    if tune.get("status"):
+        parts.append(f'<p>{_e(tune.get("status"))}</p>')
+    if tune.get("report"):
+        parts.append("<table><tr><th>Model</th><th>Agreement</th><th>Speed</th><th>Words</th><th></th></tr>")
+        for row in tune["report"]:
+            if "note" in row:
+                parts.append(f'<tr><td>{_e(row["model"])}</td><td colspan="4" class="dim">{_e(row["note"])}</td></tr>')
+            else:
+                parts.append(
+                    f'<tr><td>{_e(row["model"])}</td><td>{row["agreement"]:.0%}</td><td>{row["speed"]:g}× real time</td>'
+                    f'<td>{row["words"]}</td><td>{"CHOSEN" if row["chosen"] else ""}</td></tr>'
+                )
+        parts.append("</table>")
 
     readout = store.model_readout(since)
     parts.append(f"<h2>Readout, last {hours:g} hours</h2>")

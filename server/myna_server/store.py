@@ -252,3 +252,13 @@ class Store:
             self._db.execute("DELETE FROM transcripts WHERE clip_id IN (SELECT id FROM clips WHERE at < ?)", (before,))
             self._db.execute("DELETE FROM clips WHERE at < ?", (before,))
         return [row["path"] for row in rows]
+
+    def clips_heard_nothing(self, since: float) -> list[int]:
+        """Clips since `since` in which some model heard nothing."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT DISTINCT c.id AS id FROM clips c JOIN transcripts t ON t.clip_id = c.id
+                   WHERE c.at >= ? AND t.text = ''""",
+                (since,),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]

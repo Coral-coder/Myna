@@ -52,6 +52,12 @@ class Config:
     # Received audio is kept this many days, so a different transcription
     # model can be tried on the same recordings. 0 = don't keep audio.
     keep_audio_days: int = 7
+    # Choose the transcription model by itself: while nothing is being
+    # recorded, try the candidates on the hardest recent recordings and keep
+    # the best. At most once in this many hours.
+    auto_tune: bool = True
+    tune_every_hours: int = 24
+    tuned_at: float = 0.0
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
