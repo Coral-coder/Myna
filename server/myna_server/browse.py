@@ -70,7 +70,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     for key, title in (("live", "Live"), ("models", "Models")):
         on = ' class="on"' if key == active else ""
         links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "live" else ""}>{title}</a>')
-    links.append('<a href="/">Status</a>')
+    links.append('<a href="/">Settings</a>')
     links.append(
         '<form method="post" action="/lock" style="margin:0"><button style="font:11px ui-monospace,monospace;'
         "letter-spacing:.1em;text-transform:uppercase;padding:2px 10px;border:1px solid #e9e9e6;color:#e9e9e6;"

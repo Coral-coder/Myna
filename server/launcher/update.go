@@ -86,6 +86,9 @@ func restart() error {
 	return nil
 }
 
+// updateNow asks for an update check right away (the Update now button).
+var updateNow = make(chan struct{}, 1)
+
 func updateLoop(ctx context.Context, st *status) {
 	for {
 		checkForUpdate(ctx, st)
@@ -93,6 +96,7 @@ func updateLoop(ctx context.Context, st *status) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Hour):
+		case <-updateNow:
 		}
 	}
 }
