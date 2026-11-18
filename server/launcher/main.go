@@ -48,6 +48,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	// This copy is the server. Any other copy still running is a window left
+	// from before an update, running the old exe: close it (it would block the
+	// next update) and open a fresh one in its place.
+	if closeOtherCopies() > 0 {
+		background = false
+	}
+	cleanOldCopies()
+
 	st := &status{Version: version, Setup: "Starting", Tailnet: "Starting"}
 	settings := loadSettings()
 	st.AllowLAN = settings.AllowLAN

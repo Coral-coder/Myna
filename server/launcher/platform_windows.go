@@ -5,6 +5,8 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -64,4 +66,37 @@ func openBrowser(url string) {
 	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	hideWindow(cmd)
 	_ = cmd.Start()
+}
+
+// closeOtherCopies ends every other running MynaServer.exe and returns how
+// many there were.
+func closeOtherCopies() int {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return 0
+	}
+	defer windows.CloseHandle(snapshot)
+	self := uint32(os.Getpid())
+	name := "mynaserver.exe"
+	if exe, err := os.Executable(); err == nil {
+		name = strings.ToLower(filepath.Base(exe))
+	}
+	closed := 0
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		if entry.ProcessID == self || strings.ToLower(windows.UTF16ToString(entry.ExeFile[:])) != name {
+			continue
+		}
+		handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, entry.ProcessID)
+		if err != nil {
+			continue
+		}
+		if windows.TerminateProcess(handle, 0) == nil {
+			_, _ = windows.WaitForSingleObject(handle, 3000)
+			closed++
+		}
+		windows.CloseHandle(handle)
+	}
+	return closed
 }

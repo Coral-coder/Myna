@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -50,7 +51,8 @@ func checkForUpdate(ctx context.Context, st *status) {
 	st.logf("Updating %s → %s.", version, latest.Version)
 	data, err := download(ctx, latest.URL, 400<<20)
 	if err != nil {
-		st.set(func(s *status) { s.Update = "Update download failed" })
+		st.set(func(s *status) { s.Update = "Update download failed: " + err.Error() })
+		st.logf("Update download failed: %v", err)
 		return
 	}
 	sum := sha256.Sum256(data)
@@ -59,8 +61,15 @@ func checkForUpdate(ctx context.Context, st *status) {
 		st.logf("Update rejected: the download did not match its checksum.")
 		return
 	}
-	if err := selfupdate.Apply(bytes.NewReader(data), selfupdate.Options{}); err != nil {
-		st.set(func(s *status) { s.Update = "Update could not be installed" })
+	// The running exe is moved aside under a name of its own each time. With
+	// one fixed name, a copy still in use (an open window keeps running the
+	// exe it was started from) blocked every update after the first.
+	options := selfupdate.Options{}
+	if exe, err := os.Executable(); err == nil {
+		options.OldSavePath = fmt.Sprintf("%s.old-%d", exe, time.Now().Unix())
+	}
+	if err := selfupdate.Apply(bytes.NewReader(data), options); err != nil {
+		st.set(func(s *status) { s.Update = "Update could not be installed: " + err.Error() })
 		st.logf("Update failed: %v", err)
 		return
 	}
@@ -84,6 +93,20 @@ func restart() error {
 	}
 	os.Exit(0)
 	return nil
+}
+
+// cleanOldCopies removes exes left behind by earlier updates. Any still in use
+// are skipped and go next time.
+func cleanOldCopies() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	olds, _ := filepath.Glob(exe + ".old-*")
+	olds = append(olds, filepath.Join(filepath.Dir(exe), "."+filepath.Base(exe)+".old"))
+	for _, old := range olds {
+		_ = os.Remove(old)
+	}
 }
 
 // updateNow asks for an update check right away (the Update now button).
