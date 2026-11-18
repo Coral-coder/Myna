@@ -12,10 +12,16 @@ dependencies = [
 
 [project.optional-dependencies]
 # Installed by the launcher on the home computer; not needed to run the tests.
+# Everything here is the CUDA 12 line, which faster-whisper (CTranslate2) and
+# the llama.cpp wheels both use. The NVIDIA wheels carry the CUDA DLLs, so no
+# separate CUDA install is needed — only a current NVIDIA driver.
 gpu = [
-    "faster-whisper>=1.1",
-    "nvidia-cublas-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
-    "nvidia-cudnn-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "faster-whisper>=1.2",
+    "llama-cpp-python>=0.3.30",
+    "huggingface-hub>=0.25",
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cudnn-cu12>=9,<10",
+    "nvidia-cuda-runtime-cu12>=12.9,<13",
 ]
 test = ["pytest>=8"]
 
@@ -28,3 +34,16 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["myna_server"]
+
+[tool.uv]
+# The server runs on Windows; Linux is kept resolvable for testing.
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'", "sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+# Prebuilt llama.cpp wheels with CUDA 12 support (PyPI only has the source).
+[[tool.uv.index]]
+name = "llama-cpp-cu124"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llama-cpp-cu124" }

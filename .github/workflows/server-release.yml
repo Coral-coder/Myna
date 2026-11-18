@@ -1,0 +1,73 @@
+name: Release Myna Server
+
+# Builds MynaServer.exe (the Windows home server) and publishes it, with a
+# manifest naming its version and checksum, to the `server-latest` release.
+# Running servers check that manifest and update themselves.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, bee-remember-login]
+    paths:
+      - server/**
+      - .github/workflows/server-release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: server-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/launcher/go.mod
+          cache-dependency-path: server/launcher/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test the worker
+        working-directory: server
+        run: |
+          pip install -q fastapi uvicorn httpx numpy pytest
+          python -m pytest -q tests
+
+      - name: Pack the worker into the launcher
+        working-directory: server
+        run: zip -q -r launcher/payload.zip pyproject.toml uv.lock myna_server -x '*__pycache__*'
+
+      - name: Test and build the launcher
+        working-directory: server/launcher
+        env:
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
+            -ldflags "-s -w -H=windowsgui -X main.version=${VERSION}" -o MynaServer.exe .
+          sha=$(sha256sum MynaServer.exe | cut -d' ' -f1)
+          mkdir -p ../../publish
+          mv MynaServer.exe ../../publish/
+          cat > ../../publish/manifest.json <<JSON
+          {"version": "${VERSION}", "url": "https://github.com/${{ github.repository }}/releases/download/server-latest/MynaServer.exe", "sha256": "${sha}"}
+          JSON
+          cat ../../publish/manifest.json
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: server-latest
+          name: Myna Server (latest)
+          body: The Windows home server for Myna. Download MynaServer.exe and run it; it keeps itself up to date from here.
+          files: |
+            publish/MynaServer.exe
+            publish/manifest.json

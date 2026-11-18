@@ -27,11 +27,12 @@ class Config:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     port: int = 8787
     # Speech-to-text model for faster-whisper.
-    stt_model: str = "large-v3-turbo"
-    # Language model: a Hugging Face GGUF repo and file for llama.cpp.
-    llm_repo: str = "bartowski/Qwen_Qwen3-14B-GGUF"
-    llm_file: str = "Qwen_Qwen3-14B-Q4_K_M.gguf"
-    llm_context: int = 16384
+    stt_model: str = "turbo"
+    # Language model: a Hugging Face GGUF repo and file for llama.cpp. Gemma 4
+    # 12B (about 7 GB) leaves room on a 12 GB card for Whisper beside it.
+    llm_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
+    llm_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
+    llm_context: int = 8192
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
