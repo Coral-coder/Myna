@@ -40,10 +40,11 @@ def _when(seconds, fmt: str) -> str:
 
 
 def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
-    links = ['<a href="/">Status</a>']
+    links = []
     for kind, title in TABS:
         on = ' class="on"' if kind == active else ""
         links.append(f'<a{on} href="/browse?kind={kind}">{title} {counts.get(kind, 0)}</a>')
+    links.append('<a href="/" style="margin-left:auto">Status</a>')
     search = (
         f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
         f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
