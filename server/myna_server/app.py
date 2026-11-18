@@ -177,12 +177,20 @@ def create_app(
         form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
         speech = form.get("speech", "").strip()
         repo, file = form.get("repo", "").strip(), form.get("file", "").strip()
+        import threading
+
+        # A chosen model starts downloading and loading straight away, in the
+        # background; the Models and Live pages show how far along it is.
         if speech and hasattr(transcriber, "use"):
             await run_in_threadpool(transcriber.use, speech)
             config.stt_model = speech
+            if hasattr(transcriber, "warm"):
+                threading.Thread(target=transcriber.warm, daemon=True).start()
         if repo and file.endswith(".gguf") and hasattr(writer, "use"):
             await run_in_threadpool(writer.use, repo, file)
             config.llm_repo, config.llm_file = repo, file
+            if hasattr(writer, "warm"):
+                threading.Thread(target=writer.warm, daemon=True).start()
         if getattr(app.state, "save_config", True):
             config.save()
         return RedirectResponse("/browse/models", status_code=303)

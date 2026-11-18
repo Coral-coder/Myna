@@ -102,13 +102,21 @@ class WhisperTranscriber:
             self.name = f"whisper-{model_name}"
             self.status = "Not loaded yet (loads on first use)"
 
+    def warm(self) -> None:
+        """Download and load the model now, so the first clip doesn't wait."""
+        with self._lock:
+            try:
+                self._load()
+            except Exception:
+                pass  # the reason is in `status`
+
     def _load(self):
         if self._model is not None:
             return self._model
         _add_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
 
-        self.status = "Loading (the first time, this downloads the model)…"
+        self.status = "Downloading and loading…"
         cache = str(data_dir() / "models" / "whisper")
         try:
             try:
@@ -145,56 +153,186 @@ class WhisperTranscriber:
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
+# llama.cpp's own Windows build, which picks the right code for the processor
+# it is running on. (The Python binding's prebuilt package used instructions
+# some Intel processors lack, and crashed with Windows error 0xc000001d.)
+LLAMA_BUILD = "b12400"
+LLAMA_ZIP = f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip"
+LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{LLAMA_ZIP}"
+LLAMA_SHA256 = "15eafe06f3ea80f78b80764e1994fd74b5ffa66b5cf0875a3bd9b3ee41a058ef"
+LLAMA_PORT = 8791
+
+
 class LlamaWriter:
-    """A GGUF language model run by llama.cpp inside this process."""
+    """A GGUF language model served by llama.cpp's `llama-server`, run beside
+    this process and spoken to over localhost."""
 
     def __init__(self, config: Config) -> None:
         self.name = config.llm_file.removesuffix(".gguf")
         self._config = config
-        self._model = None
+        self._process = None
         self._lock = threading.Lock()
-        self.status = "Not loaded yet (loads on first use)"
+        self.status = "Not loaded yet"
+
+    # -- switching and warming -------------------------------------------------
 
     def use(self, repo: str, file: str) -> None:
-        """Switch to another model; it downloads and loads on its next use."""
+        """Switch to another model. `warm` then downloads and loads it."""
         with self._lock:
-            self._model = None
+            self._stop()
             self._config.llm_repo = repo
             self._config.llm_file = file
             self.name = file.removesuffix(".gguf")
-            self.status = "Not loaded yet (loads on first use)"
+            self.status = "Selected; starting download…"
 
-    def _load(self):
-        if self._model is not None:
-            return self._model
-        _add_nvidia_dll_dirs()
-        from huggingface_hub import hf_hub_download
-        from llama_cpp import Llama
+    def warm(self) -> None:
+        """Download and load the model now, so the first request doesn't wait."""
+        with self._lock:
+            try:
+                self._ensure_running()
+            except Exception:
+                pass  # the reason is in `status`
 
-        self.status = "Loading (the first time, this downloads several GB)…"
+    def _stop(self) -> None:
+        if self._process is not None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=15)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+        self._process = None
+
+    # -- the runner ------------------------------------------------------------
+
+    def _runner(self) -> Path:
+        """llama-server.exe, downloaded once and checked against a known hash."""
+        folder = data_dir() / "llama" / LLAMA_BUILD
+        exe = folder / "llama-server.exe"
+        if exe.exists():
+            return exe
+        if sys.platform != "win32":
+            raise RuntimeError("The writing model runs on the Windows server only.")
+        import hashlib
+        import urllib.request
+        import zipfile
+
+        self.status = "Downloading the model runner (about 320 MB, once)…"
+        folder.mkdir(parents=True, exist_ok=True)
+        archive = folder / "download.zip"
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(LLAMA_URL, timeout=60) as reply, open(archive, "wb") as out:
+            while True:
+                block = reply.read(1 << 20)
+                if not block:
+                    break
+                digest.update(block)
+                out.write(block)
+        if digest.hexdigest() != LLAMA_SHA256:
+            archive.unlink(missing_ok=True)
+            raise RuntimeError("The model runner download didn't match its expected checksum.")
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(folder)
+        archive.unlink(missing_ok=True)
+        if not exe.exists():
+            raise RuntimeError("The model runner download didn't contain llama-server.exe.")
+        return exe
+
+    def _download_model(self) -> str:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_download, hf_hub_url
+
+        cache = data_dir() / "models" / "llm"
+        repo, file = self._config.llm_repo, self._config.llm_file
+        total = 0
         try:
-            path = hf_hub_download(
-                repo_id=self._config.llm_repo,
-                filename=self._config.llm_file,
-                cache_dir=str(data_dir() / "models" / "llm"),
+            total = get_hf_file_metadata(hf_hub_url(repo, file)).size or 0
+        except Exception:
+            pass
+        done = threading.Event()
+
+        def report() -> None:
+            while not done.wait(2):
+                sizes = [part.stat().st_size for part in cache.rglob("*.incomplete") if part.is_file()]
+                if sizes and total:
+                    self.status = f"Downloading {file}: {max(sizes) / 1e9:.1f} of {total / 1e9:.1f} GB"
+                elif sizes:
+                    self.status = f"Downloading {file}: {max(sizes) / 1e9:.1f} GB so far"
+
+        self.status = f"Downloading {file}…"
+        threading.Thread(target=report, daemon=True).start()
+        try:
+            return hf_hub_download(repo_id=repo, filename=file, cache_dir=str(cache))
+        finally:
+            done.set()
+
+    def _ensure_running(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+        self._process = None
+        try:
+            import subprocess
+            import urllib.request
+
+            exe = self._runner()
+            model = self._download_model()
+            _add_nvidia_dll_dirs()
+            self.status = "Loading onto the graphics card…"
+            if sys.platform == "win32":
+                # A runner left over from an earlier run would hold the port
+                # (and maybe another model); clear it out first.
+                subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            log = open(data_dir() / "llama-server.log", "w", encoding="utf-8", errors="replace")
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            self._process = subprocess.Popen(
+                [str(exe), "-m", model, "-ngl", "999", "-c", str(self._config.llm_context),
+                 "--host", "127.0.0.1", "--port", str(LLAMA_PORT)],
+                stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
             )
-            self._model = Llama(model_path=path, n_gpu_layers=-1, n_ctx=self._config.llm_context, verbose=False)
-            self.status = "Ready"
+            import time
+
+            deadline = time.time() + 600
+            while time.time() < deadline:
+                if self._process.poll() is not None:
+                    tail = (data_dir() / "llama-server.log").read_text(encoding="utf-8", errors="replace")[-400:]
+                    raise RuntimeError(f"The model runner stopped while loading. {tail.strip()}")
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{LLAMA_PORT}/health", timeout=3) as reply:
+                        if reply.status == 200:
+                            self.status = "Ready on the graphics card"
+                            return
+                except Exception:
+                    time.sleep(1)
+            raise RuntimeError("The model took too long to load.")
         except Exception as error:
+            self._stop()
             self.status = f"Couldn't load: {error}"
             raise
-        return self._model
 
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str:
+        import json
+        import urllib.request
+
         with self._lock:
-            model = self._load()
-            reply = model.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.3,
+            self._ensure_running()
+            body = json.dumps(
+                {
+                    "messages": [
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.3,
+                }
+            ).encode()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{LLAMA_PORT}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
             )
-            text = reply["choices"][0]["message"]["content"] or ""
+            with urllib.request.urlopen(request, timeout=600) as reply:
+                answer = json.loads(reply.read())
+            text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()

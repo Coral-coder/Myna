@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 
 import uvicorn
 
@@ -25,7 +26,15 @@ def main() -> None:
         print(config.token)
         return
     store = Store(data_dir() / "myna.db")
-    app = create_app(config, WhisperTranscriber(config), LlamaWriter(config), allow_lan=args.allow_lan, store=store)
+    transcriber, writer = WhisperTranscriber(config), LlamaWriter(config)
+    app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store)
+
+    # Get both models downloaded and loaded now rather than on the first request.
+    def warm() -> None:
+        transcriber.warm()
+        writer.warm()
+
+    threading.Thread(target=warm, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port or config.port, log_level="info")
 
 
