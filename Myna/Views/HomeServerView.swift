@@ -5,6 +5,7 @@ import SwiftUI
 struct HomeServerView: View {
     @ObservedObject private var server = HomeServer.shared
     @ObservedObject private var sync = HomeSync.shared
+    @ObservedObject private var tailnet = TailnetLink.shared
     @State private var link = ""
     @State private var scanning = false
 
@@ -38,6 +39,7 @@ struct HomeServerView: View {
             if !server.lastRoute.isEmpty { row("Last job", server.lastRoute) }
             if let error = server.lastError { row("Last problem", error) }
             row("Home database", databaseText)
+            if server.hasPrivateAddress { awayFromHome }
 
             Toggle(isOn: $server.enabled) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -55,6 +57,25 @@ struct HomeServerView: View {
                 pill("Check now") { Task { await server.check(); await sync.syncNow() } }
                 pill("Unpair") { server.unpair() }
                 Spacer()
+            }
+        }
+    }
+
+    /// Reaching the computer away from home, over Tailscale built into Myna.
+    @ViewBuilder private var awayFromHome: some View {
+        switch tailnet.state {
+        case .off:
+            row("Away from home", "Off")
+        case .starting:
+            row("Away from home", "Starting…")
+        case .connected:
+            row("Away from home", "Connected over your private network")
+        case .failed(let message):
+            row("Away from home", "Couldn't start: \(message)")
+        case .needsSignIn:
+            VStack(alignment: .leading, spacing: 8) {
+                row("Away from home", "Needs a one-time Tailscale sign-in — use the same account as on the computer. It opens in your browser; come back here when it's done.")
+                pill("Sign in to Tailscale") { tailnet.signIn() }
             }
         }
     }

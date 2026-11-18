@@ -58,7 +58,10 @@ final class HomeServer: ObservableObject {
                 isPaired = true
             }
         }
-        if isPaired { Task { await check() } }
+        if isPaired {
+            startPrivateNetworkIfNeeded()
+            Task { await check() }
+        }
     }
 
     var address: String { baseURL?.absoluteString ?? "" }
@@ -96,6 +99,7 @@ final class HomeServer: ObservableObject {
         isPaired = true
         retryAfter = .distantPast
         lastError = nil
+        startPrivateNetworkIfNeeded()
         Task { await check() }
         return true
     }
@@ -110,6 +114,7 @@ final class HomeServer: ObservableObject {
         latencyMs = nil
         UserDefaults.standard.removeObject(forKey: Self.urlKey)
         Self.writeToken("")
+        TailnetLink.shared.stop()
     }
 
     // MARK: - Talking to the server
@@ -230,18 +235,38 @@ final class HomeServer: ObservableObject {
         request.timeoutInterval = timeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        let (data, status) = try await perform(request, body: body)
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        if !(200..<300).contains(status) {
+            throw ServerError(message: (json["detail"] as? String) ?? "The server answered with an error (\(status)).")
+        }
+        return json
+    }
+
+    /// Carry one request: over the private network (Tailscale inside Myna) for
+    /// private-network addresses, directly for the home Wi-Fi address.
+    private func perform(_ request: URLRequest, body: Data?) async throws -> (Data, Int) {
+        if let host = request.url?.host, TailnetLink.isPrivateNetwork(host) {
+            return try await TailnetLink.shared.send(request, body: body)
+        }
         let reply: (Data, URLResponse)
         if let body {
             reply = try await URLSession.shared.upload(for: request, from: body)
         } else {
             reply = try await URLSession.shared.data(for: request)
         }
-        let json = (try? JSONSerialization.jsonObject(with: reply.0) as? [String: Any]) ?? [:]
-        if let http = reply.1 as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ServerError(message: (json["detail"] as? String) ?? "The server answered with an error (\(http.statusCode)).")
-        }
-        return json
+        return (reply.0, (reply.1 as? HTTPURLResponse)?.statusCode ?? 0)
     }
+
+    /// Whether any paired address is on the private network — if so, Myna's
+    /// built-in Tailscale is started.
+    private func startPrivateNetworkIfNeeded() {
+        if addresses.contains(where: { TailnetLink.isPrivateNetwork($0.host ?? "") }) {
+            TailnetLink.shared.start()
+        }
+    }
+
+    var hasPrivateAddress: Bool { addresses.contains { TailnetLink.isPrivateNetwork($0.host ?? "") } }
 
     /// One exchange with the home database: sends changes, returns the reply.
     func syncExchange(_ body: Data) async throws -> Data {
@@ -251,9 +276,9 @@ final class HomeServer: ObservableObject {
         request.timeoutInterval = 90
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ServerError(message: "The home database answered with an error (\(http.statusCode)).")
+        let (data, status) = try await perform(request, body: body)
+        if !(200..<300).contains(status) {
+            throw ServerError(message: "The home database answered with an error (\(status)).")
         }
         return data
     }
