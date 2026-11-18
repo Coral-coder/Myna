@@ -80,6 +80,8 @@ final class AppServices {
         TranscriptionLab.shared.attach(listener: listener, container: container)
         HomeSync.shared.start(container: container)
         MusicSpotter.shared.attach(container: container)
+        // When the home server comes back, write up what was waiting for it.
+        HomeServer.shared.onBack = { [pilot] in pilot.drainQueue() }
         TranscriptSorter.shared.start(container: container) { [modelManager] instructions, prompt in
             try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 80)
         }
@@ -139,7 +141,7 @@ final class AppServices {
             }
         }
         if let fallback = try? ModelContainer(
-            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self,
+            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self, HeardSong.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         ) {
             CrashReporter.log("ModelContainer: in-memory fallback (on-disk store unavailable this launch).")

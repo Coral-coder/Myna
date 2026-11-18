@@ -57,12 +57,12 @@ struct HomeServerView: View {
 
             Toggle(isOn: $serverOnly) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Don't transcribe on this iPhone")
+                    Text("Don't use this iPhone for transcription or writing")
                         .font(.system(size: 15, weight: .regular))
                         .foregroundStyle(MynaTheme.ink)
                     Text(lab.heldCount > 0
                          ? "\(lab.heldCount) recordings waiting for the home server."
-                         : "While the server can't be reached, audio is only recorded, then sent to the server when it's back.")
+                         : "Saves battery. While the server can't be reached, audio is only recorded and notes wait; the server does it all when it's back.")
                         .font(.system(size: 12, weight: .light))
                         .foregroundStyle(MynaTheme.muted)
                 }

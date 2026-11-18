@@ -210,6 +210,12 @@ final class ModelManager: ObservableObject {
                 return answer
             }
         }
+        // "Don't use this iPhone": leave writing for the home server. The
+        // caller keeps the work queued and it is done when the server is back.
+        if UserDefaults.standard.bool(forKey: TranscriptionLab.serverOnlyKey),
+           HomeServer.shared.isPaired, HomeServer.shared.enabled {
+            throw MynaModelError.waitingForServer
+        }
         HomeServer.shared.noteLocal("writing")
         let onScreen = UIApplication.shared.applicationState == .active
         let appleFirst = activeModel?.backend == .appleFoundation
@@ -317,12 +323,15 @@ final class ModelManager: ObservableObject {
 enum MynaModelError: LocalizedError {
     case noModelInstalled
     case needsForeground
+    case waitingForServer
     case appleIntelligenceUnavailable
 
     var errorDescription: String? {
         switch self {
         case .noModelInstalled:
             return "No AI model is installed yet. Visit the Neural Core to download one."
+        case .waitingForServer:
+            return "Waiting for the home server (this iPhone is set not to do the work itself)."
         case .needsForeground:
             return "The on-device model needs Myna on screen to run."
         case .appleIntelligenceUnavailable:

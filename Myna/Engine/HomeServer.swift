@@ -39,6 +39,8 @@ final class HomeServer: ObservableObject {
     /// outage costs one timeout, not one per sentence.
     private var retryAfter: Date = .distantPast
     private var recheck: Task<Void, Never>?
+    /// Called when the server starts answering after not doing so.
+    var onBack: (() -> Void)?
 
     struct ServerError: LocalizedError {
         let message: String
@@ -140,7 +142,9 @@ final class HomeServer: ObservableObject {
             }
             guard let found else { throw ServerError(message: "The home server didn't answer.") }
             baseURL = found.url
+            let wasAway = reachable != true
             reachable = true
+            if wasAway { onBack?() }
             latencyMs = found.ms
             info = found.info
             retryAfter = .distantPast
