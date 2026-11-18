@@ -677,6 +677,8 @@ final class TranscriptionLab: ObservableObject {
             }
             self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
             self.liveListener?.deliverExternalText(cleaned)
+            // Let the assistant hear it: its name, or a moment to chime in.
+            NotificationCenter.default.post(name: .mynaHeardLine, object: nil, userInfo: ["text": cleaned])
         }
     }
 

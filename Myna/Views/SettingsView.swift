@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
     @AppStorage("myna.micEnabled") private var micEnabled = true
     @AppStorage("myna.wakeWord") private var wakeWord = true
+    @AppStorage("myna.chimeIn") private var chimeIn = true
     @AppStorage("myna.speakReplies") private var speakReplies = true
     @AppStorage("myna.autoCapture") private var autoCapture = true
     @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
@@ -234,6 +235,14 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Answer to a wake word").settingsLabel()
                     Text("Say the wake word, then your request — add to lists, set reminders, schedule things or ask a question.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $chimeIn) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Chime in when it can help").settingsLabel()
+                    Text("Without being asked, speak up briefly when someone asks for a fact nobody present knows. At most once every minute and a half.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)
