@@ -197,7 +197,7 @@ final class BeeAudioDecoder {
         cfgObjectType = frame.objectType
         sampleRate = sr
         channels = ch
-        aacOutputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: AVAudioChannelCount(ch), interleaved: true)
+        aacOutputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: AVAudioChannelCount(ch), interleaved: ch != 1)
         if let f = aacOutputFormat { outputFormat = f }
         unavailableReason = nil
     }
@@ -222,7 +222,10 @@ final class BeeAudioDecoder {
         let abl = output.mutableAudioBufferList
         abl.pointee.mBuffers.mDataByteSize = output.frameCapacity * UInt32(4 * cfgChannels)
 
-        var packets = output.frameCapacity
+        // Ask for exactly one access unit's worth of PCM: one AAC packet in,
+        // 1024 frames out, so the converter normally never needs to call the
+        // input proc a second time.
+        var packets: UInt32 = framesPerPacket
         _ = withExtendedLifetime(ctx) {
             AudioConverterFillComplexBuffer(converter, BeeAudioDecoder.aacInputProc, ctxPtr, &packets, abl, nil)
         }

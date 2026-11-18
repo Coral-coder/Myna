@@ -200,7 +200,7 @@ final class SpeechListener: NSObject, ObservableObject {
             // Nothing to listen to (mic off, no bracelet). Do not grab any
             // microphone — this is what turning "Use the iPhone mic" off must mean.
             wantsToListen = false
-            lastError = nil
+            lastError = "The iPhone mic is off. Turn it on in Backstage, or connect the bracelet."
             return
         }
 
@@ -373,6 +373,14 @@ final class SpeechListener: NSObject, ObservableObject {
         externalSourceActive = false
         usingExternalSource = false
         audioLevel = 0
+        // The bracelet stopped. If the user allows the iPhone mic, hand listening
+        // back to it (beginExternalSource closed it). With the mic off, the
+        // session just stays up, mic-free, waiting for the bracelet to resume.
+        let micEnabled = UserDefaults.standard.object(forKey: "myna.micEnabled") as? Bool ?? true
+        if isListening, micEnabled, !audioEngine.isRunning {
+            stopForInterruption()
+            start()
+        }
     }
 
     // MARK: - Recognition

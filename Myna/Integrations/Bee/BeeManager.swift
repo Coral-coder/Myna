@@ -784,7 +784,9 @@ final class BeeManager: ObservableObject {
         packetsDecoded += buffers.count
         audioActive = true
         lastAudioAt = .now
-        if !feedingSpeech { beginSpeechFeed() }
+        // (Re)start the feed if it isn't running — including when recognition was
+        // stopped underneath us (mic toggled off, an interruption).
+        if !feedingSpeech || listener?.isListening != true { beginSpeechFeed() }
         for pcm in buffers { listener?.feedExternalAudio(pcm) }
     }
 
@@ -831,7 +833,12 @@ final class BeeManager: ObservableObject {
         feedingSpeech = true
         listener?.beginExternalSource()
         // Make sure recognition is actually running to receive the buffers.
-        if let pilot, pilot.phase == .idle { pilot.startListening() }
+        if let pilot, pilot.phase == .idle {
+            pilot.startListening()
+        } else if listener?.isListening != true {
+            // The pilot thinks it's listening but the recognizer was stopped.
+            listener?.start()
+        }
     }
 
     private func endSpeechFeed() {
