@@ -222,6 +222,8 @@ final class BeeManager: ObservableObject {
     /// 1 = recording, 0 = mute, as Bee's app sends it.
     private var lastRecordingSet: Date = .distantPast
     func setRecording(_ on: Bool) {
+        // Asked for from Myna's own button: that is the wearer's choice too.
+        if on { UserDefaults.standard.set(false, forKey: Self.userMutedKey) }
         guard isReadyForControl, Date.now.timeIntervalSince(lastRecordingSet) > 1.5 else { return }
         lastRecordingSet = .now
         central.writeControl(BeeCommand.setDeviceState.frame(payload: [on ? 0x01 : 0x00]))
@@ -701,6 +703,17 @@ final class BeeManager: ObservableObject {
         if deviceState != state || self.codec != codec {
             log("Bracelet \(state.description), codec \(codec.description).")
         }
+        // Mute is the wearer's control. If the bracelet goes to mute while
+        // connected, that was them pressing the button, and it stays muted
+        // until they unmute it (on the bracelet or with the button in Myna).
+        // Remembered across reconnects and app updates.
+        let previous = deviceState
+        if state == .mute, let previous, previous != .mute {
+            UserDefaults.standard.set(true, forKey: Self.userMutedKey)
+            log("Bracelet muted by you. Myna will leave it muted.")
+        } else if state == .recording {
+            UserDefaults.standard.set(false, forKey: Self.userMutedKey)
+        }
         deviceState = state
         if self.codec != codec {
             self.codec = codec
@@ -713,17 +726,23 @@ final class BeeManager: ObservableObject {
             // Start the bracelet recording ourselves so Myna doesn't need the
             // Bee app to "unlock" it. Once per connection; the rate limiter in
             // setRecording keeps the device's own VAD toggles from spamming.
-            // The bracelet is meant to record continuously: whenever it reports
-            // anything but recording (muted, or dozing on its own VAD), put it
-            // back. State events only arrive on a change and setRecording is
-            // rate-limited, so this can't spin.
-            if state != .recording, state != .powerOff {
+            // The bracelet is meant to record continuously, so when it dozes on
+            // its own voice detection it is woken again. Mute is different: a
+            // mute the wearer chose is never undone here. (A bracelet found
+            // muted that the wearer didn't mute, e.g. fresh from the Bee app,
+            // is started once.) State events only arrive on a change and
+            // setRecording is rate-limited, so this can't spin.
+            let mutedByWearer = state == .mute && UserDefaults.standard.bool(forKey: Self.userMutedKey)
+            if state != .recording, state != .powerOff, !mutedByWearer {
                 if !autoRecordTried { log("Asking the bracelet to start recording…") }
                 autoRecordTried = true
                 setRecording(true)
             }
         }
     }
+
+    /// Whether the wearer muted the bracelet themselves.
+    private static let userMutedKey = "myna.bee.userMuted"
 
     /// Reset when a connection ends so the next one tries auto-record again.
     private var autoRecordTried = false
