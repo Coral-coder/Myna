@@ -209,3 +209,18 @@ def test_heard_music_lists_and_exports(client):
     page = client.get("/browse?kind=song", headers=AUTH).text
     assert "Blue in Green" in page and "music.apple.com/x" in page and "open.spotify.com/search/" in page
     assert client.get("/browse/playlist", headers=AUTH).text == "Blue in Green - Miles Davis"
+
+
+def test_invented_phrases_from_quiet_audio_are_left_out():
+    from types import SimpleNamespace as S
+
+    from myna_server.engines import keep_segments
+
+    segments = [
+        S(text=" Thank you.", no_speech_prob=0.5, avg_logprob=-0.9),           # made up from near-silence
+        S(text=" Thanks for watching!", no_speech_prob=0.1, avg_logprob=-0.2),  # never real here
+        S(text=" Thank you.", no_speech_prob=0.02, avg_logprob=-0.15),         # someone really said it
+        S(text=" can you pass the salt", no_speech_prob=0.3, avg_logprob=-0.8),  # quiet but real speech
+        S(text=" mm blah", no_speech_prob=0.9, avg_logprob=-1.4),              # noise
+    ]
+    assert keep_segments(segments) == ["Thank you.", "can you pass the salt"]

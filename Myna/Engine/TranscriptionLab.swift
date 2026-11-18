@@ -667,10 +667,20 @@ final class TranscriptionLab: ObservableObject {
             self.liveStatus = String(format: "%@ · %.1f s of audio in %.1f s", usedName, seconds, took)
             let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.isEmpty else { return }
+            // Whisper-family engines make up stock phrases ("Thank you.") from
+            // near-silence. Leave those out when the clip had almost no sound.
+            if voicedSeconds < 0.5, Self.inventedFromSilence.contains(
+                cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))) {
+                return
+            }
             self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
             self.liveListener?.deliverExternalText(cleaned)
         }
     }
+
+    private static let inventedFromSilence: Set<String> = [
+        "thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "bye bye", "okay",
+    ]
 
     // MARK: - Audio held for the home server
 

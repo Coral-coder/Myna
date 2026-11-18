@@ -43,6 +43,46 @@ def _add_nvidia_dll_dirs() -> None:
             os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
+# Whisper invents these when it is given near-silence or noise.
+_ALWAYS_INVENTED = (
+    "thanks for watching",
+    "thank you for watching",
+    "subtitles by",
+    "please subscribe",
+    "like and subscribe",
+    "see you in the next video",
+)
+_INVENTED_WHEN_UNSURE = {"thank you", "thanks", "you", "bye", "bye bye", "okay", "so", "i", "the", "oh", "hmm", ""}
+
+
+def _bare(text: str) -> str:
+    return re.sub(r"[^a-z' ]+", "", text.lower()).strip()
+
+
+def keep_segments(segments) -> list[str]:
+    """The text of the segments that are really speech.
+
+    A segment is left out when Whisper itself rates it as probably not speech,
+    or when it is one of the stock phrases Whisper makes up from quiet audio and
+    Whisper wasn't confident about it. Quiet real speech scores as speech and is
+    kept.
+    """
+    kept = []
+    for segment in segments:
+        text = segment.text.strip()
+        bare = _bare(text)
+        no_speech = getattr(segment, "no_speech_prob", 0.0) or 0.0
+        confidence = getattr(segment, "avg_logprob", 0.0) or 0.0
+        if any(phrase in bare for phrase in _ALWAYS_INVENTED):
+            continue
+        if no_speech > 0.6 and confidence < -0.7:
+            continue
+        if bare in _INVENTED_WHEN_UNSURE and (no_speech > 0.25 or confidence < -0.6):
+            continue
+        kept.append(text)
+    return kept
+
+
 class WhisperTranscriber:
     """faster-whisper on the graphics card, falling back to the processor."""
 
@@ -99,7 +139,7 @@ class WhisperTranscriber:
                 vad_parameters={"threshold": 0.15, "min_silence_duration_ms": 600, "speech_pad_ms": 400},
                 condition_on_previous_text=False,
             )
-            return " ".join(segment.text.strip() for segment in segments).strip()
+            return " ".join(keep_segments(segments)).strip()
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
