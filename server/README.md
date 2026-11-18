@@ -12,7 +12,9 @@ does the work itself whenever it doesn't.
   - runs and restarts the worker that does the transcription and writing;
   - joins your private Tailscale network by itself — no Tailscale app, no
     administrator rights. You sign in once in the browser;
-  - shows a status page at <http://127.0.0.1:8788> with the pairing code;
+  - opens its own window with the status and the pairing code to scan with
+    Myna (closing the window leaves the server running; open the exe again to
+    see it);
   - starts when you sign in to Windows;
   - checks GitHub every six hours and replaces itself when a new release is out.
 - `myna_server/` is the worker: a small API (`/health`, `/v1/transcribe`,

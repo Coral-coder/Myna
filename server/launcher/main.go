@@ -1,7 +1,8 @@
 // MynaServer runs Myna's home server on this computer: it sets up and
 // supervises the Python worker that transcribes and writes, joins your private
-// Tailscale network without the Tailscale app, shows a status page for
-// pairing, starts with Windows, and updates itself from GitHub releases.
+// Tailscale network without the Tailscale app, shows its own window for
+// sign-in and pairing, starts with Windows, and updates itself from GitHub
+// releases.
 package main
 
 import (
@@ -13,18 +14,25 @@ import (
 )
 
 func main() {
-	background := false
+	background, windowOnly := false, false
 	for _, arg := range os.Args[1:] {
-		if arg == "--background" {
+		switch arg {
+		case "--background":
 			background = true
+		case "--window":
+			windowOnly = true
 		}
 	}
+	if windowOnly {
+		runWindow()
+		return
+	}
 
-	// One copy at a time. If the status page port is taken, another copy is
-	// already running: just show its page.
+	// One server at a time. If the status port is taken, the server is already
+	// running, so this copy just becomes its window.
 	listener, err := net.Listen("tcp", "127.0.0.1:"+uiPort)
 	if err != nil {
-		openBrowser(statusURL)
+		runWindow()
 		return
 	}
 
@@ -61,7 +69,7 @@ func main() {
 	}()
 
 	if !background {
-		openBrowser(statusURL)
+		showWindow()
 	}
 	<-ctx.Done()
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -24,8 +25,8 @@ func qrImage(text string) string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 }
 
-// statusPage is the server's only window: a page in your browser, served only
-// to this computer.
+// statusPage is what the server's window shows. It is served only to this
+// computer.
 func statusPage(st *status, token string, settings *launcherSettings) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/lan", func(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +37,27 @@ func statusPage(st *status, token string, settings *launcherSettings) http.Handl
 		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
+	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
+		snap, _ := st.snapshot()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version": snap.Version, "worker_up": snap.WorkerUp, "setup": snap.Setup,
+			"tailnet": snap.Tailnet, "login_url": snap.LoginURL, "update": snap.Update,
+		})
+	})
+	// Sign-in happens in the default browser: Google and other sign-in
+	// providers refuse to run inside an embedded window.
+	mux.HandleFunc("/signin", func(w http.ResponseWriter, r *http.Request) {
+		if snap, _ := st.snapshot(); snap.LoginURL != "" {
+			openBrowser(snap.LoginURL)
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		snap, lines := st.snapshot()
 		var b strings.Builder
 		b.WriteString(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="4"><title>Myna Server</title>
@@ -57,7 +78,7 @@ code{word-break:break-all;font-size:12px}</style>`)
 		row("Transcription and writing", worker)
 		row("Private network", snap.Tailnet)
 		if snap.LoginURL != "" {
-			fmt.Fprintf(&b, `<div class="v"><a href="%s" target="_blank">Sign in to Tailscale to connect this computer</a> (once)</div>`, html.EscapeString(snap.LoginURL))
+			fmt.Fprintf(&b, `<div class="v">This computer and your iPhone find each other over Tailscale, a private encrypted network. It needs a free account, signed in once here and once on the phone.</div><div class="v" style="margin-top:8px"><a href="/signin">Sign in to Tailscale</a> (opens in your browser; this window updates by itself when done)</div>`)
 		}
 		if snap.Update != "" {
 			row("Updates", snap.Update)

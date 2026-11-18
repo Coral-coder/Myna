@@ -56,7 +56,7 @@ func runTailnet(ctx context.Context, st *status) {
 				st.set(func(s *status) { s.LoginURL = link; s.Tailnet = "Sign in needed" })
 				if !opened {
 					opened = true
-					openBrowser(statusURL)
+					showWindow()
 				}
 			}
 			if notice.State != nil {
