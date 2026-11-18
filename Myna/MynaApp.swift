@@ -27,7 +27,10 @@ struct MynaApp: App {
             switch phase {
             case .active:
                 services.becameActive()
+            case .inactive:
+                services.modelManager.stopGenerationForBackground()
             case .background:
+                services.modelManager.stopGenerationForBackground()
                 services.enteredBackground()
             default:
                 break

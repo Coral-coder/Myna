@@ -250,8 +250,11 @@ final class ConversationPilot: ObservableObject {
                 enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 banner = "Heard a conversation — it'll become a note once a model is installed."
             } catch {
-                if UIApplication.shared.applicationState == .background {
-                    // e.g. Apple Intelligence's background budget ran out — try again later.
+                var needsScreen = false
+                if case MynaModelError.needsForeground = error { needsScreen = true }
+                if needsScreen || UIApplication.shared.applicationState != .active {
+                    // The model was stopped because Myna left the screen (or Apple
+                    // Intelligence's background budget ran out) — try again later.
                     enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 } else {
                     fileTranscriptOnly(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, error: error)

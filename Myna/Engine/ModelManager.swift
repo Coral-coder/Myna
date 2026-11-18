@@ -198,7 +198,10 @@ final class ModelManager: ObservableObject {
     /// locked phone falls back to Apple Intelligence when it's available and
     /// otherwise throws `needsForeground` — callers queue the work for later.
     func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
-        let inBackground = UIApplication.shared.applicationState == .background
+        // Anything but fully on screen counts: a locking phone is "inactive" for
+        // a moment before "background", and a generation begun then is already
+        // too late to finish on the GPU.
+        let inBackground = UIApplication.shared.applicationState != .active
         let useApple = activeModel?.backend == .appleFoundation
             || (inBackground && AppleIntelligenceEngine.isAvailable)
             || (!hasMLXModelInstalled && AppleIntelligenceEngine.isAvailable)
@@ -215,7 +218,39 @@ final class ModelManager: ObservableObject {
         let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
         // Qwen 3's chat template honours a /no_think switch; skip the musing.
         let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
-        return try await session.respond(to: finalPrompt)
+        // Run it as a task we can stop. If Myna leaves the screen mid-answer, iOS
+        // revokes the GPU and MLX aborts the whole app from a Metal callback (an
+        // uncatchable C++ exception — the crash in build 84). Stopping at the
+        // next token and reporting "needs foreground" lets callers queue the
+        // work instead.
+        stoppedForBackground = false
+        let work = Task { try await session.respond(to: finalPrompt) }
+        mlxWork = work
+        defer { mlxWork = nil }
+        let answer: String
+        do {
+            answer = try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+            }
+        } catch {
+            if stoppedForBackground { throw MynaModelError.needsForeground }
+            throw error
+        }
+        if stoppedForBackground { throw MynaModelError.needsForeground }
+        return answer
+    }
+
+    private var mlxWork: Task<String, Error>?
+    private var stoppedForBackground = false
+
+    /// Myna is leaving the screen: stop any MLX generation now, before iOS
+    /// takes the GPU away.
+    func stopGenerationForBackground() {
+        guard let mlxWork else { return }
+        stoppedForBackground = true
+        mlxWork.cancel()
     }
 
     /// MLX generations in flight; the model is only released when idle.
