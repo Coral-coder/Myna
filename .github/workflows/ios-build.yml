@@ -5,6 +5,10 @@ name: iOS build
 
 on:
   pull_request:
+    # Server-only changes don't touch the app; don't spend a Mac runner on them.
+    paths-ignore:
+      - server/**
+      - .github/workflows/server-release.yml
   workflow_dispatch:
 
 permissions:
