@@ -17,7 +17,7 @@ dependencies = [
 # separate CUDA install is needed — only a current NVIDIA driver.
 gpu = [
     "faster-whisper>=1.2",
-    "llama-cpp-python>=0.3.30",
+    "sherpa-onnx>=1.12",
     "huggingface-hub>=0.25",
     "nvidia-cublas-cu12==12.9.2.10",
     "nvidia-cudnn-cu12>=9,<10",
@@ -38,12 +38,3 @@ packages = ["myna_server"]
 [tool.uv]
 # The server runs on Windows; Linux is kept resolvable for testing.
 environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'", "sys_platform == 'linux' and platform_machine == 'x86_64'"]
-
-# Prebuilt llama.cpp wheels with CUDA 12 support (PyPI only has the source).
-[[tool.uv.index]]
-name = "llama-cpp-cu124"
-url = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
-explicit = true
-
-[tool.uv.sources]
-llama-cpp-python = { index = "llama-cpp-cu124" }

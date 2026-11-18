@@ -626,11 +626,13 @@ final class TranscriptionLab: ObservableObject {
             var text = ""
             var usedName = ""
             var lastError = ""
+            var bySpeaker: [HomeServer.Segment] = []
             // The home computer first, when it's paired and answering. If it
             // fails, the same audio falls through to the phone's own engines.
             if HomeServer.shared.shouldTry {
                 do {
                     text = try await HomeServer.shared.transcribe(wav: LabWav.data(samples: chunk, sampleRate: rate), audioSeconds: seconds)
+                    bySpeaker = HomeServer.shared.lastSegments
                     usedName = "Home server"
                 } catch {
                     lastError = "Home server: \(error.localizedDescription)"
@@ -656,7 +658,10 @@ final class TranscriptionLab: ObservableObject {
                     lastError = "\(engine.name) failed: \(error.localizedDescription)"
                 }
             }
-            let voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate)
+            // The server already told the speakers apart; otherwise take one
+            // voice print for the whole clip here.
+            var voice: [Float]?
+            if bySpeaker.isEmpty { voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate) }
             guard let self else { return }
             self.livePending = max(0, self.livePending - 1)
             // The finished line replaces the in-progress preview of it.
@@ -675,7 +680,16 @@ final class TranscriptionLab: ObservableObject {
                 cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))) {
                 return
             }
-            self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
+            if bySpeaker.isEmpty {
+                self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
+            } else {
+                // One transcript line per speaker's turn, each with that
+                // speaker's voice print, at the time it was said.
+                for piece in bySpeaker {
+                    self.record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,
+                                engine: usedName, voicePrint: piece.voice.count >= 64 ? piece.voice : nil)
+                }
+            }
             self.liveListener?.deliverExternalText(cleaned)
             // Let the assistant hear it: its name, or a moment to chime in.
             NotificationCenter.default.post(name: .mynaHeardLine, object: nil, userInfo: ["text": cleaned])
@@ -759,10 +773,16 @@ final class TranscriptionLab: ObservableObject {
             guard let text = try? await HomeServer.shared.transcribe(wav: wav, audioSeconds: seconds) else {
                 break  // the server went away again; keep the rest for next time
             }
+            let bySpeaker = HomeServer.shared.lastSegments
             try? FileManager.default.removeItem(at: file)
             heldCount = max(0, heldCount - 1)
             let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleaned.isEmpty {
+            if !bySpeaker.isEmpty {
+                for piece in bySpeaker {
+                    record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,
+                           engine: "Home server", voicePrint: piece.voice.count >= 64 ? piece.voice : nil)
+                }
+            } else if !cleaned.isEmpty {
                 let voice = await VoiceID.shared.embedding(samples: samples, sampleRate: rate)
                 record(text: cleaned, heardAt: heardAt, duration: voiced, engine: "Home server", voicePrint: voice)
             }

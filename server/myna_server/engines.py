@@ -83,11 +83,45 @@ def keep_segments(segments) -> list[str]:
     return kept
 
 
+def _speech_name(model: str) -> str:
+    return model.removeprefix("sherpa:") if model.startswith("sherpa:") else f"whisper-{model}"
+
+
+def load_sherpa(key: str, report=lambda text: None):
+    """Download (once) and load one of the non-Whisper transcribers."""
+    import sherpa_onnx
+    from huggingface_hub import hf_hub_download
+
+    from .catalog import SHERPA
+
+    family, repo, files, _ = SHERPA[key]
+    cache = str(data_dir() / "models" / "sherpa")
+    paths = []
+    for index, name in enumerate(files):
+        report(f"Downloading {key} ({index + 1} of {len(files)})…")
+        paths.append(hf_hub_download(repo_id=repo, filename=name, cache_dir=cache))
+    report("Loading…")
+    threads = max(2, min(8, (os.cpu_count() or 4) // 2))
+    make = sherpa_onnx.OfflineRecognizer
+    if family in ("nemo_transducer", "transducer"):
+        return make.from_transducer(encoder=paths[0], decoder=paths[1], joiner=paths[2], tokens=paths[3],
+                                    num_threads=threads, model_type=family)
+    if family == "canary":
+        return make.from_nemo_canary(encoder=paths[0], decoder=paths[1], tokens=paths[2], num_threads=threads)
+    if family == "moonshine":
+        return make.from_moonshine(preprocessor=paths[0], encoder=paths[1], uncached_decoder=paths[2],
+                                   cached_decoder=paths[3], tokens=paths[4], num_threads=threads)
+    if family == "sense_voice":
+        return make.from_sense_voice(model=paths[0], tokens=paths[1], num_threads=threads, language="auto", use_itn=True)
+    raise RuntimeError(f"Unknown transcriber family: {family}")
+
+
 class WhisperTranscriber:
-    """faster-whisper on the graphics card, falling back to the processor."""
+    """The chosen transcriber: a Whisper size on faster-whisper (graphics card,
+    falling back to the processor), or one of the sherpa-onnx models."""
 
     def __init__(self, config: Config) -> None:
-        self.name = f"whisper-{config.stt_model}"
+        self.name = _speech_name(config.stt_model)
         self._model_name = config.stt_model
         self._config = config
         self._model = None
@@ -100,7 +134,7 @@ class WhisperTranscriber:
         with self._lock:
             self._model = None
             self._model_name = model_name
-            self.name = f"whisper-{model_name}"
+            self.name = _speech_name(model_name)
             self.status = "Not loaded yet (loads on first use)"
 
     def reload(self) -> None:
@@ -119,6 +153,18 @@ class WhisperTranscriber:
 
     def _load(self):
         if self._model is not None:
+            return self._model
+        if self._model_name.startswith("sherpa:"):
+            def report(text: str) -> None:
+                self.status = text
+
+            try:
+                self._model = load_sherpa(self._model_name.removeprefix("sherpa:"), report)
+                self.device = "cpu"
+                self.status = "Ready on the processor"
+            except Exception as error:
+                self.status = f"Couldn't load: {error}"
+                raise
             return self._model
         _add_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
@@ -145,6 +191,19 @@ class WhisperTranscriber:
     def transcribe(self, samples: np.ndarray) -> str:
         with self._lock:
             model = self._load()
+            if self._model_name.startswith("sherpa:"):
+                from .catalog import SHERPA
+
+                step = int(SHERPA[self._model_name.removeprefix("sherpa:")][3] * 16000)
+                pieces = []
+                for start in range(0, len(samples), step):
+                    stream = model.create_stream()
+                    stream.accept_waveform(16000, samples[start : start + step])
+                    model.decode_stream(stream)
+                    text = stream.result.text.strip()
+                    if text:
+                        pieces.append(text)
+                return " ".join(pieces)
             segments, _ = model.transcribe(
                 samples,
                 language="en",
@@ -359,3 +418,102 @@ class LlamaWriter:
                 answer = json.loads(reply.read())
             text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()
+
+
+VOICE_MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx"
+VOICE_MODEL_SHA256 = "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
+
+
+class Voices:
+    """Who is speaking when. Splits a clip into stretches by speaker and gives
+    each speaker a voice print: the same voice model the phone uses, so the
+    phone can match the prints against the people it already knows."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._splitter = None
+        self._extractor = None
+        self.status = "Not loaded yet"
+
+    def _voice_model(self) -> str:
+        import hashlib
+        import urllib.request
+
+        path = data_dir() / "models" / "voices" / "wespeaker_en_voxceleb_resnet34.onnx"
+        if path.exists():
+            return str(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(VOICE_MODEL_URL, timeout=60) as reply:
+            data = reply.read()
+        if hashlib.sha256(data).hexdigest() != VOICE_MODEL_SHA256:
+            raise RuntimeError("The voice model download didn't match its expected checksum.")
+        path.write_bytes(data)
+        return str(path)
+
+    def _load(self) -> None:
+        if self._splitter is not None:
+            return
+        import sherpa_onnx
+        from huggingface_hub import hf_hub_download
+
+        self.status = "Downloading the voice models…"
+        try:
+            voice = self._voice_model()
+            segmentation = hf_hub_download(
+                repo_id="csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", filename="model.onnx",
+                cache_dir=str(data_dir() / "models" / "voices"),
+            )
+            threads = max(2, min(8, (os.cpu_count() or 4) // 2))
+            embedding = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=voice, num_threads=threads)
+            self._splitter = sherpa_onnx.OfflineSpeakerDiarization(
+                sherpa_onnx.OfflineSpeakerDiarizationConfig(
+                    segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                        pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(model=segmentation),
+                        num_threads=threads,
+                    ),
+                    embedding=embedding,
+                    clustering=sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=0.5),
+                    min_duration_on=0.3,
+                    min_duration_off=0.5,
+                )
+            )
+            self._extractor = sherpa_onnx.SpeakerEmbeddingExtractor(embedding)
+            self.status = "Ready"
+        except Exception as error:
+            self.status = f"Couldn't load: {error}"
+            raise
+
+    def warm(self) -> None:
+        with self._lock:
+            try:
+                self._load()
+            except Exception:
+                pass
+
+    def split(self, samples: np.ndarray) -> list[tuple[float, float, int]]:
+        """(start, end, speaker number) for each stretch of speech, in order.
+        `samples` is 16 kHz mono."""
+        with self._lock:
+            self._load()
+            found = self._splitter.process(samples).sort_by_start_time()
+            return [(float(piece.start), float(piece.end), int(piece.speaker)) for piece in found]
+
+    def print_of(self, samples: np.ndarray) -> list[float]:
+        """The voice print of one speaker's audio (16 kHz mono)."""
+        with self._lock:
+            self._load()
+            stream = self._extractor.create_stream()
+            stream.accept_waveform(16000, samples)
+            stream.input_finished()
+            return [round(float(value), 5) for value in self._extractor.compute(stream)]
+
+
+def by_speaker(pieces: list[tuple[float, float, int]], gap: float = 1.0, shortest: float = 0.4) -> list[tuple[float, float, int]]:
+    """Join neighbouring stretches by the same speaker and drop slivers."""
+    joined: list[list] = []
+    for start, end, speaker in pieces:
+        if joined and joined[-1][2] == speaker and start - joined[-1][1] <= gap:
+            joined[-1][1] = end
+        else:
+            joined.append([start, end, speaker])
+    return [(start, end, speaker) for start, end, speaker in joined if end - start >= shortest]

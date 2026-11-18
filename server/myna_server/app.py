@@ -6,6 +6,8 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import time
+
+import numpy as np
 from collections import deque
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -17,7 +19,7 @@ from . import __version__
 from .audio import AudioError, decode_wav, resample_to_16k
 from .config import Config
 from . import ask, browse, catalog, web
-from .engines import Transcriber, Writer
+from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
 # Largest clip accepted: ten minutes of 16 kHz 16-bit mono, with headroom.
@@ -58,7 +60,12 @@ def _allowed(host: str | None, allow_lan: bool) -> bool:
 
 
 def create_app(
-    config: Config, transcriber: Transcriber, writer: Writer, allow_lan: bool = False, store: Store | None = None
+    config: Config,
+    transcriber: Transcriber,
+    writer: Writer,
+    allow_lan: bool = False,
+    store: Store | None = None,
+    voices=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
     app = FastAPI(title="Myna server", version=__version__)
@@ -119,8 +126,43 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         seconds = samples.size / rate if rate else 0.0
         began = time.perf_counter()
+        audio = resample_to_16k(samples, rate)
+
+        def work() -> tuple[str, list[dict]]:
+            """The text, and (when the voice models are there) the clip split
+            by speaker, each stretch with its speaker's voice print."""
+            if voices is None:
+                return transcriber.transcribe(audio), []
+            try:
+                pieces = by_speaker(voices.split(audio))
+            except Exception:
+                return transcriber.transcribe(audio), []
+            if not pieces:
+                return transcriber.transcribe(audio), []
+            prints: dict[int, list[float]] = {}
+            for speaker in {piece[2] for piece in pieces}:
+                own = np.concatenate([audio[int(a * 16000) : int(b * 16000)] for a, b, who in pieces if who == speaker])
+                try:
+                    prints[speaker] = voices.print_of(own[: 16000 * 30])
+                except Exception:
+                    prints[speaker] = []
+            out = []
+            if len(prints) == 1:
+                # One speaker: transcribe the clip whole (better than in pieces).
+                whole = transcriber.transcribe(audio)
+                if whole:
+                    out.append({"text": whole, "start": round(pieces[0][0], 2),
+                                "duration": round(pieces[-1][1] - pieces[0][0], 2), "voice": prints[pieces[0][2]]})
+                return whole, out
+            for start, end, speaker in pieces:
+                said = transcriber.transcribe(audio[int(start * 16000) : int(end * 16000)])
+                if said:
+                    out.append({"text": said, "start": round(start, 2), "duration": round(end - start, 2),
+                                "voice": prints[speaker]})
+            return " ".join(piece["text"] for piece in out), out
+
         try:
-            text = await run_in_threadpool(transcriber.transcribe, resample_to_16k(samples, rate))
+            text, segments = await run_in_threadpool(work)
         except Exception as error:
             note("transcribe", transcriber.name, time.perf_counter() - began, str(error), seconds, failed=True)
             raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
@@ -131,6 +173,7 @@ def create_app(
             "audio_seconds": round(seconds, 3),
             "took_seconds": round(time.perf_counter() - began, 3),
             "engine": transcriber.name,
+            "segments": segments,
         }
 
     @app.post("/v1/generate")

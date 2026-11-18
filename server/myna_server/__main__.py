@@ -9,7 +9,7 @@ import uvicorn
 
 from .app import create_app
 from .config import Config, data_dir
-from .engines import LlamaWriter, WhisperTranscriber
+from .engines import LlamaWriter, Voices, WhisperTranscriber
 from .store import Store
 
 
@@ -26,12 +26,13 @@ def main() -> None:
         print(config.token)
         return
     store = Store(data_dir() / "myna.db")
-    transcriber, writer = WhisperTranscriber(config), LlamaWriter(config)
-    app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store)
+    transcriber, writer, voices = WhisperTranscriber(config), LlamaWriter(config), Voices()
+    app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices)
 
     # Get both models downloaded and loaded now rather than on the first request.
     def warm() -> None:
         transcriber.warm()
+        voices.warm()
         writer.warm()
 
     threading.Thread(target=warm, daemon=True).start()

@@ -282,3 +282,35 @@ def test_ask_uses_saved_material_and_the_web(stt):
            '<a class="result__snippet" href="#">Some &amp; text</a>'
     assert web.parse_results(page) == [("A title", "Some & text", "https://example.com/a")]
     assert web.readable("<head><title>x</title></head><script>var a</script><p>Hello <b>there</b></p>") == "Hello there"
+
+
+def test_transcribe_splits_a_clip_by_speaker(stt):
+    class FakeVoices:
+        def split(self, audio):
+            return [(0.0, 1.0, 0), (1.1, 2.0, 0), (2.5, 4.0, 1), (4.05, 4.2, 0)]  # the last is a sliver
+
+        def print_of(self, audio):
+            return [float(audio.size)]
+
+    client = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=FakeVoices()))
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 5, dtype=np.float32))).json()
+    segments = body["segments"]
+    # Two stretches: speaker 0's two pieces joined, then speaker 1; the sliver is dropped.
+    assert [(s["start"], s["duration"]) for s in segments] == [(0.0, 2.0), (2.5, 1.5)]
+    assert segments[0]["text"] == "heard 32000 samples" and segments[1]["text"] == "heard 24000 samples"
+    assert segments[0]["voice"] != segments[1]["voice"] and body["text"] == "heard 32000 samples heard 24000 samples"
+
+
+def test_one_speaker_is_transcribed_whole_and_no_voices_still_works(stt, client):
+    class OneVoice:
+        def split(self, audio):
+            return [(0.2, 1.0, 0), (1.3, 2.8, 0)]
+
+        def print_of(self, audio):
+            return [1.0, 2.0]
+
+    solo = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=OneVoice()))
+    body = solo.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 3, dtype=np.float32))).json()
+    assert body["text"] == "heard 48000 samples" and len(body["segments"]) == 1 and body["segments"][0]["voice"] == [1.0, 2.0]
+    plain = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    assert plain["segments"] == [] and plain["text"] == "heard 16000 samples"

@@ -5,8 +5,41 @@ across both."""
 
 from __future__ import annotations
 
-# (id for faster-whisper, name shown, note)
+# Transcribers that aren't Whisper, run by sherpa-onnx on the processor (they
+# are small and far faster than real time there). The same models the phone
+# offers. key -> (family, Hugging Face repo, files in the order the family
+# needs them, longest stretch of audio per pass in seconds)
+SHERPA = {
+    "parakeet-v2": ("nemo_transducer", "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+                    ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"), 24),
+    "parakeet-v3": ("nemo_transducer", "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+                    ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"), 24),
+    "parakeet-ultra": ("nemo_transducer", "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8",
+                       ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"), 24),
+    "canary": ("canary", "csukuangfj/sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8",
+               ("encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"), 24),
+    "moonshine-base": ("moonshine", "csukuangfj/sherpa-onnx-moonshine-base-en-int8",
+                       ("preprocess.onnx", "encode.int8.onnx", "uncached_decode.int8.onnx", "cached_decode.int8.onnx", "tokens.txt"), 12),
+    "moonshine-tiny": ("moonshine", "csukuangfj/sherpa-onnx-moonshine-tiny-en-int8",
+                       ("preprocess.onnx", "encode.int8.onnx", "uncached_decode.int8.onnx", "cached_decode.int8.onnx", "tokens.txt"), 12),
+    "sensevoice": ("sense_voice", "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+                   ("model.int8.onnx", "tokens.txt"), 24),
+    "zipformer": ("transducer", "csukuangfj/sherpa-onnx-zipformer-en-libriheavy-20230830-medium-punct-case",
+                  ("encoder-epoch-50-avg-15.int8.onnx", "decoder-epoch-50-avg-15.int8.onnx",
+                   "joiner-epoch-50-avg-15.int8.onnx", "tokens.txt"), 24),
+}
+
+# (id, name shown, note). Ids starting "sherpa:" are the models above; the
+# rest are Whisper sizes for faster-whisper.
 SPEECH = (
+    ("sherpa:parakeet-v2", "Parakeet TDT 0.6b v2", "NVIDIA, English. What Omi runs on device. Very accurate and very fast; processor."),
+    ("sherpa:parakeet-v3", "Parakeet TDT 0.6b v3", "NVIDIA, 25 languages. What Omi's servers run. Processor."),
+    ("sherpa:parakeet-ultra", "Parakeet TDT 0.6b ultra", "A newer post-training of v3. Processor."),
+    ("sherpa:canary", "Canary 180m flash", "NVIDIA. English, Spanish, German, French. Processor."),
+    ("sherpa:moonshine-base", "Moonshine base", "Small English model built for speed. Processor."),
+    ("sherpa:moonshine-tiny", "Moonshine tiny", "The smallest. Processor."),
+    ("sherpa:sensevoice", "SenseVoice small", "Alibaba. Very fast; English, Chinese, Japanese, Korean. Processor."),
+    ("sherpa:zipformer", "Zipformer (Libriheavy)", "Next-gen Kaldi, with punctuation and case. Tiny. Processor."),
     ("turbo", "Whisper large-v3 turbo", "Best balance: near the largest model's accuracy, several times faster."),
     ("large-v3", "Whisper large-v3", "Most accurate, slowest. About 3 GB of graphics memory."),
     ("large-v2", "Whisper large-v2", "The previous large model; some find it steadier on noisy audio."),

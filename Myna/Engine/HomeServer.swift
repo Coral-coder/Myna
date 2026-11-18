@@ -172,9 +172,24 @@ final class HomeServer: ObservableObject {
                      ms: Int(Date().timeIntervalSince(started) * 1000))
     }
 
+    /// One stretch of a clip, by one speaker, as the server heard it.
+    struct Segment: Sendable {
+        let text: String
+        /// Seconds from the start of the clip.
+        let start: Double
+        let duration: Double
+        /// The speaker's voice print (same voice model as the phone's), if any.
+        let voice: [Float]
+    }
+
+    /// The clip split by speaker, from the last `transcribe` call. Empty when
+    /// the server didn't separate speakers.
+    private(set) var lastSegments: [Segment] = []
+
     /// Transcribe one utterance (16-bit mono WAV). Throws if the server can't,
     /// so the caller does it on the phone.
     func transcribe(wav: Data, audioSeconds: Double) async throws -> String {
+        lastSegments = []
         do {
             // A graphics card does this far faster than real time; if it takes
             // this long, something is wrong and the phone should take over.
@@ -182,6 +197,12 @@ final class HomeServer: ObservableObject {
                                       timeout: max(8, audioSeconds))
             markUp()
             lastRoute = "Home server · transcription"
+            lastSegments = (json["segments"] as? [[String: Any]] ?? []).compactMap { piece in
+                guard let text = piece["text"] as? String, !text.isEmpty else { return nil }
+                let voice = (piece["voice"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.floatValue }
+                return Segment(text: text, start: piece["start"] as? Double ?? 0,
+                               duration: piece["duration"] as? Double ?? 0, voice: voice)
+            }
             return json["text"] as? String ?? ""
         } catch {
             markDown(error)
