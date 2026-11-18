@@ -111,15 +111,22 @@ final class BeeAudioDecoder {
         deinit { descPtr.deinitialize(count: 1); descPtr.deallocate() }
     }
 
+    /// Returned by the input proc to mean "no more data for THIS fill." It must
+    /// be non-zero: returning 0 packets with noErr tells the AudioConverter the
+    /// whole stream ended, after which it refuses all further input — which left
+    /// the decoder producing only the very first frame and then going silent.
+    private static let noMoreDataNow: OSStatus = -1
+
     /// Supplies the single compressed packet to the decoder, then reports "no
-    /// more" so the fill call returns what it decoded from that one frame.
+    /// more for this fill" (a non-zero status, NOT end-of-stream) so the
+    /// converter returns what it decoded but stays alive for the next frame.
     private static let aacInputProc: AudioConverterComplexInputDataProc = {
         _, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData in
-        guard let inUserData else { ioNumberDataPackets.pointee = 0; return noErr }
+        guard let inUserData else { ioNumberDataPackets.pointee = 0; return BeeAudioDecoder.noMoreDataNow }
         let ctx = Unmanaged<AACInput>.fromOpaque(inUserData).takeUnretainedValue()
         if ctx.consumed {
             ioNumberDataPackets.pointee = 0
-            return noErr
+            return BeeAudioDecoder.noMoreDataNow
         }
         ctx.consumed = true
         ioNumberDataPackets.pointee = 1
