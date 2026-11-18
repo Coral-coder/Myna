@@ -12,6 +12,7 @@ struct TranscriptionLabView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                activeCard
                 clipCard
                 section(title: "On this iPhone", icon: "iphone", engines: sorted(LabCatalog.onDevice))
                 section(title: "Cloud — audio leaves the phone", icon: "cloud", engines: sorted(LabCatalog.cloud))
@@ -31,6 +32,39 @@ struct TranscriptionLabView: View {
         return engines.sorted { (lab.ratings[$0.id] ?? 0) > (lab.ratings[$1.id] ?? 0) }
     }
 
+    // MARK: - Active engine
+
+    private var activeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(icon: "checkmark.circle", title: "In use")
+            Text(lab.activeEngine.name)
+                .font(.system(size: 20, weight: .light))
+                .foregroundStyle(MynaTheme.ink)
+            Text(activeNote)
+                .font(.system(size: 13, weight: .light))
+                .foregroundStyle(MynaTheme.muted)
+            if !lab.liveStatus.isEmpty {
+                Text(lab.liveStatus)
+                    .font(MynaTheme.mono(10))
+                    .foregroundStyle(MynaTheme.faint)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
+    }
+
+    private var activeNote: String {
+        let engine = lab.activeEngine
+        if engine.id == TranscriptionLab.defaultEngineID {
+            return "Apple's live recognizer transcribes the bracelet. Download any engine below and tap Use to switch."
+        }
+        if !lab.isReady(engine) {
+            return "This engine isn't ready (model not downloaded or no API key), so Apple's recognizer is filling in."
+        }
+        return "Bracelet audio is transcribed by this engine, one utterance at a time, each time you pause."
+    }
+
     // MARK: - Clip
 
     private var clipCard: some View {
@@ -44,7 +78,7 @@ struct TranscriptionLabView: View {
                     if lab.isRecording { lab.stopRecording() } else { lab.startRecording(from: listener) }
                 }
                 if lab.hasClip, !lab.isRecording {
-                    pill("Run all ready") { lab.runAllReady() }
+                    pill("Test all ready") { lab.runAllReady() }
                 }
                 Spacer()
             }
@@ -136,7 +170,15 @@ struct TranscriptionLabView: View {
                         .foregroundStyle(MynaTheme.faint)
                 case .idle:
                     if lab.isReady(engine) {
-                        if lab.hasClip { pill("Run") { lab.runOne(engine) } }
+                        if lab.activeEngineID == engine.id {
+                            Text("IN USE")
+                                .font(MynaTheme.mono(10))
+                                .tracking(1.5)
+                                .foregroundStyle(MynaTheme.ink)
+                        } else {
+                            pill("Use") { lab.setActive(engine) }
+                        }
+                        if lab.hasClip { pill("Test") { lab.runOne(engine) } }
                         if engine.megabytes > 0 { pill("Remove") { lab.remove(engine) } }
                     } else if engine.isCloud {
                         Text("Add a key to run")

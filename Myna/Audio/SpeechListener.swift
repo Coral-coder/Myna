@@ -373,6 +373,19 @@ final class SpeechListener: NSObject, ObservableObject {
     /// A second listener for bracelet audio (the Transcription Lab records its
     /// test clip through this). Never affects what the recognizer receives.
     var externalAudioSink: ((AVAudioPCMBuffer) -> Void)?
+    /// When set, bracelet audio goes to this transcriber (the engine chosen in
+    /// Settings) INSTEAD of Apple's live recognizer; it reports text back
+    /// through `deliverExternalText`.
+    var externalTranscriber: ((AVAudioPCMBuffer) -> Void)?
+
+    /// Text for an utterance, from the engine chosen in Settings.
+    func deliverExternalText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        recognitionTicks += 1
+        liveTranscript = trimmed
+        deliver(trimmed)
+    }
 
     /// Take a buffer of PCM decoded from the bracelet. Never refused: it is
     /// recorded to the conversation's audio file, and either handed to the
@@ -394,6 +407,13 @@ final class SpeechListener: NSObject, ObservableObject {
         if captureActive { try? segmentFile?.write(from: buffer) }
         let liveRequest = isPaused ? nil : tapRequest
         tapLock.unlock()
+
+        // A chosen engine takes the audio instead of Apple's recognizer.
+        if let externalTranscriber {
+            externalBacklog.removeAll()
+            if !isPaused { externalTranscriber(buffer) }
+            return
+        }
 
         guard let liveRequest else {
             externalBacklog.append(buffer)

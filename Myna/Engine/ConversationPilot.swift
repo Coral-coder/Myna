@@ -266,7 +266,11 @@ final class ConversationPilot: ObservableObject {
         var engine = "Apple Speech"
         // Prefer Whisper's transcript of the captured audio when it's enabled and
         // produced something; otherwise keep Apple's live transcript.
-        if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
+        let chosen = TranscriptionLab.shared.activeEngine
+        if chosen.id != TranscriptionLab.defaultEngineID, listener.externalTranscriber != nil {
+            // The lines already came from the engine picked in Settings.
+            engine = chosen.name
+        } else if let audioPath, let whisper, whisper.isEnabled, let better = await whisper.transcribe(path: audioPath) {
             transcript = better
             engine = "Whisper"
         }

@@ -284,33 +284,9 @@ final class TranscriptionLab: ObservableObject {
         if clipSeconds >= Self.maxClipSeconds { stopRecording() }
     }
 
-    /// 16-bit mono WAV — the one format every engine and every cloud API takes.
     private func saveClip() {
         guard !samples.isEmpty else { return }
-        var pcm = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = max(-1, min(1, sample))
-            var value = Int16(clamped * 32767).littleEndian
-            withUnsafeBytes(of: &value) { pcm.append(contentsOf: $0) }
-        }
-        func le32(_ v: UInt32) -> [UInt8] { [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)] }
-        func le16(_ v: UInt16) -> [UInt8] { [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF)] }
-        let rate = UInt32(sampleRate)
-        var wav = Data()
-        wav.append(contentsOf: Array("RIFF".utf8))
-        wav.append(contentsOf: le32(UInt32(36 + pcm.count)))
-        wav.append(contentsOf: Array("WAVEfmt ".utf8))
-        wav.append(contentsOf: le32(16))
-        wav.append(contentsOf: le16(1))
-        wav.append(contentsOf: le16(1))
-        wav.append(contentsOf: le32(rate))
-        wav.append(contentsOf: le32(rate * 2))
-        wav.append(contentsOf: le16(2))
-        wav.append(contentsOf: le16(16))
-        wav.append(contentsOf: Array("data".utf8))
-        wav.append(contentsOf: le32(UInt32(pcm.count)))
-        wav.append(pcm)
-        try? wav.write(to: clipURL, options: .atomic)
+        try? LabWav.data(samples: samples, sampleRate: Int(sampleRate)).write(to: clipURL, options: .atomic)
     }
 
     private func loadClip() {
@@ -373,6 +349,7 @@ final class TranscriptionLab: ObservableObject {
                 }
                 installed.insert(engine.id)
                 activity[engine.id] = .idle
+                if engine.id == activeEngineID { applyActiveEngine() }
             } catch {
                 activity[engine.id] = .idle
                 outcomes[engine.id] = Outcome(error: "Download failed: \(error.localizedDescription)")
@@ -414,6 +391,7 @@ final class TranscriptionLab: ObservableObject {
         if case .whisperKit = engine.kind { UserDefaults.standard.removeObject(forKey: "myna.lab.wk.\(engine.id)") }
         installed.remove(engine.id)
         outcomes[engine.id] = nil
+        if engine.id == activeEngineID { applyActiveEngine() }
     }
 
     // MARK: - Running
@@ -452,31 +430,209 @@ final class TranscriptionLab: ObservableObject {
     }
 
     private func transcribe(_ engine: LabEngine) async throws -> String {
-        let url = clipURL
+        try await LabRunner.shared.transcribe(engine: engine, modelDir: sherpaDir(engine),
+                                              samples: samples, sampleRate: Int(sampleRate))
+    }
+
+    // MARK: - The engine Myna actually uses
+
+    static let activeKey = "myna.transcriptionEngine"
+    static let defaultEngineID = "apple-legacy"
+
+    /// The engine that transcribes bracelet audio. Persisted.
+    @Published private(set) var activeEngineID: String = UserDefaults.standard.string(forKey: TranscriptionLab.activeKey) ?? TranscriptionLab.defaultEngineID
+    /// What the active engine last did, for the settings screen.
+    @Published private(set) var liveStatus: String = ""
+
+    var activeEngine: LabEngine {
+        LabCatalog.all.first { $0.id == activeEngineID } ?? LabCatalog.all[0]
+    }
+
+    func setActive(_ engine: LabEngine) {
+        activeEngineID = engine.id
+        UserDefaults.standard.set(engine.id, forKey: Self.activeKey)
+        liveStatus = ""
+        applyActiveEngine()
+    }
+
+    private weak var liveListener: SpeechListener?
+
+    /// Called once at launch: route bracelet audio to the chosen engine.
+    func attach(listener: SpeechListener) {
+        liveListener = listener
+        applyActiveEngine()
+    }
+
+    /// Apple's live recognizer handles the stream itself. Any other engine gets
+    /// the bracelet audio here, cut into utterances at pauses.
+    private func applyActiveEngine() {
+        liveSamples.removeAll()
+        liveVoiced = 0
+        liveSilence = 0
+        let engine = activeEngine
+        if engine.id == Self.defaultEngineID || !isReady(engine) {
+            liveListener?.externalTranscriber = nil
+        } else {
+            liveListener?.externalTranscriber = { [weak self] buffer in
+                self?.ingestLive(buffer)
+            }
+        }
+    }
+
+    private var liveSamples: [Float] = []
+    private var liveRate: Double = 16_000
+    private var liveVoiced = 0
+    private var liveSilence = 0
+    private var liveQueue: Task<Void, Never>?
+    private var livePending = 0
+
+    /// Collects bracelet audio into an utterance and hands it to the engine when
+    /// the speaker pauses (or after 20 s without a pause).
+    private func ingestLive(_ buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData?[0] else { return }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        liveRate = buffer.format.sampleRate
+        var sum: Float = 0
+        for i in 0..<frames { sum += data[i] * data[i] }
+        let speaking = (sum / Float(frames)).squareRoot() > 0.008
+
+        liveSamples.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
+        if speaking {
+            liveVoiced += frames
+            liveSilence = 0
+        } else {
+            liveSilence += frames
+            // Before anyone speaks, keep only a short lead-in.
+            let leadIn = Int(liveRate * 0.4)
+            if liveVoiced == 0, liveSamples.count > leadIn {
+                liveSamples.removeFirst(liveSamples.count - leadIn)
+            }
+        }
+
+        let paused = liveVoiced > 0 && Double(liveSilence) >= liveRate * 0.8
+        let tooLong = Double(liveSamples.count) >= liveRate * 20
+        guard paused || tooLong else { return }
+
+        let chunk = liveSamples
+        let voicedSeconds = Double(liveVoiced) / liveRate
+        liveSamples.removeAll(keepingCapacity: true)
+        liveVoiced = 0
+        liveSilence = 0
+        guard voicedSeconds >= 0.3 else { return }
+        enqueueLive(chunk, rate: Int(liveRate))
+    }
+
+    /// Utterances are transcribed strictly in order, one at a time; nothing is
+    /// skipped if the engine is slower than the talking.
+    private func enqueueLive(_ chunk: [Float], rate: Int) {
+        let engine = activeEngine
+        let dir = sherpaDir(engine)
+        let previous = liveQueue
+        livePending += 1
+        liveStatus = "Transcribing with \(engine.name)… (\(livePending) waiting)"
+        liveQueue = Task { [weak self] in
+            await previous?.value
+            let started = Date()
+            let result: Result<String, Error>
+            do {
+                result = .success(try await LabRunner.shared.transcribe(engine: engine, modelDir: dir, samples: chunk, sampleRate: rate))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self else { return }
+            self.livePending = max(0, self.livePending - 1)
+            switch result {
+            case .success(let text):
+                let took = Date().timeIntervalSince(started)
+                self.liveStatus = String(format: "%@ · last utterance %.1f s of audio in %.1f s", engine.name, Double(chunk.count) / Double(rate), took)
+                self.liveListener?.deliverExternalText(text)
+            case .failure(let error):
+                self.liveStatus = "\(engine.name) failed: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// Keeps the active engine's model loaded between calls, and runs one
+/// transcription at a time.
+actor LabRunner {
+    static let shared = LabRunner()
+
+    private var sherpaID: String?
+    private var sherpa: SherpaOnnxOfflineRecognizer?
+    private var whisperID: String?
+    private var whisper: WhisperKit?
+
+    func transcribe(engine: LabEngine, modelDir: URL, samples: [Float], sampleRate: Int) async throws -> String {
         switch engine.kind {
-        case .appleLegacy:
-            return try await LabApple.legacy(url)
-        case .appleTranscriber:
-            return try await LabApple.transcriber(url)
-        case .appleDictation:
-            return try await LabApple.dictation(url)
-        case .whisperKit(let model):
-            let kit = try await WhisperKit(WhisperKitConfig(model: model, computeOptions: Self.whisperCompute))
-            let results = try await kit.transcribe(audioPath: url.path)
-            return results.map(\.text).joined(separator: " ")
         case .sherpa(let spec):
-            let dir = sherpaDir(engine)
-            let audio = samples
-            let rate = Int(sampleRate)
-            return try await Task.detached(priority: .userInitiated) {
-                try LabSherpa.transcribe(spec: spec, dir: dir, samples: audio, sampleRate: rate)
-            }.value
+            if sherpaID != engine.id || sherpa == nil {
+                sherpa = nil
+                sherpa = try LabSherpa.makeRecognizer(spec: spec, dir: modelDir)
+                sherpaID = engine.id
+            }
+            guard let sherpa else { throw LabError("Model didn't load.") }
+            return LabSherpa.decode(sherpa, spec: spec, samples: samples, sampleRate: sampleRate)
+        case .whisperKit(let model):
+            if whisperID != engine.id || whisper == nil {
+                whisper = nil
+                let compute = ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuAndNeuralEngine, textDecoderCompute: .cpuAndNeuralEngine)
+                whisper = try await WhisperKit(WhisperKitConfig(model: model, computeOptions: compute))
+                whisperID = engine.id
+            }
+            guard let whisper else { throw LabError("Model didn't load.") }
+            let url = try LabWav.writeTemp(samples: samples, sampleRate: sampleRate)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let results = try await whisper.transcribe(audioPath: url.path)
+            return results.map(\.text).joined(separator: " ")
+        case .appleLegacy, .appleTranscriber, .appleDictation:
+            let url = try LabWav.writeTemp(samples: samples, sampleRate: sampleRate)
+            defer { try? FileManager.default.removeItem(at: url) }
+            if case .appleLegacy = engine.kind { return try await LabApple.legacy(url) }
+            if case .appleTranscriber = engine.kind { return try await LabApple.transcriber(url) }
+            return try await LabApple.dictation(url)
         case .cloud(let vendor):
             let key = LabKeychain.get(vendor)
             guard !key.isEmpty else { throw LabError("Add an API key first.") }
-            let wav = try Data(contentsOf: url)
-            return try await LabCloud.transcribe(vendor: vendor, key: key, wav: wav)
+            return try await LabCloud.transcribe(vendor: vendor, key: key, wav: LabWav.data(samples: samples, sampleRate: sampleRate))
         }
+    }
+}
+
+/// 16-bit mono WAV — the one format every engine and every cloud API takes.
+enum LabWav {
+    static func data(samples: [Float], sampleRate: Int) -> Data {
+        var pcm = Data(capacity: samples.count * 2)
+        for sample in samples {
+            let clamped = max(-1, min(1, sample))
+            var value = Int16(clamped * 32767).littleEndian
+            withUnsafeBytes(of: &value) { pcm.append(contentsOf: $0) }
+        }
+        func le32(_ v: UInt32) -> [UInt8] { [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)] }
+        func le16(_ v: UInt16) -> [UInt8] { [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF)] }
+        let rate = UInt32(sampleRate)
+        var wav = Data()
+        wav.append(contentsOf: Array("RIFF".utf8))
+        wav.append(contentsOf: le32(UInt32(36 + pcm.count)))
+        wav.append(contentsOf: Array("WAVEfmt ".utf8))
+        wav.append(contentsOf: le32(16))
+        wav.append(contentsOf: le16(1))
+        wav.append(contentsOf: le16(1))
+        wav.append(contentsOf: le32(rate))
+        wav.append(contentsOf: le32(rate * 2))
+        wav.append(contentsOf: le16(2))
+        wav.append(contentsOf: le16(16))
+        wav.append(contentsOf: Array("data".utf8))
+        wav.append(contentsOf: le32(UInt32(pcm.count)))
+        wav.append(pcm)
+        return wav
+    }
+
+    static func writeTemp(samples: [Float], sampleRate: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("myna-stt-\(UUID().uuidString).wav")
+        try data(samples: samples, sampleRate: sampleRate).write(to: url, options: .atomic)
+        return url
     }
 }
 
@@ -575,8 +731,8 @@ enum LabApple {
 // MARK: - sherpa-onnx engines
 
 enum LabSherpa {
-    /// Runs off the main actor: loads the model, decodes the clip in chunks.
-    static func transcribe(spec: SherpaSpec, dir: URL, samples: [Float], sampleRate: Int) throws -> String {
+    /// Loads the model. Slow (seconds) — callers keep the result around.
+    static func makeRecognizer(spec: SherpaSpec, dir: URL) throws -> SherpaOnnxOfflineRecognizer {
         func path(_ index: Int) -> String { dir.appendingPathComponent(spec.files[index]).path }
         // The recognizer aborts the app on a missing file, so check first.
         for name in spec.files where !FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path) {
@@ -621,8 +777,11 @@ enum LabSherpa {
                 canary: sherpaOnnxOfflineCanaryModelConfig(encoder: path(0), decoder: path(1))))
             recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         }
+        return recognizer
+    }
 
-
+    /// Decodes audio in chunks the model can take.
+    static func decode(_ recognizer: SherpaOnnxOfflineRecognizer, spec: SherpaSpec, samples: [Float], sampleRate: Int) -> String {
         var pieces: [String] = []
         for chunk in split(samples, sampleRate: sampleRate, maxSeconds: spec.chunkSeconds) {
             let text = recognizer.decode(samples: chunk, sampleRate: sampleRate).text

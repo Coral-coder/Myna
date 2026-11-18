@@ -71,11 +71,6 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                Text("Backstage")
-                    .font(MynaTheme.display(24, weight: .bold))
-                    .auroraText()
-                    .padding(.top, 16)
-
                 appearanceCard
                 assistantCard
                 naturalVoicesCard

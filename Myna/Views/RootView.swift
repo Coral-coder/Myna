@@ -1,67 +1,41 @@
 import SwiftUI
 
-/// Reports the floating dock's real rendered height so content can clear it.
-private struct DockHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 100
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-/// The stage: liminal ground, the active scene, a text-only dock, and the
-/// Daylight / Dusk mood toggle. Four words, no icons.
+/// The stage. Three places plus Settings, stacked top to bottom with nothing
+/// floating over anything else: an optional notice line, the active screen, and
+/// a plain text tab bar.
 struct RootView: View {
-    /// The four places from the concept. Everything the app does lives under one
-    /// of these; the secondary day-outputs hang off Today.
     enum Tab: String, CaseIterable {
         case ask = "Ask"
         case today = "Today"
         case memory = "Memory"
-        case backstage = "Backstage"
-    }
-
-    /// Today's secondary destinations, kept reachable without extra chrome.
-    enum TodaySub: String, CaseIterable {
-        case today = "Today"
-        case notes = "Notes"
-        case lists = "Lists"
-        case inbox = "Inbox"
-        case core = "Core"
-        case lab = "Lab"
+        case settings = "Settings"
     }
 
     @State private var tab: Tab = .ask
-    @State private var todaySub: TodaySub = .today
     @EnvironmentObject private var pilot: ConversationPilot
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage("myna.onboarded") private var onboarded = false
-    @State private var dockClearance: CGFloat = 100
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            AuroraBackground(energy: pilot.phase == .listening ? 0.9 : 0.35)
+        VStack(spacing: 0) {
+            notice
 
             Group {
                 switch tab {
                 case .ask: ChatView()
-                case .today: todayStage
+                case .today: DashboardView()
                 case .memory: MemoriesView()
-                case .backstage: SettingsView()
+                case .settings: SettingsMenuView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .safeAreaPadding(.bottom, dockClearance)
             // Rebuild the active screen when the mood flips so every card and
             // heading resolves its Daylight / Dusk tones.
             .id(themeStore.mood)
 
-            dock
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: DockHeightKey.self, value: geo.size.height + 12)
-                    }
-                )
+            tabBar
         }
-        .onPreferenceChange(DockHeightKey.self) { dockClearance = $0 }
-        .overlay(alignment: .top) { bannerView }
+        .background { AuroraBackground(energy: pilot.phase == .listening ? 0.9 : 0.35) }
         .fullScreenCover(isPresented: .constant(!onboarded)) {
             PermissionsView(onboarded: $onboarded)
         }
@@ -70,99 +44,52 @@ struct RootView: View {
         }
     }
 
-    // MARK: - Today, with its quiet overflow nav
+    // MARK: - Tab bar (a row of its own, below the content)
 
-    private var todayStage: some View {
+    private var tabBar: some View {
         VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 22) {
-                ForEach(TodaySub.allCases, id: \.self) { sub in
+            Rectangle().fill(MynaTheme.hair).frame(height: 1)
+            HStack(spacing: 0) {
+                ForEach(Tab.allCases, id: \.self) { item in
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { todaySub = sub }
+                        tab = item
                     } label: {
-                        Text(sub.rawValue)
-                            .font(MynaTheme.mono(13))
-                            .tracking(1.5)
+                        Text(item.rawValue)
+                            .font(MynaTheme.mono(12))
+                            .tracking(1.4)
                             .textCase(.uppercase)
-                            .foregroundStyle(todaySub == sub ? MynaTheme.ink : MynaTheme.faint)
+                            .foregroundStyle(tab == item ? MynaTheme.ink : MynaTheme.faint)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 22)
-            }
-            .padding(.top, 10)
-            .padding(.bottom, 12)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
-            }
-
-            Group {
-                switch todaySub {
-                case .today: DashboardView()
-                case .notes: NotesListView()
-                case .lists: ListsView()
-                case .inbox: SuggestionsView()
-                case .core: ModelHubView()
-                case .lab: TranscriptionLabView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(MynaTheme.paper)
     }
 
-    // MARK: - Dock (text nav, no icons)
-
-    private var dock: some View {
-        HStack(spacing: 0) {
-            ForEach(Tab.allCases, id: \.self) { item in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) { tab = item }
-                } label: {
-                    Text(item.rawValue)
-                        .font(MynaTheme.mono(11))
-                        .tracking(1.6)
-                        .textCase(.uppercase)
-                        .foregroundStyle(tab == item ? MynaTheme.ink : MynaTheme.faint)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 6)
-        .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous).fill(MynaTheme.veil)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(MynaTheme.hair, lineWidth: 1)
-                }
-        }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 8)
-    }
+    // MARK: - Notice (a row of its own, above the content)
 
     @ViewBuilder
-    private var bannerView: some View {
+    private var notice: some View {
         if let banner = pilot.banner {
-            Text(banner)
-                .font(MynaTheme.display(13, weight: .regular))
-                .foregroundStyle(MynaTheme.ink)
-                .lineLimit(2)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .glassCard(cornerRadius: 16)
-                .padding(.horizontal, 24)
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .task {
-                    try? await Task.sleep(for: .seconds(4))
-                    withAnimation { pilot.banner = nil }
-                }
+            VStack(spacing: 0) {
+                Text(banner)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(MynaTheme.ink)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                Rectangle().fill(MynaTheme.hair).frame(height: 1)
+            }
+            .background(MynaTheme.paper2)
+            .task {
+                try? await Task.sleep(for: .seconds(5))
+                pilot.banner = nil
+            }
         }
     }
 }

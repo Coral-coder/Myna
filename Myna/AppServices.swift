@@ -66,6 +66,7 @@ final class AppServices {
         neuralVoice = NeuralVoice()
 
         pilot.brain = brain
+        TranscriptionLab.shared.attach(listener: listener)
         beeCloud.brain = brain
         // Extraction runs on the user's downloaded model (a bigger MLX model when
         // installed and on screen, Apple Intelligence otherwise). Foreground only.
