@@ -84,21 +84,33 @@ code{word-break:break-all;font-size:12px}</style>`)
 			row("Updates", snap.Update)
 		}
 
-		if snap.TailnetIP != "" {
-			link := pairingLink("http://"+snap.TailnetIP, token)
-			b.WriteString(`<div class="k">Pair your iPhone (works anywhere)</div><div class="v">Scan with the iPhone camera, or paste the link in Myna › Settings › Home server.</div>`)
-			fmt.Fprintf(&b, `<img src="%s" width="240" height="240" alt="pairing code"><div><code>%s</code></div>`, qrImage(link), html.EscapeString(link))
-		}
-		b.WriteString(`<div class="k">Home Wi-Fi</div>`)
+		var addresses []string
 		if snap.AllowLAN && snap.LANAddress != "" {
-			link := pairingLink("http://"+snap.LANAddress+":"+lanPort, token)
-			fmt.Fprintf(&b, `<div class="v">On. This link only works while the phone is on your home network.</div><img src="%s" width="240" height="240" alt="home pairing code"><div><code>%s</code></div>`, qrImage(link), html.EscapeString(link))
-		} else if snap.AllowLAN {
-			b.WriteString(`<div class="v">Turning on…</div>`)
-		} else {
-			b.WriteString(`<div class="v">Off. The server answers only over the private network.</div>`)
+			addresses = append(addresses, "http://"+snap.LANAddress+":"+lanPort)
 		}
-		label := "Allow home Wi-Fi too"
+		if snap.TailnetIP != "" {
+			addresses = append(addresses, "http://"+snap.TailnetIP)
+		}
+		if len(addresses) > 0 {
+			link := pairingLink(token, addresses...)
+			b.WriteString(`<div class="k">Pair your iPhone</div><div class="v">In Myna, open Settings › Home server and tap Scan the code.</div>`)
+			fmt.Fprintf(&b, `<img src="%s" width="260" height="260" alt="pairing code"><div><code>%s</code></div>`, qrImage(link), html.EscapeString(link))
+		}
+		b.WriteString(`<div class="k">Where the phone can reach this computer</div>`)
+		switch {
+		case snap.AllowLAN && snap.LANAddress != "":
+			b.WriteString(`<div class="v">Home Wi-Fi: on.</div>`)
+		case snap.AllowLAN:
+			b.WriteString(`<div class="v">Home Wi-Fi: turning on…</div>`)
+		default:
+			b.WriteString(`<div class="v">Home Wi-Fi: off.</div>`)
+		}
+		if snap.TailnetIP != "" {
+			b.WriteString(`<div class="v">Away from home: on, over the private network.</div>`)
+		} else {
+			b.WriteString(`<div class="v">Away from home: not yet — sign in to Tailscale above. If you pair before signing in, pair again afterwards so the phone learns the away-from-home address.</div>`)
+		}
+		label := "Turn home Wi-Fi on (restart to apply)"
 		if snap.AllowLAN {
 			label = "Turn home Wi-Fi off (restart to apply)"
 		}

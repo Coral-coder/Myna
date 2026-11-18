@@ -43,7 +43,9 @@ type launcherSettings struct {
 }
 
 func loadSettings() launcherSettings {
-	var s launcherSettings
+	// The home network is on unless it has been switched off: it lets the
+	// phone pair and work at home before, or without, the private network.
+	s := launcherSettings{AllowLAN: true}
 	if raw, err := os.ReadFile(sub("launcher.json")); err == nil {
 		_ = json.Unmarshal(raw, &s)
 	}

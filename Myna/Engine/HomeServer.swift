@@ -8,7 +8,7 @@ import Security
 final class HomeServer: ObservableObject {
     static let shared = HomeServer()
 
-    struct Info: Equatable {
+    struct Info: Equatable, Sendable {
         var version = ""
         var transcriber = ""
         var writer = ""
@@ -30,6 +30,9 @@ final class HomeServer: ObservableObject {
     private static let urlKey = "myna.server.url"
     private static let keychainService = "com.lightwave.myna.server"
 
+    /// Every address the server gave when pairing (home network, private
+    /// network). `baseURL` is the one that answered last.
+    private var addresses: [URL] = []
     private var baseURL: URL?
     private var token = ""
     /// After a failure, don't try the server again until this time — so an
@@ -44,9 +47,12 @@ final class HomeServer: ObservableObject {
 
     private init() {
         enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
-        if let stored = UserDefaults.standard.string(forKey: Self.urlKey), let url = URL(string: stored) {
+        let stored = (UserDefaults.standard.string(forKey: Self.urlKey) ?? "")
+            .split(separator: "\n").compactMap { URL(string: String($0)) }
+        if let url = stored.first {
             let saved = Self.readToken()
             if !saved.isEmpty {
+                addresses = stored
                 baseURL = url
                 token = saved
                 isPaired = true
@@ -69,15 +75,22 @@ final class HomeServer: ObservableObject {
         let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed),
               let items = components.queryItems,
-              let rawURL = items.first(where: { $0.name == "url" })?.value,
-              let url = URL(string: rawURL), url.scheme == "http" || url.scheme == "https", url.host != nil,
               let newToken = items.first(where: { $0.name == "token" })?.value, newToken.count >= 16 else {
             lastError = "That isn't a Myna pairing link."
             return false
         }
+        let urls = items.filter { $0.name == "url" }
+            .compactMap { $0.value }
+            .compactMap { URL(string: $0) }
+            .filter { ($0.scheme == "http" || $0.scheme == "https") && $0.host != nil }
+        guard let url = urls.first else {
+            lastError = "That isn't a Myna pairing link."
+            return false
+        }
+        addresses = urls
         baseURL = url
         token = newToken
-        UserDefaults.standard.set(url.absoluteString, forKey: Self.urlKey)
+        UserDefaults.standard.set(urls.map(\.absoluteString).joined(separator: "\n"), forKey: Self.urlKey)
         Self.writeToken(newToken)
         isPaired = true
         retryAfter = .distantPast
@@ -88,6 +101,7 @@ final class HomeServer: ObservableObject {
 
     func unpair() {
         baseURL = nil
+        addresses = []
         token = ""
         isPaired = false
         reachable = nil
@@ -102,19 +116,50 @@ final class HomeServer: ObservableObject {
     /// Ask the server whether it's there. Updates `reachable`.
     func check() async {
         guard isPaired else { return }
-        let started = Date()
         do {
-            let json = try await send(path: "health", method: "GET", body: nil, contentType: nil, timeout: 6)
+            // Ask every known address at once and use the first that answers:
+            // the home network at home, the private network elsewhere.
+            let candidates = addresses
+            let found = await withTaskGroup(of: Probe?.self) { group -> Probe? in
+                for url in candidates {
+                    group.addTask { [weak self] in await self?.probe(url) }
+                }
+                for await result in group {
+                    if let result {
+                        group.cancelAll()
+                        return result
+                    }
+                }
+                return nil
+            }
+            guard let found else { throw ServerError(message: "The home server didn't answer.") }
+            baseURL = found.url
             reachable = true
-            latencyMs = Int(Date().timeIntervalSince(started) * 1000)
-            info = Info(version: json["version"] as? String ?? "",
-                        transcriber: json["transcriber"] as? String ?? "",
-                        writer: json["writer"] as? String ?? "")
+            latencyMs = found.ms
+            info = found.info
             retryAfter = .distantPast
             lastError = nil
         } catch {
             markDown(error)
         }
+    }
+
+    private struct Probe: Sendable {
+        let url: URL
+        let info: Info
+        let ms: Int
+    }
+
+    private func probe(_ url: URL) async -> Probe? {
+        let started = Date()
+        guard let json = try? await send(path: "health", method: "GET", body: nil, contentType: nil, timeout: 6, to: url) else {
+            return nil
+        }
+        return Probe(url: url,
+                     info: Info(version: json["version"] as? String ?? "",
+                                transcriber: json["transcriber"] as? String ?? "",
+                                writer: json["writer"] as? String ?? ""),
+                     ms: Int(Date().timeIntervalSince(started) * 1000))
     }
 
     /// Transcribe one utterance (16-bit mono WAV). Throws if the server can't,
@@ -176,8 +221,9 @@ final class HomeServer: ObservableObject {
         }
     }
 
-    private func send(path: String, method: String, body: Data?, contentType: String?, timeout: TimeInterval) async throws -> [String: Any] {
-        guard let baseURL else { throw ServerError(message: "No home server is paired.") }
+    private func send(path: String, method: String, body: Data?, contentType: String?, timeout: TimeInterval,
+                      to address: URL? = nil) async throws -> [String: Any] {
+        guard let baseURL = address ?? baseURL else { throw ServerError(message: "No home server is paired.") }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.timeoutInterval = timeout

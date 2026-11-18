@@ -108,7 +108,8 @@ func runTailnet(ctx context.Context, st *status) {
 	_ = httpServer.Serve(listener)
 }
 
-// runLAN optionally answers devices on the home network too (off by default).
+// runLAN answers devices on the home network too, unless switched off. Only
+// private addresses are served, and the pairing token is still required.
 func runLAN(ctx context.Context, st *status) {
 	listener, err := net.Listen("tcp", ":"+lanPort)
 	if err != nil {
