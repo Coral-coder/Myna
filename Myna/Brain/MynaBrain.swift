@@ -555,7 +555,10 @@ final class MynaBrain: ObservableObject {
                {"type": "complete", "text": "the item to check off"},\(searchTool)
              ]}
             Use an empty actions array when nothing needs doing. Never invent facts about the \
-            user's life — if the context doesn't say, say you don't know.
+            user's life — if the context doesn't say, say you don't know. Answer the question that \
+            was asked: never recite unrelated context (for example the calendar when asked about \
+            the weather). For anything about the world that the context above doesn't cover — \
+            news, facts, people, places, prices, scores, how-to — use a search action rather than guessing.
 
             JSON:
             """

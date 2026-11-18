@@ -577,6 +577,8 @@ final class TranscriptionLab: ObservableObject {
 
         liveSamples.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
         MusicSpotter.shared.ingest(data, count: frames, sampleRate: liveRate)
+        // Sounds around the user (not with the battery-saving switch on).
+        if !UserDefaults.standard.bool(forKey: Self.serverOnlyKey) { AmbientListener.shared.ingest(buffer) }
         if speaking {
             liveVoiced += frames
             liveSilence = 0

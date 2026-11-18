@@ -16,12 +16,54 @@ struct WebLookup {
 
     /// A short plain-text digest of what the web says about `query`, or nil.
     func summary(for query: String) async -> String? {
-        if let ddg = await fetch(Self.duckDuckGoURL(query), Self.parseDuckDuckGo) { return ddg }
-        if let title = await fetch(Self.wikipediaSearchURL(query), Self.parseWikipediaTitle),
+        var parts: [String] = []
+        if let ddg = await fetch(Self.duckDuckGoURL(query), Self.parseDuckDuckGo) { parts.append(ddg) }
+        // Ordinary search results: what the top pages say.
+        if let results = await searchResults(query) { parts.append("Top search results:\n" + results) }
+        if parts.isEmpty,
+           let title = await fetch(Self.wikipediaSearchURL(query), Self.parseWikipediaTitle),
            let summary = await fetch(Self.wikipediaSummaryURL(title), Self.parseWikipediaSummary) {
-            return summary
+            parts.append(summary)
         }
-        return nil
+        return parts.isEmpty ? nil : String(parts.joined(separator: "\n").prefix(2400))
+    }
+
+    /// Titles and snippets of the first few web results for `query`.
+    private func searchResults(_ query: String) async -> String? {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://html.duckduckgo.com/html/?q=\(q)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        guard let data = try? await session.data(for: request).0,
+              let html = String(data: data, encoding: .utf8) else { return nil }
+        let results = Self.parseSearchResults(html)
+        return results.isEmpty ? nil : results.joined(separator: "\n")
+    }
+
+    /// "Title — snippet" for each result on a DuckDuckGo HTML results page.
+    static func parseSearchResults(_ html: String, limit: Int = 5) -> [String] {
+        func clean(_ text: String) -> String {
+            var out = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            for (entity, plain) in ["&amp;": "&", "&quot;": "\"", "&#x27;": "'", "&#39;": "'", "&lt;": "<", "&gt;": ">", "&nbsp;": " "] {
+                out = out.replacingOccurrences(of: entity, with: plain)
+            }
+            return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func matches(_ pattern: String) -> [String] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
+            let range = NSRange(html.startIndex..., in: html)
+            return regex.matches(in: html, range: range).compactMap { match in
+                Range(match.range(at: 1), in: html).map { clean(String(html[$0])) }
+            }
+        }
+        let titles = matches("class=\"result__a\"[^>]*>(.*?)</a>")
+        let snippets = matches("class=\"result__snippet\"[^>]*>(.*?)</a>")
+        var out: [String] = []
+        for index in 0..<min(limit, min(titles.count, snippets.count)) where !snippets[index].isEmpty {
+            out.append("\(index + 1). \(titles[index]) — \(snippets[index])")
+        }
+        return out
     }
 
     private func fetch(_ url: URL?, _ parse: (Data) -> String?) async -> String? {
