@@ -339,6 +339,9 @@ final class MynaBrain: ObservableObject {
             add(.reminder, texts: [s.text], due: s.date, detail: s.detail, source: .conversation, noteID: s.noteID)
             return true
         case .appointment:
+            // Calendar entries are only made without asking when you've turned
+            // that on; otherwise the appointment waits in the Inbox for a tap.
+            guard UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? false else { return false }
             return await addEvent(title: s.text, at: s.date, detail: s.detail, noteID: s.noteID)
         case .contact, .phone, .note:
             return false

@@ -47,9 +47,20 @@ final class AppServices {
             .filter { !$0.isEmpty }
     }
 
+    /// One-time: automatic calendar entries were on by default and fired on
+    /// casual conversation. Turn them off for everyone once; it can be switched
+    /// back on in Settings.
+    private static func resetAutoScheduleOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "myna.autoScheduleReset.v1") else { return }
+        defaults.set(false, forKey: "myna.autoSchedule")
+        defaults.set(true, forKey: "myna.autoScheduleReset.v1")
+    }
+
     private init() {
         CrashReporter.shared.start()
         Self.restoreOnDeviceListening()
+        Self.resetAutoScheduleOnce()
         container = Self.makeContainer()
 
         Self.applyCustomWakeWords()

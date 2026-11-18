@@ -5,7 +5,7 @@ import UIKit
 struct SettingsView: View {
     @AppStorage("myna.silenceThreshold") private var silenceThreshold: Double = 90
     @AppStorage("myna.maxSegmentMinutes") private var maxSegmentMinutes: Int = 20
-    @AppStorage("myna.autoSchedule") private var autoSchedule = true
+    @AppStorage("myna.autoSchedule") private var autoSchedule = false
     @AppStorage(BeeCloudImporter.autoAddKey) private var beeAutoAdd = true
     @AppStorage(BackgroundWaker.enabledKey) private var backgroundWake = true
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
@@ -458,7 +458,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Auto-schedule detected meetings")
                         .settingsLabel()
-                    Text("When Myna is confident about a date and time it heard, the event goes straight onto your calendar with a 15-minute alert. Less confident detections wait for your tap inside the note.")
+                    Text("Off: nothing goes on your calendar without a tap — appointments Myna hears wait in the Inbox and inside the note. On: a clearly stated, future appointment is added by itself with a 15-minute alert.")
                         .settingsCaption()
                 }
             }

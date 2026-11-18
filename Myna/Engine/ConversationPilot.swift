@@ -46,7 +46,9 @@ final class ConversationPilot: ObservableObject {
     }
 
     var autoSchedule: Bool {
-        UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? true
+        // Off unless you turn it on: a calendar entry is too intrusive to make
+        // from casual talk on a guess.
+        UserDefaults.standard.object(forKey: "myna.autoSchedule") as? Bool ?? false
     }
 
     static let composeNotesKey = "myna.composeNotes"
@@ -418,7 +420,12 @@ final class ConversationPilot: ObservableObject {
     private func scheduleEvents(in note: ConversationNote) {
         guard scheduler.hasAccess else { return }
         var events = note.detectedEvents
-        for index in events.indices where events[index].startDate != nil && (events[index].confidence ?? 1.0) >= 0.6 {
+        for index in events.indices {
+            // Only a clearly stated, future appointment goes on the calendar by
+            // itself. A missing confidence means "unknown", not "certain" (it
+            // used to count as certain, which is how small talk became events).
+            guard let start = events[index].startDate, start > Date.now,
+                  (events[index].confidence ?? 0) >= 0.85 else { continue }
             if let identifier = try? scheduler.schedule(events[index]) {
                 events[index].calendarEventID = identifier
                 eventsScheduledToday += 1
