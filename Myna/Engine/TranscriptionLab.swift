@@ -487,6 +487,7 @@ final class TranscriptionLab: ObservableObject {
         let chosen = activeEngine
         if !isReady(chosen), !chosen.isCloud { download(chosen) }
         Task { await VoiceID.shared.prepare() }
+        startDrainLoop()
     }
 
     /// Apple's live recognizer handles the stream itself. Any other engine gets
@@ -628,6 +629,16 @@ final class TranscriptionLab: ObservableObject {
                     lastError = "Home server: \(error.localizedDescription)"
                 }
             }
+            // "Home server only": don't transcribe here. Keep the audio and hand
+            // it to the server when it answers again. (If the phone runs out of
+            // room for held audio, it transcribes here rather than lose any.)
+            if usedName.isEmpty, UserDefaults.standard.bool(forKey: Self.serverOnlyKey),
+               let self, self.hold(chunk, rate: rate, heardAt: heardAt, voicedSeconds: voicedSeconds) {
+                self.livePending = max(0, self.livePending - 1)
+                if self.livePending == 0, self.liveVoiced == 0 { self.livePartial = "" }
+                self.liveStatus = "Saved for the home server (\(self.heldCount) waiting)"
+                return
+            }
             for (index, engine) in engines.enumerated() where usedName.isEmpty {
                 do {
                     text = try await LabRunner.shared.transcribe(engine: engine, modelDir: dirs[index], samples: chunk, sampleRate: rate)
@@ -654,6 +665,91 @@ final class TranscriptionLab: ObservableObject {
             self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
             self.liveListener?.deliverExternalText(cleaned)
         }
+    }
+
+    // MARK: - Audio held for the home server
+
+    static let serverOnlyKey = "myna.server.only"
+    /// Most audio kept on the phone while the server is away (about 17 hours).
+    private static let heldLimitBytes = 2_000_000_000
+
+    /// Clips waiting for the home server.
+    @Published private(set) var heldCount = 0
+    private var draining = false
+    private var drainLoop: Task<Void, Never>?
+
+    private static var heldFolder: URL {
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("held-audio", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private static func heldFiles() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: heldFolder, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Keep one clip for later. False if it couldn't be kept (no room left).
+    private func hold(_ chunk: [Float], rate: Int, heardAt: Date, voicedSeconds: Double) -> Bool {
+        let files = Self.heldFiles()
+        let used = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        guard used < Self.heldLimitBytes else { return false }
+        // The name carries when it was heard, so order and time survive.
+        let name = String(format: "%015.0f_%d.wav", heardAt.timeIntervalSince1970 * 1000, Int(voicedSeconds * 10))
+        do {
+            try LabWav.data(samples: chunk, sampleRate: rate).write(to: Self.heldFolder.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return false
+        }
+        heldCount = files.count + 1
+        return true
+    }
+
+    /// Watch for the server coming back and hand it everything that was held.
+    private func startDrainLoop() {
+        heldCount = Self.heldFiles().count
+        guard drainLoop == nil else { return }
+        drainLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                await self?.drainHeld()
+            }
+        }
+    }
+
+    private func drainHeld() async {
+        guard !draining, heldCount > 0, HomeServer.shared.shouldTry, HomeServer.shared.reachable == true else { return }
+        draining = true
+        defer { draining = false }
+        for file in Self.heldFiles() {
+            guard let wav = try? Data(contentsOf: file), wav.count > 44 else {
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
+            let parts = file.deletingPathExtension().lastPathComponent.split(separator: "_")
+            let heardAt = Date(timeIntervalSince1970: (Double(parts.first ?? "") ?? Date().timeIntervalSince1970 * 1000) / 1000)
+            let voiced = (Double(parts.last ?? "") ?? 0) / 10
+            // 16-bit mono after a 44-byte header, as LabWav writes it.
+            let rate = Int(wav.subdata(in: 24..<28).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+            let samples: [Float] = wav.subdata(in: 44..<wav.count).withUnsafeBytes { raw in
+                let count = raw.count / 2
+                return (0..<count).map { Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self))) / 32767 }
+            }
+            let seconds = rate > 0 ? Double(samples.count) / Double(rate) : 0
+            guard let text = try? await HomeServer.shared.transcribe(wav: wav, audioSeconds: seconds) else {
+                break  // the server went away again; keep the rest for next time
+            }
+            try? FileManager.default.removeItem(at: file)
+            heldCount = max(0, heldCount - 1)
+            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                let voice = await VoiceID.shared.embedding(samples: samples, sampleRate: rate)
+                record(text: cleaned, heardAt: heardAt, duration: voiced, engine: "Home server", voicePrint: voice)
+            }
+            liveStatus = heldCount > 0 ? "Catching up on the home server (\(heldCount) left)" : "Caught up with the home server"
+        }
+        heldCount = Self.heldFiles().count
     }
 
     // MARK: - The transcript and the voices in it

@@ -6,6 +6,8 @@ struct HomeServerView: View {
     @ObservedObject private var server = HomeServer.shared
     @ObservedObject private var sync = HomeSync.shared
     @ObservedObject private var tailnet = TailnetLink.shared
+    @ObservedObject private var lab = TranscriptionLab.shared
+    @AppStorage(TranscriptionLab.serverOnlyKey) private var serverOnly = false
     @State private var link = ""
     @State private var scanning = false
 
@@ -47,6 +49,20 @@ struct HomeServerView: View {
                         .font(.system(size: 15, weight: .regular))
                         .foregroundStyle(MynaTheme.ink)
                     Text("Off: everything is done on this iPhone.")
+                        .font(.system(size: 12, weight: .light))
+                        .foregroundStyle(MynaTheme.muted)
+                }
+            }
+            .tint(MynaTheme.signal)
+
+            Toggle(isOn: $serverOnly) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Don't transcribe on this iPhone")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(MynaTheme.ink)
+                    Text(lab.heldCount > 0
+                         ? "\(lab.heldCount) recordings waiting for the home server."
+                         : "While the server can't be reached, audio is only recorded, then sent to the server when it's back.")
                         .font(.system(size: 12, weight: .light))
                         .foregroundStyle(MynaTheme.muted)
                 }
