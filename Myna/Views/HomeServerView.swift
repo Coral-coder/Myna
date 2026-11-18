@@ -4,13 +4,14 @@ import SwiftUI
 /// answering, and which of the two did the last job.
 struct HomeServerView: View {
     @ObservedObject private var server = HomeServer.shared
+    @ObservedObject private var sync = HomeSync.shared
     @State private var link = ""
     @State private var scanning = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Your computer at home does the heavy work — transcription and note-writing — when it can be reached. When it can't, this iPhone does the same job itself and hands back as soon as the computer answers again.")
+                Text("Your computer at home does the heavy work — transcription and note-writing — when it can be reached, and keeps a copy of everything Myna saves, which you can look through in the server's window. When it can't be reached, this iPhone does the same job itself and catches the computer up afterwards.")
                     .font(.system(size: 14, weight: .light))
                     .foregroundStyle(MynaTheme.muted)
 
@@ -36,6 +37,7 @@ struct HomeServerView: View {
             if let ms = server.latencyMs { row("Round trip", "\(ms) ms") }
             if !server.lastRoute.isEmpty { row("Last job", server.lastRoute) }
             if let error = server.lastError { row("Last problem", error) }
+            row("Home database", databaseText)
 
             Toggle(isOn: $server.enabled) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -50,11 +52,17 @@ struct HomeServerView: View {
             .tint(MynaTheme.signal)
 
             HStack(spacing: 10) {
-                pill("Check now") { Task { await server.check() } }
+                pill("Check now") { Task { await server.check(); await sync.syncNow() } }
                 pill("Unpair") { server.unpair() }
                 Spacer()
             }
         }
+    }
+
+    private var databaseText: String {
+        if let error = sync.lastError { return "Couldn't sync: \(error)" }
+        guard let last = sync.lastSync else { return sync.isSyncing ? "Syncing…" : "Waiting for the server" }
+        return "\(sync.syncedCount) records kept at home · synced \(last.formatted(date: .omitted, time: .shortened))"
     }
 
     private var statusText: String {

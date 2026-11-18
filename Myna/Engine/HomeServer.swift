@@ -87,6 +87,7 @@ final class HomeServer: ObservableObject {
             lastError = "That isn't a Myna pairing link."
             return false
         }
+        if newToken != token { HomeSync.shared.reset() }
         addresses = urls
         baseURL = url
         token = newToken
@@ -240,6 +241,21 @@ final class HomeServer: ObservableObject {
             throw ServerError(message: (json["detail"] as? String) ?? "The server answered with an error (\(http.statusCode)).")
         }
         return json
+    }
+
+    /// One exchange with the home database: sends changes, returns the reply.
+    func syncExchange(_ body: Data) async throws -> Data {
+        guard let baseURL else { throw ServerError(message: "No home server is paired.") }
+        var request = URLRequest(url: baseURL.appendingPathComponent("v1/sync"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw ServerError(message: "The home database answered with an error (\(http.statusCode)).")
+        }
+        return data
     }
 
     // MARK: - Token storage (Keychain)
