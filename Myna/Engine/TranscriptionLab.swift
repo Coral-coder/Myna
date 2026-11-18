@@ -793,27 +793,41 @@ final class TranscriptionLab: ObservableObject {
 
     // MARK: - The transcript and the voices in it
 
-    /// How alike two voice prints must be to count as the same person.
-    private static let sameVoice: Float = 0.5
+    /// How alike two voice prints must be to count as the same person. The
+    /// earlier bar (0.5) was loose enough to merge different people, men and
+    /// women included, into one voice.
+    private static let sameVoice: Float = 0.62
+    /// A match has to be this sure before it is allowed to adjust the stored
+    /// voice print, so one wrong match can't drag a voice toward someone else.
+    private static let learnVoice: Float = 0.72
+    /// Below this against everyone known, the voice is someone new.
+    private static let newVoice: Float = 0.40
+    /// Shortest stretch whose voice print is trusted at all.
+    private static let shortestPrint: Double = 1.5
 
     /// Saves one utterance, attributing it to a known voice or starting a new
     /// "Speaker N" when the voice isn't one Myna has heard.
     private func record(text: String, heardAt: Date, duration: Double, engine: String, voicePrint: [Float]?) {
         guard let context = container?.mainContext else { return }
         var speakerKey = ""
-        if let voicePrint {
+        // A line is given to a voice only when the match is clear. In between
+        // "clearly them" and "clearly someone new" it is left unassigned,
+        // which is better than a wrong name.
+        if let voicePrint, duration >= Self.shortestPrint {
             let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
             var best: VoicePerson?
             var bestScore: Float = -1
-            for person in people {
+            for person in people where !person.centroid.isEmpty {
                 let score = VoicePrint.similarity(VoicePrint.vector(person.centroid), voicePrint)
                 if score > bestScore { bestScore = score; best = person }
             }
             if let best, bestScore >= Self.sameVoice {
-                best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
-                best.sampleCount += 1
+                if bestScore >= Self.learnVoice {
+                    best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
+                    best.sampleCount += 1
+                }
                 speakerKey = best.key
-            } else {
+            } else if bestScore < Self.newVoice, duration >= 3 {
                 let person = VoicePerson(name: "Speaker \(people.count + 1)", centroid: VoicePrint.data(voicePrint))
                 context.insert(person)
                 speakerKey = person.key
@@ -847,14 +861,50 @@ final class TranscriptionLab: ObservableObject {
         try? context.save()
     }
 
+    /// "This line was said by …": set the speaker of ONE line by name. Only
+    /// that line changes. If nobody has that name yet, a new person is made
+    /// from this line's voice.
+    func setSpeaker(of utterance: Utterance, named rawName: String) {
+        guard let context = container?.mainContext else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
+        if let existing = people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            assign(utterance, to: existing)
+            return
+        }
+        let person = VoicePerson(name: name, centroid: utterance.embedding ?? Data())
+        person.isNamed = true
+        context.insert(person)
+        utterance.speakerKey = person.key
+        try? context.save()
+    }
+
+    /// This line has no known speaker.
+    func clearSpeaker(of utterance: Utterance) {
+        utterance.speakerKey = ""
+        try? container?.mainContext.save()
+    }
+
+    /// Forget every voice and who said what, and start learning again. The
+    /// transcript itself is kept.
+    func forgetVoices() {
+        guard let context = container?.mainContext else { return }
+        for person in (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? [] { context.delete(person) }
+        let lines = (try? context.fetch(FetchDescriptor<Utterance>(predicate: #Predicate<Utterance> { $0.speakerKey != "" }))) ?? []
+        for line in lines { line.speakerKey = "" }
+        try? context.save()
+    }
+
     /// "That wasn't them, it was …": move one utterance to another person and
     /// teach that person's voice print with it.
     func assign(_ utterance: Utterance, to person: VoicePerson) {
         guard let context = container?.mainContext else { return }
         utterance.speakerKey = person.key
         if let data = utterance.embedding {
-            person.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(person.centroid), count: person.sampleCount,
-                                                               with: VoicePrint.vector(data)))
+            person.centroid = person.centroid.isEmpty ? data
+                : VoicePrint.data(VoicePrint.merged(VoicePrint.vector(person.centroid), count: person.sampleCount,
+                                                    with: VoicePrint.vector(data)))
             person.sampleCount += 1
         }
         try? context.save()

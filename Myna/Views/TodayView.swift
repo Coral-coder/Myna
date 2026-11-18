@@ -234,6 +234,7 @@ private struct TodaySegments: View {
     @Query(sort: \VoicePerson.createdAt) private var people: [VoicePerson]
     @State private var openID: UUID?
     @State private var newName = ""
+    @State private var confirmForget = false
     @AppStorage("myna.today.hideMedia") private var hideMedia = false
     private let searching: Bool
 
@@ -347,58 +348,92 @@ private struct TodaySegments: View {
                 .font(MynaTheme.mono(10))
                 .foregroundStyle(MynaTheme.faint)
 
-            if line.embedding == nil {
-                Text("No voice print for this line (too short, or the voice model wasn't ready), so it can't be matched to a person.")
-                    .font(.system(size: 12, weight: .light))
-                    .foregroundStyle(MynaTheme.muted)
-            } else {
-                Text("WHO SAID THIS?")
-                    .font(MynaTheme.mono(10))
-                    .tracking(1.5)
-                    .foregroundStyle(MynaTheme.faint)
+            Text("WHO SAID THIS LINE?")
+                .font(MynaTheme.mono(10))
+                .tracking(1.5)
+                .foregroundStyle(MynaTheme.faint)
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(people) { person in
-                            Button {
-                                TranscriptionLab.shared.assign(line, to: person)
-                            } label: {
-                                Text(person.name)
-                                    .font(.system(size: 13, weight: person.key == line.speakerKey ? .regular : .light))
-                                    .foregroundStyle(person.key == line.speakerKey ? MynaTheme.paper : MynaTheme.ink)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(Capsule().fill(person.key == line.speakerKey ? MynaTheme.ink : Color.clear))
-                                    .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                if let current {
-                    HStack(spacing: 8) {
-                        TextField(current.isNamed ? "Rename \(current.name)" : "Name this voice", text: $newName)
-                            .font(.system(size: 14, weight: .light))
-                            .foregroundStyle(MynaTheme.ink)
-                            .autocorrectionDisabled()
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MynaTheme.hair, lineWidth: 1))
+            // Choosing a name here changes this line only.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(people) { person in
                         Button {
-                            TranscriptionLab.shared.name(current, as: newName)
-                            newName = ""
+                            TranscriptionLab.shared.assign(line, to: person)
                         } label: {
-                            Text("Save")
-                                .font(MynaTheme.mono(11))
-                                .tracking(1)
-                                .textCase(.uppercase)
-                                .foregroundStyle(newName.trimmingCharacters(in: .whitespaces).isEmpty ? MynaTheme.faint : MynaTheme.ink)
+                            Text(person.name)
+                                .font(.system(size: 13, weight: person.key == line.speakerKey ? .regular : .light))
+                                .foregroundStyle(person.key == line.speakerKey ? MynaTheme.paper : MynaTheme.ink)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Capsule().fill(person.key == line.speakerKey ? MynaTheme.ink : Color.clear))
+                                .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
-                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    if !line.speakerKey.isEmpty {
+                        Button {
+                            TranscriptionLab.shared.clearSpeaker(of: line)
+                        } label: {
+                            Text("Nobody / unknown")
+                                .font(.system(size: 13, weight: .light))
+                                .foregroundStyle(MynaTheme.muted)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .overlay(Capsule().strokeBorder(MynaTheme.hairSoft, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
+            }
+
+            HStack(spacing: 8) {
+                TextField("Someone else: type a name", text: $newName)
+                    .font(.system(size: 14, weight: .light))
+                    .foregroundStyle(MynaTheme.ink)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MynaTheme.hair, lineWidth: 1))
+                Button {
+                    TranscriptionLab.shared.setSpeaker(of: line, named: newName)
+                    newName = ""
+                } label: {
+                    Text("Set")
+                        .font(MynaTheme.mono(11))
+                        .tracking(1)
+                        .textCase(.uppercase)
+                        .foregroundStyle(newName.trimmingCharacters(in: .whitespaces).isEmpty ? MynaTheme.faint : MynaTheme.ink)
+                }
+                .buttonStyle(.plain)
+                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if let current, !newName.trimmingCharacters(in: .whitespaces).isEmpty {
+                // The other meaning of typing a name, kept separate and explicit.
+                Button {
+                    TranscriptionLab.shared.name(current, as: newName)
+                    newName = ""
+                } label: {
+                    Text("Or rename \(current.name) to this on every line")
+                        .font(.system(size: 12, weight: .light))
+                        .foregroundStyle(MynaTheme.muted)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                confirmForget = true
+            } label: {
+                Text("Forget all voices and start over")
+                    .font(.system(size: 12, weight: .light))
+                    .foregroundStyle(MynaTheme.faint)
+                    .underline()
+            }
+            .buttonStyle(.plain)
+            .confirmationDialog("Forget every voice Myna has learned? The transcript is kept; who said each line is cleared.",
+                                isPresented: $confirmForget, titleVisibility: .visible) {
+                Button("Forget all voices", role: .destructive) { TranscriptionLab.shared.forgetVoices() }
             }
         }
         .padding(.leading, searching ? 98 : 58)
