@@ -270,8 +270,12 @@ final class SpeechListener: NSObject, ObservableObject {
                 // The bracelet is the source: a play-only session so Myna can still
                 // speak its replies, with NO microphone opened at all. Recognition
                 // is driven entirely by feedExternalAudio.
-                try session.setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP, .mixWithOthers])
-                try session.setActive(true, options: .notifyOthersOnDeactivation)
+                // (.allowBluetoothA2DP is only valid with .playAndRecord; passing it
+                // here is what failed with OSStatus -50. Playback routes to A2DP on
+                // its own.) Recognition of bracelet audio doesn't need the session
+                // at all, so a session hiccup must never stop it.
+                try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try? session.setActive(true, options: .notifyOthersOnDeactivation)
             }
 
             isListening = true
@@ -353,7 +357,7 @@ final class SpeechListener: NSObject, ObservableObject {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
             let session = AVAudioSession.sharedInstance()
-            try? session.setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP, .mixWithOthers])
+            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try? session.setActive(true, options: .notifyOthersOnDeactivation)
         }
     }
