@@ -61,7 +61,6 @@ struct RootView: View {
                 )
         }
         .onPreferenceChange(DockHeightKey.self) { dockClearance = $0 }
-        .overlay(alignment: .topTrailing) { moodToggle }
         .overlay(alignment: .top) { bannerView }
         .fullScreenCover(isPresented: .constant(!onboarded)) {
             PermissionsView(onboarded: $onboarded)
@@ -75,24 +74,25 @@ struct RootView: View {
 
     private var todayStage: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 13) {
+            ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 22) {
                 ForEach(TodaySub.allCases, id: \.self) { sub in
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { todaySub = sub }
                     } label: {
                         Text(sub.rawValue)
-                            .font(MynaTheme.mono(11))
+                            .font(MynaTheme.mono(13))
                             .tracking(1.5)
                             .textCase(.uppercase)
                             .foregroundStyle(todaySub == sub ? MynaTheme.ink : MynaTheme.faint)
                     }
                     .buttonStyle(.plain)
                 }
-                Spacer()
             }
             .padding(.horizontal, 22)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
+            }
+            .padding(.top, 10)
+            .padding(.bottom, 12)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
             }
@@ -146,38 +146,6 @@ struct RootView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: - Mood toggle (Daylight / Dusk)
-
-    private var moodToggle: some View {
-        HStack(spacing: 2) {
-            ForEach(MynaMood.allCases) { mood in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.4)) { themeStore.mood = mood }
-                } label: {
-                    Text(mood.label)
-                        .font(MynaTheme.mono(9.5))
-                        .tracking(1.2)
-                        .textCase(.uppercase)
-                        .foregroundStyle(themeStore.mood == mood ? MynaTheme.ink : MynaTheme.muted)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background {
-                            if themeStore.mood == mood {
-                                Capsule().fill(MynaTheme.veil)
-                                    .overlay(Capsule().strokeBorder(MynaTheme.glassEdge, lineWidth: 1))
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(3)
-        .background(Capsule().fill(.ultraThinMaterial))
-        .overlay(Capsule().strokeBorder(MynaTheme.hair, lineWidth: 1))
-        .padding(.trailing, 18)
-        .padding(.top, 6)
-    }
-
     @ViewBuilder
     private var bannerView: some View {
         if let banner = pilot.banner {
@@ -189,7 +157,7 @@ struct RootView: View {
                 .padding(.vertical, 10)
                 .glassCard(cornerRadius: 16)
                 .padding(.horizontal, 24)
-                .padding(.top, 54)
+                .padding(.top, 8)
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .task {
                     try? await Task.sleep(for: .seconds(4))
