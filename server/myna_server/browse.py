@@ -9,7 +9,7 @@ from urllib.parse import quote
 from . import catalog
 from .store import Store
 
-TABS = (("utterance", "Transcript"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
+TABS = (("utterance", "Transcript"), ("conversation", "Conversations"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
 
 _STYLE = """<style>
 body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
@@ -81,7 +81,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
         'background:none;border-radius:99px;cursor:pointer">Lock</button></form>'
     )
     search = ""
-    if active not in ("live", "models", "ask", "compare", "daily"):
+    if active not in ("live", "models", "ask", "compare", "daily", "conversation-detail"):
         search = (
             f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
             f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
@@ -100,7 +100,7 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
     day = None
     for row in rows:
         stamp = _when(row["at"], "%A %d %B %Y")
-        if stamp != day and kind in ("utterance", "note"):
+        if stamp != day and kind in ("utterance", "note", "conversation"):
             day = stamp
             parts.append(f'<div class="day">{_e(stamp)}</div>')
         clock = _when(row["at"], "%H:%M")
@@ -131,6 +131,22 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
                 f'<div class="row">{mark} {_e(row.get("text"))} <span class="dim">{_e(row.get("kind"))}</span>'
                 f'<div class="dim">{_e(row.get("detail"))}</div></div>'
             )
+        elif kind == "conversation":
+            if row.get("discarded"):
+                parts.append(
+                    f'<div class="row dim"><span class="t">{clock}</span>Discarded as not worth keeping '
+                    f'({row.get("words", 0)} words) · <a href="/browse/conversation?id={quote(row["id"])}">see it</a></div>'
+                )
+            else:
+                link = f'/browse/conversation?id={quote(row["id"])}'
+                tasks = len(row.get("actionItems") or [])
+                extra = f' · {tasks} to do' if tasks else ""
+                music = f' · ♪ {len(row["songs"])}' if row.get("songs") else ""
+                parts.append(
+                    f'<div class="row"><span class="t">{clock}</span>{_e(row.get("emoji"))} <a href="{link}">{_e(row.get("title"))}</a>'
+                    f' <span class="dim">{_e(row.get("category"))}{extra}{music}</span>'
+                    f'<div class="dim">{_e(row.get("gist") or row.get("overview"))}</div></div>'
+                )
         elif kind == "daily":
             parts.append(
                 f'<h1>{_e(_when(row["at"], "%A %d %B %Y"))}</h1>'
@@ -155,6 +171,14 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
             )
     if kind == "song" and parts:
         parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
+    if kind == "conversation":
+        parts.insert(
+            0,
+            '<form method="post" action="/browse/conversations" style="margin:6px 0 4px">'
+            '<button style="font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:7px 14px;'
+            'border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer">Write up what is waiting now</button></form>'
+            f'<div class="dim">{_e(daily_status) or "A conversation is written up by itself two minutes after it ends."}</div>',
+        )
     if kind == "daily":
         parts.insert(
             0,
@@ -461,3 +485,40 @@ def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: i
             f'<div class="row"><div class="dim">{_e(_when(clip["at"], "%d %b %H:%M:%S"))} · {clip["seconds"]:.0f} s</div>{lines}</div>'
         )
     return _frame("compare", "", "".join(parts), store.counts())
+
+
+def conversation_page(store: Store, record_id: str) -> str:
+    """One conversation as written up: the note, what to do, memories, music."""
+    talk = store.get("conversation", record_id)
+    if talk is None:
+        return _frame("conversation", "", '<p class="dim">That conversation is gone.</p>', store.counts())
+    when = f'{_when(talk.get("startedAt"), "%A %d %B %Y, %H:%M")} to {_when(talk.get("endedAt"), "%H:%M")}'
+    parts = [
+        f'<h1>{_e(talk.get("emoji"))} {_e(talk.get("title"))}</h1>',
+        f'<div class="dim">{_e(when)} · {_e(talk.get("category"))} · {talk.get("words", 0)} words</div>',
+    ]
+    if talk.get("gist"):
+        parts.append(f'<p>{_e(talk.get("gist"))}</p>')
+    if talk.get("overview"):
+        parts.append(f'<h2>Overview</h2><p>{_e(talk.get("overview"))}</p>')
+    for section in talk.get("sections") or []:
+        parts.append(f'<h2>{_e(section.get("heading"))}</h2>' + "".join(
+            f'<div class="row">{_e(bullet)}</div>' for bullet in section.get("bullets") or []))
+    if talk.get("actionItems"):
+        parts.append("<h2>To do</h2>")
+        for item in talk["actionItems"]:
+            detail = " · ".join(part for part in (item.get("owner"), item.get("due_at"), item.get("context")) if part)
+            parts.append(f'<div class="row">☐ {_e(item.get("description"))}<div class="dim">{_e(detail)}</div></div>')
+    if talk.get("events"):
+        parts.append("<h2>Events</h2>" + "".join(
+            f'<div class="row">{_e(event.get("title"))} <span class="dim">{_e(event.get("start"))}, '
+            f'{_e(event.get("duration_minutes"))} min</span></div>' for event in talk["events"]))
+    if talk.get("memories"):
+        parts.append("<h2>Memories</h2>" + "".join(
+            f'<div class="row">{_e(memory.get("content"))} <span class="dim">'
+            f'{"worth remembering" if memory.get("category") == "interesting" else "about you"}</span></div>'
+            for memory in talk["memories"]))
+    if talk.get("songs"):
+        parts.append("<h2>Music heard</h2>" + "".join(f'<div class="row">{_e(song)}</div>' for song in talk["songs"]))
+    parts.append(f'<h2>Transcript</h2><pre>{_e(talk.get("transcript"))}</pre>')
+    return _frame("conversation", "", "".join(parts), store.counts())

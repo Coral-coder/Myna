@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, browse, catalog, daily, tuner, web
+from . import ask, browse, catalog, conversations, daily, tuner, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -234,7 +234,8 @@ def create_app(
 
     @app.get("/browse", response_class=HTMLResponse)
     def browse_list(kind: str = "utterance", q: str = "", before: float | None = None, _: None = Depends(paired)) -> str:
-        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before, daily_state.get("status", ""))
+        status = talk_state.get("status", "") if kind == "conversation" else daily_state.get("status", "")
+        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before, status)
 
     def engines_state() -> dict:
         return {
@@ -394,6 +395,44 @@ def create_app(
 
         threading.Thread(target=run_tune, daemon=True).start()
         return RedirectResponse("/browse/compare", status_code=303)
+
+    # -- writing up finished conversations, the way Omi does --------------------
+
+    talk_state = {"running": False, "status": ""}
+
+    def run_conversations(most: int = 2) -> int:
+        """Write up conversations that have finished since the last one handled."""
+        if talk_state["running"] or tune_state["running"] or daily_state["running"]:
+            return 0
+        talk_state["running"] = True
+        try:
+            def progress(text: str) -> None:
+                talk_state["status"] = text
+
+            cheap = helper.generate if chosen(helper) else None
+            handled = conversations.run_pending(store, writer.generate, cheap, time.time(), config.owner_name,
+                                                most, progress)
+            if handled:
+                talk_state["status"] = f"Wrote up {handled} conversation{'s' if handled != 1 else ''} at {time.strftime('%H:%M')}."
+            return handled
+        except Exception as error:
+            talk_state["status"] = f"Couldn't write up a conversation: {error}"
+            return 0
+        finally:
+            talk_state["running"] = False
+
+    app.state.run_conversations = run_conversations
+
+    @app.post("/browse/conversations")
+    async def start_conversations(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        threading.Thread(target=run_conversations, args=(20,), daemon=True).start()
+        return RedirectResponse("/browse?kind=conversation", status_code=303)
+
+    @app.get("/browse/conversation", response_class=HTMLResponse)
+    def browse_conversation(id: str, _: None = Depends(paired)) -> str:
+        return browse.conversation_page(store, id)
 
     # -- the end-of-day summary -------------------------------------------------
 

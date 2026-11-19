@@ -55,6 +55,10 @@ class Config:
     # Choose the transcription model by itself: while nothing is being
     # recorded, try the candidates on the hardest recent recordings and keep
     # the best. At most once in this many hours.
+    # Write up each finished conversation the way Omi does (see conversations.py).
+    conversations: bool = True
+    # The wearer's name, for memories ("Sam prefers…"). Empty = "the wearer".
+    owner_name: str = ""
     auto_tune: bool = True
     tune_every_hours: int = 24
     tuned_at: float = 0.0

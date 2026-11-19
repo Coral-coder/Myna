@@ -59,6 +59,22 @@ def gather(store: Store, question: str, wide: bool = False) -> str:
     if matched:
         parts.append("FROM THE USER'S TRANSCRIPT AND NOTES (matching the question):\n" + "\n".join(matched[: 40 * scale]))
 
+    # Conversations as written up: what was decided, to do, and remembered.
+    talks = []
+    for word in words:
+        for row in store.browse("conversation", word, limit=3 * scale):
+            if row["id"] not in seen and not row.get("discarded"):
+                seen.add(row["id"])
+                todo = "; ".join(item.get("description", "") for item in row.get("actionItems") or [])
+                talks.append(f"[conversation, {_when(row['at'])}] {row.get('title', '')}: {row.get('overview', '')}"
+                             + (f" To do: {todo}." if todo else ""))
+    if talks:
+        parts.append("CONVERSATIONS (matching the question):\n" + "\n".join(talks[: 10 * scale]))
+    learned = [m.get("content", "") for row in store.browse("conversation", limit=60)
+               for m in row.get("memories") or []]
+    if learned:
+        parts.append("REMEMBERED FROM CONVERSATIONS:\n" + "\n".join(f"- {m}" for m in learned[:30] if m))
+
     recent = store.browse("utterance", limit=25 * scale)
     if recent:
         lines = [f"[{_when(row['at'])}] {row.get('text', '')}" for row in reversed(recent)]

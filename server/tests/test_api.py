@@ -499,3 +499,58 @@ def test_tuning_switches_to_the_best_model_and_reports(tmp_path):
     assert winner in ("careful", "careful-too") and config.stt_model == winner and stt.name == winner
     page = client.get("/browse/compare", headers=AUTH).text
     assert "CHOSEN" in page and "sloppy" in page and "Tune now" in page
+
+
+def test_conversations_are_split_kept_or_discarded_and_written_up_like_omi(stt):
+    from myna_server import conversations
+
+    import time as clock
+
+    base = float(int(clock.time()) - 5000)
+    lines = [{"at": base + offset, "text": text} for offset, text in
+             [(0, "okay"), (5, "yeah sure"), (400, "we should move the launch to March"), (410, "agreed, I'll tell the team")]]
+    # Two minutes of silence ends a conversation; one still going on is left alone.
+    assert [len(group) for group in conversations.split(lines, now=base + 1000)] == [2, 2]
+    assert [len(group) for group in conversations.split(lines, now=base + 420)] == [2]
+
+    asked = []
+
+    def model(instructions, prompt):
+        asked.append((instructions, prompt))
+        if instructions.startswith("You will receive a transcript"):
+            return "discard = True" if "yeah sure" in prompt else "discard = False"
+        if "memory curator" in instructions:
+            return ('{"memories": [{"content": "Sam decided to move the launch to March", "category": "system"},'
+                    ' {"content": "Speaker 1 likes coffee", "category": "system"},'
+                    ' {"content": "Sam decided to move the launch to March.", "category": "system"}]}')
+        return ('{"title": "Launch moved", "gist": "Launch date pushed to March", "overview": "They agreed to move it.",'
+                ' "emoji": "🚀", "category": "work", "sections": [{"heading": "Decision", "bullets": ["Launch moves to March."]}],'
+                ' "action_items": [{"description": "Tell the team about the new launch date", "owner": "Sam", "due_at": "", "context": "agreed in the call"}],'
+                ' "events": [{"title": "Launch", "start": "sometime in March"}]}')
+
+    writer = Recorder("big", model)
+    app = create_app(Config(token="secret-token", owner_name="Sam"), stt, writer)
+    client = TestClient(app)
+    changes = [change("utterance", f"u{i}", {"text": line["text"], "heardAt": line["at"]}, 1) for i, line in enumerate(lines)]
+    changes.append(change("song", "s1", {"title": "Blue in Green", "artist": "Miles Davis", "lastHeard": base + 405}, 1))
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": changes})
+
+    assert app.state.run_conversations(10) == 2
+    page = client.get("/browse?kind=conversation", headers=AUTH).text
+    assert "Launch moved" in page and "Discarded as not worth keeping" in page and "♪ 1" in page
+    detail = client.get("/browse/conversation?id=c-" + str(int((base + 400) * 1000)), headers=AUTH).text
+    assert "Tell the team about the new launch date" in detail and "Blue in Green - Miles Davis" in detail
+    assert detail.count("Sam decided to move the launch to March") == 1   # the reworded repeat is dropped
+    assert "likes coffee" not in detail                                    # "Speaker 1" never reaches a memory
+    assert "sometime in March" not in detail                               # an event needs a real date and time
+    assert "Sam" in [a for a in asked if "memory curator" in a[0]][0][0]   # memories are about the named wearer
+    assert app.state.run_conversations(10) == 0                            # nothing is written up twice
+
+    # Over a hundred words is always kept, without asking.
+    long_text = " ".join(["word"] * 150)
+    assert conversations.should_discard(long_text, 150, 30, lambda *a: "discard = True") is False
+    assert conversations.should_discard("", 0, 5, lambda *a: "discard = False") is True
+    # Ask can use what was written up.
+    writer.reply = '{"reply": "March.", "search": ""}'
+    client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the launch?"})
+    assert "Launch moved" in writer.asked[-1][1] and "REMEMBERED FROM CONVERSATIONS" in writer.asked[-1][1]

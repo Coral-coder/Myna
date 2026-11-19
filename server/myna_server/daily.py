@@ -57,6 +57,7 @@ def gather(store: Store, day: str) -> dict:
     return {
         "lines": within("utterance"),
         "notes": within("note", 200),
+        "talks": [talk for talk in within("conversation", 300) if not talk.get("discarded")],
         "songs": within("song", 200),
         "items": within("item", 300),
     }
@@ -84,7 +85,7 @@ def stretches(lines: list[dict], size: int = 6000) -> list[str]:
 def summarize(store: Store, day: str, condense: Generate, write: Generate, progress=lambda text: None) -> str:
     """Write the summary for `day` and return it. Empty if nothing was saved."""
     material = gather(store, day)
-    if not material["lines"] and not material["notes"]:
+    if not material["lines"] and not material["notes"] and not material["talks"]:
         return ""
     parts: list[str] = []
     pieces = stretches(material["lines"])
@@ -103,6 +104,13 @@ def summarize(store: Store, day: str, condense: Generate, write: Generate, progr
                 notes.append(f"    to do: {task['task']}")
         if note.get("photoText"):
             notes.append(f"    photos taken then say: {str(note['photoText'])[:400]}")
+    for talk in material["talks"]:
+        notes.append(f"- {_clock(talk['at'])}: {talk.get('title', '')}. {talk.get('overview', '')}")
+        for task in talk.get("actionItems") or []:
+            if task.get("description"):
+                notes.append(f"    to do: {task['description']}")
+        for memory in talk.get("memories") or []:
+            notes.append(f"    learned: {memory.get('content', '')}")
     places = sorted({(note.get("placeName"), _clock(note["at"])) for note in material["notes"] if note.get("placeName")},
                     key=lambda pair: pair[1])
 

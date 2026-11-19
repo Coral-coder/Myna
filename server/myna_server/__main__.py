@@ -57,6 +57,9 @@ def main() -> None:
                     written = store.get("daily", day)
                     if written is None or float(written.get("writtenAt") or 0) < last:
                         app.state.run_daily(day)
+                # Write up conversations that have ended.
+                if config.conversations:
+                    app.state.run_conversations()
                 # Tune the transcription model while things are quiet.
                 if (config.auto_tune and last > 0 and now - last >= 20 * 60
                         and now - config.tuned_at >= config.tune_every_hours * 3600):
