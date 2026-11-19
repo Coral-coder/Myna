@@ -77,6 +77,81 @@ def remember(entry: dict) -> None:
         pass
 
 
+# -- getting the model ready ------------------------------------------------------------
+
+# The files faster-whisper loads (the same list it downloads itself).
+_WHISPER_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+
+
+def download_speech(state: State, repo: str) -> None:
+    """Download a Whisper (CTranslate2) model's files, showing progress, into
+    the folder faster-whisper loads from. Raises with a plain reason if the
+    repository isn't a model this server can run."""
+    import fnmatch
+
+    from huggingface_hub import HfApi, snapshot_download
+
+    info = HfApi().model_info(repo, files_metadata=True)
+    files = {s.rfilename: s.size or 0 for s in info.siblings or []}
+    wanted = {name: size for name, size in files.items()
+              if any(fnmatch.fnmatch(name, pattern) for pattern in _WHISPER_FILES)}
+    if "model.bin" not in wanted:
+        raise RuntimeError("this repository has no model.bin, so it isn't a faster-whisper (CTranslate2) model; "
+                           "look for one with “ct2” or “faster-whisper” in its name")
+    total = sum(wanted.values())
+    cache = data_dir() / "models" / "whisper"
+    done = threading.Event()
+
+    def report() -> None:
+        while not done.wait(1):
+            got = sum(f.stat().st_size for f in cache.rglob("*.incomplete") if f.is_file())
+            state["note"] = (f"Downloading the model: {got / 1e9:.2f} of {total / 1e9:.2f} GB"
+                             if total else f"Downloading the model: {got / 1e9:.2f} GB")
+
+    state["note"] = f"Downloading the model ({total / 1e9:.2f} GB)…"
+    threading.Thread(target=report, daemon=True).start()
+    try:
+        snapshot_download(repo, cache_dir=str(cache), allow_patterns=_WHISPER_FILES)
+    finally:
+        done.set()
+
+
+def prepare_speech(state: State, candidate, model: str) -> None:
+    """Download (when it's a Hugging Face model), then load, before any recording is tried."""
+    state["phase"] = "download"
+    if "/" in model and not model.startswith("sherpa:"):
+        download_speech(state, model)
+    state.update(phase="load", note="Loading the model…")
+    if hasattr(candidate, "warm"):
+        candidate.warm()
+    status = str(getattr(candidate, "status", ""))
+    if status.startswith("Couldn't") or getattr(candidate, "_model", True) is None:
+        raise RuntimeError(status.removeprefix("Couldn't load: ") or "it didn't load")
+    state.update(phase="run", note=f"Loaded ({status.lower()}). Transcribing…")
+
+
+def prepare_writing(state: State, trial) -> None:
+    """Download and load the writing model before any conversation is tried."""
+    if not hasattr(trial, "warm"):
+        return
+    state.update(phase="download", note="Downloading and loading the model…")
+    stop = threading.Event()
+
+    def follow() -> None:
+        while not stop.wait(1):
+            state["note"] = str(getattr(trial, "status", "")) or state["note"]
+
+    threading.Thread(target=follow, daemon=True).start()
+    try:
+        trial.warm()
+    finally:
+        stop.set()
+    status = str(getattr(trial, "status", ""))
+    if not status.startswith("Ready"):
+        raise RuntimeError(status.removeprefix("Couldn't load: ") or "it didn't load")
+    state.update(phase="run", note=f"{status}. Writing up…")
+
+
 # -- running a trial --------------------------------------------------------------------
 
 

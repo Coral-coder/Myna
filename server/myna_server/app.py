@@ -855,8 +855,20 @@ def create_app(
                 if candidate is None:
                     trying["note"] = "This server can't load a second recognizer."
                     return
+                try:
+                    experiment.prepare_speech(trying, candidate, trying["model"])
+                except Exception as error:
+                    trying["note"] = f"Couldn't get this model ready: {error}"
+                    return
+                trying["note"] = ""
                 experiment.run_speech(trying, store, candidate, transcriber.name, level, trying_stop)
             else:
+                try:
+                    experiment.prepare_writing(trying, trial)
+                except Exception as error:
+                    trying["note"] = f"Couldn't get this model ready: {error}"
+                    return
+                trying["note"] = ""
                 experiment.run_writing(trying, store, trial.generate, config.owner_name, trying_stop)
             if not trying["note"]:
                 trying["note"] = "Finished. Read the results below, then keep it or throw it out."

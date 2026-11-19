@@ -1242,6 +1242,8 @@ def test_experiment_tab_tries_a_model_and_keeps_or_drops_it(tmp_path, monkeypatc
     monkeypatch.setattr(experiment, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(experiment, "search", lambda kind, q, most=20: [
         {"repo": "someone/faster-whisper-tiny", "downloads": 1200, "likes": 3, "updated": "2026-10-01"}])
+    downloaded = []
+    monkeypatch.setattr(experiment, "download_speech", lambda state, repo: downloaded.append(repo))
 
     class Candidate(NamedStt):
         def transcribe(self, samples):
@@ -1270,6 +1272,7 @@ def test_experiment_tab_tries_a_model_and_keeps_or_drops_it(tmp_path, monkeypatc
             break
         clock.sleep(0.05)
     assert "Finished" in page and "pass the salt please" in page and "Keep it as the recognizer" in page
+    assert downloaded == ["someone/faster-whisper-tiny"]          # downloaded before it ran
     client.post("/browse/experiment", headers=AUTH, data={"action": "keep"}, follow_redirects=False)
     assert config.stt_model == "someone/faster-whisper-tiny" and stt.name == "someone/faster-whisper-tiny"
     page = client.get("/browse/experiment", headers=AUTH).text
