@@ -53,6 +53,9 @@ SPEECH = (
 
 # (Hugging Face repo, file, name shown, size in GB, note)
 WRITING = (
+    ("unsloth/Qwen3.6-35B-A3B-MTP-GGUF", "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "Qwen 3.6 35B (A3B, MTP)", 22.9,
+     "Recommended. Big and fast: only 3B of it works on each word, and it drafts ahead with its own MTP head. "
+     "Shared: what every word uses on the card, the experts in memory."),
     ("google/gemma-4-12B-it-qat-q4_0-gguf", "gemma-4-12b-it-qat-q4_0.gguf", "Gemma 4 12B", 7.0, "Default. Fits the graphics card with Whisper beside it."),
     ("bartowski/google_gemma-3-12b-it-GGUF", "google_gemma-3-12b-it-Q4_K_M.gguf", "Gemma 3 12B", 7.3, "Fits the graphics card."),
     ("bartowski/google_gemma-3-4b-it-GGUF", "google_gemma-3-4b-it-Q4_K_M.gguf", "Gemma 3 4B", 2.5, "Small; quick anywhere, including the processor."),

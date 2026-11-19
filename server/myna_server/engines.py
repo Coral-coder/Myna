@@ -345,7 +345,10 @@ def runner_args(device: str, model: str, context: int, port: int, threads: int, 
     """
     args = ["-m", model, "-c", str(context), "--host", "127.0.0.1", "--port", str(port),
             # Notes and answers don't need the model's visible "thinking"; it only costs time.
-            "--reasoning", "off"]
+            "--reasoning", "off",
+            # One request at a time (the server sends them one by one), so all
+            # the working memory goes to that one, and MTP requires it.
+            "-np", "1"]
     if mtp:
         # The model drafts the next words with its own built-in head and checks them in one pass.
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
@@ -445,7 +448,30 @@ class LlamaWriter:
             try:
                 self._ensure_running()
             except Exception:
-                pass  # the reason is in `status`
+                self._fall_back()
+
+    def _fall_back(self) -> bool:
+        """The main model couldn't load: switch to the fallback model, once,
+        and load that. Returns True if it is now running."""
+        repo = getattr(self._config, f"{self._role}_fallback_repo", "")
+        file = getattr(self._config, f"{self._role}_fallback_file", "")
+        if not repo or not file or (repo, file) == (self._repo, self._file):
+            return False
+        failed = f"{self._file} couldn't load ({self.status.removeprefix('Couldn' + chr(39) + 't load: ')[:200]})"
+        setattr(self._config, f"{self._role}_repo", repo)
+        setattr(self._config, f"{self._role}_file", file)
+        setattr(self._config, f"{self._role}_device", "gpu")
+        self.name = file.removesuffix(".gguf")
+        try:
+            self._config.save()
+        except Exception:
+            pass
+        try:
+            self._ensure_running()
+            self.status = f"{self.status}. Switched to this because {failed}."
+            return True
+        except Exception:
+            return False
 
     def _budget_key(self) -> str:
         return f"{self.name}@{self._role}"
@@ -574,8 +600,12 @@ class LlamaWriter:
                 device = "shared"
             if device in ("cpu", "shared"):
                 budget.make_room(key, "ram", size)
+            if device == "shared":
+                # Free idle models off the card so the fitting can use more of it.
+                budget.make_room(key, "gpu", min(size, 9 * GB))
             arguments = runner_args(device, model, self._config.llm_context, self._port,
-                                    cpu_threads(getattr(self._config, "cpu_threads", 0)))
+                                    cpu_threads(getattr(self._config, "cpu_threads", 0)),
+                                    mtp="mtp" in self._repo.lower())
             import time
 
             budget.loading.acquire()   # one model loads at a time
@@ -631,7 +661,11 @@ class LlamaWriter:
         from .memory import budget
 
         with self._lock:
-            self._ensure_running()
+            try:
+                self._ensure_running()
+            except Exception:
+                if not self._fall_back():
+                    raise
             budget.touch(self._budget_key())
             body = json.dumps(
                 {

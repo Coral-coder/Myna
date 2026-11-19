@@ -30,12 +30,18 @@ class Config:
     stt_model: str = "turbo"
     # Language model: a Hugging Face GGUF repo and file for llama.cpp. Gemma 4
     # 12B (about 7 GB) leaves room on a 12 GB card for Whisper beside it.
-    llm_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
-    llm_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
+    llm_repo: str = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
+    llm_file: str = "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+    # If the main model can't load, the server switches to this one instead.
+    llm_fallback_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
+    llm_fallback_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
+    # Set once the faster default has been offered (so a model chosen by hand
+    # is never changed again).
+    upgraded_to: str = ""
     llm_context: int = 8192
     # Where each model runs: the writing model on "gpu", "shared" (split with
     # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
-    llm_device: str = "gpu"
+    llm_device: str = "shared"
     # Threads for model work on the processor. 0 = the fast cores (8 on an i9-14900K).
     cpu_threads: int = 0
     stt_device: str = "auto"
@@ -91,6 +97,12 @@ class Config:
                 config = cls()
         else:
             config = cls()
+        # One-time move to the faster default for anyone still on the old one.
+        if config.upgraded_to != "qwen3.6-mtp":
+            if config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf":
+                config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
+                config.llm_device = "shared"
+            config.upgraded_to = "qwen3.6-mtp"
         config.save(path)
         return config
 

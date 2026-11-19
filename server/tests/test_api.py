@@ -435,7 +435,7 @@ def test_models_page_assigns_jobs_to_models(stt):
     client.post("/browse/models", headers=AUTH, data={"role": "helper", **form}, follow_redirects=False)
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
                 data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
-    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("gemma")
+    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("Qwen3.6")
     assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "shared"  # too big for the card
     page = client.get("/browse/models", headers=AUTH).text
     assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
@@ -893,3 +893,36 @@ def test_how_a_model_is_split_between_the_card_and_memory():
     assert mtp[mtp.index("--spec-type") + 1] == "draft-mtp" and mtp[mtp.index("--spec-draft-n-max") + 1] == "2"
     assert is_moe("openai_gpt-oss-20b-Q4_K_M.gguf") and not is_moe("phi-4-Q4_K_M.gguf")
     assert cpu_threads(12) == 12 and 2 <= cpu_threads() <= 8
+
+
+def test_old_default_moves_to_the_faster_model_once_and_falls_back_if_it_cannot_load(tmp_path):
+    import json as js
+
+    from myna_server.engines import LlamaWriter
+
+    path = tmp_path / "config.json"
+    path.write_text(js.dumps({"token": "x" * 20, "llm_repo": "google/gemma-4-12B-it-qat-q4_0-gguf",
+                              "llm_file": "gemma-4-12b-it-qat-q4_0.gguf", "llm_device": "gpu"}))
+    config = Config.load(path)
+    assert config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" and config.llm_device == "shared"
+    # A model chosen by hand afterwards is never moved again.
+    config.llm_file = "phi-4-Q4_K_M.gguf"
+    config.save(path)
+    assert Config.load(path).llm_file == "phi-4-Q4_K_M.gguf"
+
+    # If the main model can't load, the fallback is used.
+    writer = LlamaWriter(Config(token="x" * 20))
+    tried = []
+
+    def ensure():
+        tried.append(writer._file)
+        if writer._file.startswith("Qwen3.6"):
+            writer.status = "Couldn't load: unknown model architecture"
+            raise RuntimeError("unknown model architecture")
+        writer.status = "Ready on the graphics card"
+
+    writer._ensure_running = ensure
+    writer._config.save = lambda *a: None
+    writer.warm()
+    assert tried == ["Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "gemma-4-12b-it-qat-q4_0.gguf"]
+    assert writer.name == "gemma-4-12b-it-qat-q4_0" and "Switched to this because" in writer.status
