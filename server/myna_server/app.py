@@ -73,9 +73,10 @@ def create_app(
     audio_dir=None,
     partner_for=None,
     learning_path=None,
+    checker=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
-    roles = {"llm": writer, "helper": helper, "summary": summarizer}
+    roles = {"llm": writer, "helper": helper, "summary": summarizer, "checker": checker}
 
     def chosen(model) -> bool:
         return model is not None and getattr(model, "chosen", True)
@@ -99,31 +100,38 @@ def create_app(
                 transcriber.hotwords = ", ".join(known_words["list"][:40])
         return known_words["list"]
 
-    def second_opinion():
-        """The partner recognizer for the model in use, made on first need."""
+    engines_made: dict = {}
+
+    def others():
+        """The other recognizers on the panel, made on first need."""
         if not config.blend or partner_for is None or tune_state["running"]:
-            return None
-        wanted = config.blend_partner or blend.default_partner(config.stt_model)
-        if wanted == config.stt_model:
-            return None
-        if partner["model"] != wanted:
-            partner["model"], partner["engine"] = wanted, partner_for(wanted)
-        return partner["engine"]
+            return []
+        out = []
+        for model in blend.panel(config.stt_model, config.blend_count, config.blend_partner):
+            if model not in engines_made:
+                engines_made[model] = partner_for(model)
+            out.append(engines_made[model])
+        partner["engine"] = out[0] if out else None
+        partner["model"] = ", ".join(engine.name for engine in out)
+        return out
 
     def hear(audio) -> str:
-        """Transcribe one stretch: with both recognizers when blending is on,
-        combined into one transcript."""
+        """Transcribe one stretch with every recognizer on the panel, combined
+        into one transcript; the checker settles disagreements."""
         words_known = vocabulary()
         first = transcriber.transcribe(audio)
-        other = second_opinion()
-        if other is None:
+        panel_now = others()
+        if not panel_now:
             return first
-        try:
-            second = other.transcribe(audio)
-        except Exception:
+        candidates = {transcriber.name: first}
+        for engine in panel_now:
+            try:
+                candidates[engine.name] = engine.transcribe(audio)
+            except Exception:
+                pass  # one recognizer failing never stops the others
+        if len(candidates) < 2:
             return first
-        candidates = {transcriber.name: first, other.name: second}
-        reconcile = helper.generate if chosen(helper) else None
+        reconcile = checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None)
         text, how = blend.combine(candidates, learning, reconcile, words_known)
         learning.note(candidates, text)
         blend_stats["last"] = how
@@ -301,6 +309,7 @@ def create_app(
             "helper_status": getattr(helper, "status", "") if helper is not None else "",
             "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
+            "checker_status": getattr(checker, "status", "") if checker is not None else "",
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "blend": {
@@ -362,10 +371,12 @@ def create_app(
     def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
         together = {
             "on": bool(config.blend and partner_for is not None),
-            "partner": config.blend_partner or blend.default_partner(config.stt_model),
+            "partner": ", ".join(blend.panel(config.stt_model, config.blend_count, config.blend_partner)),
             "trust": dict(learning.trust), "heard": dict(learning.heard),
             "reconciled": learning.reconciled, "rescued": learning.rescued,
-            "words": list(known_words["list"]), "arbiter": helper.name if chosen(helper) else "",
+            "words": list(known_words["list"]),
+            "arbiter": checker.name if chosen(checker) else (helper.name if chosen(helper) else ""),
+            "count": config.blend_count,
         }
         return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days,
                                    dict(tune_state), config.auto_tune, together)
@@ -381,6 +392,8 @@ def create_app(
             config.blend = form["blend"] == "on"
         if "partner" in form and (form["partner"] == "" or form["partner"] in {key for key, _, _ in catalog.SPEECH}):
             config.blend_partner = form["partner"]
+        if form.get("count", "").isdigit():
+            config.blend_count = min(max(int(form["count"]), 2), 4)
         if getattr(app.state, "save_config", True):
             config.save()
         return RedirectResponse("/browse/compare", status_code=303)
@@ -632,13 +645,13 @@ def create_app(
             role = "llm"
         target = roles[role]
         device_keys = {key for key, _, _ in catalog.LLM_DEVICES}
-        for other in ("helper", "summary"):
+        for other in ("helper", "summary", "checker"):
             wanted = form.get(f"{other}_device", "")
             if wanted in device_keys and wanted != getattr(config, f"{other}_device"):
                 setattr(config, f"{other}_device", wanted)
                 if roles[other] is not None and hasattr(roles[other], "reload"):
                     await run_in_threadpool(roles[other].reload)
-        if form.get("clear") in ("helper", "summary") and roles[form["clear"]] is not None:
+        if form.get("clear") in ("helper", "summary", "checker") and roles[form["clear"]] is not None:
             await run_in_threadpool(roles[form["clear"]].use, "", "")
         if repo and file.endswith(".gguf"):
             # A model too big for the card can't run wholly on it: share it.
@@ -656,7 +669,7 @@ def create_app(
             setattr(config, f"{role}_file", file)
             # The main model and the helper load now. The summary model loads
             # only when a summary is written, so it doesn't hold memory all day.
-            if role != "summary" and hasattr(target, "warm"):
+            if role not in ("summary",) and hasattr(target, "warm"):
                 threading.Thread(target=target.warm, daemon=True).start()
         if getattr(app.state, "save_config", True):
             config.save()

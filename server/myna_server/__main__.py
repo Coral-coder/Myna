@@ -36,6 +36,7 @@ def main() -> None:
     store = Store(data_dir() / "myna.db")
     transcriber, writer, voices = WhisperTranscriber(config), LlamaWriter(config), Voices()
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
+    checker = LlamaWriter(config, "checker")
     audio_dir = data_dir() / "audio"
     def partner_for(model: str):
         """A second recognizer beside the one in use, with its own settings."""
@@ -45,7 +46,7 @@ def main() -> None:
 
     app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
                      helper=helper, summarizer=summarizer, audio_dir=audio_dir, partner_for=partner_for,
-                     learning_path=data_dir() / "learning.json")
+                     learning_path=data_dir() / "learning.json", checker=checker)
 
     def housekeeping() -> None:
         """Once a minute: write the day's summary when the day has gone quiet,
@@ -90,6 +91,7 @@ def main() -> None:
         voices.warm()
         writer.warm()
         helper.warm()
+        checker.warm()
 
     threading.Thread(target=warm, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port or config.port, log_level="info")

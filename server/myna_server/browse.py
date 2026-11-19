@@ -292,14 +292,16 @@ def models_page(store: Store, config, state: dict) -> str:
     ]
     in_use = {
         "llm": (config.llm_repo, config.llm_file),
+        "checker": (config.checker_repo, config.checker_file),
         "helper": (config.helper_repo, config.helper_file),
         "summary": (config.summary_repo, config.summary_file),
     }
-    labels = (("llm", "Main"), ("helper", "Helper"), ("summary", "Summary"))
+    labels = (("llm", "Main"), ("helper", "Helper"), ("summary", "Summary"), ("checker", "Checker"))
     parts.append(
         '<div class="dim">Each model can be given a job. <b>Main</b> writes notes and answers. <b>Helper</b> is a '
         "small, quick model that reads a lot of saved material and picks out what matters before the main model "
-        "sees it. <b>Summary</b> writes the end-of-day summary (left unset, the main model does it).</div>"
+        "sees it. <b>Summary</b> writes the end-of-day summary (left unset, the main model does it). <b>Checker</b> is a "
+        "light model that reads what the speech recognizers heard and makes sure it forms sensible sentences.</div>"
     )
     listed = False
     for repo, file, name, size, note in catalog.WRITING:
@@ -329,9 +331,10 @@ def models_page(store: Store, config, state: dict) -> str:
         '<button name="role" value="helper">Helper</button><button name="role" value="summary">Summary</button></div></form>'
         '<p class="dim">A chosen model starts downloading straight away; progress shows above.</p>'
     )
-    for role, title, status_key in (("helper", "Helper model", "helper_status"), ("summary", "Summary model", "summary_status")):
+    for role, title, status_key in (("checker", "Checker model", "checker_status"), ("helper", "Helper model", "helper_status"),
+                                    ("summary", "Summary model", "summary_status")):
         repo, file = in_use[role]
-        shown = file.removesuffix(".gguf") if file else ("not used" if role == "helper" else "the main model")
+        shown = file.removesuffix(".gguf") if file else ("the main model" if role == "summary" else "not used")
         clear = (
             f'<form method="post" action="/browse/models" style="margin:0"><input type="hidden" name="clear" value="{role}">'
             "<button>Stop using</button></form>" if file else ""
@@ -438,14 +441,22 @@ def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: i
         state = "On" if together.get("on") else "Off"
         flip = "off" if together.get("on") else "on"
         parts.append(
-            f'<div class="dim">{state}. Two different recognizers hear every clip. Where they agree, that is the transcript; '
-            "where one catches speech the other missed, it is kept; where they disagree, the Helper model reconciles "
-            "them using your own words. Each recognizer is trusted more the closer it runs to the agreed result, and "
-            "that is learned as it goes.</div>"
+            f'<div class="dim">{state}. Several different recognizers hear every clip. Where they agree, that is the '
+            "transcript; where only one catches speech, it is kept; where they disagree, the light Checker model picks "
+            "or pieces together the version that makes sense as a sentence, using your own words, and if that fails "
+            "the version closest to all the others wins. Each recognizer is trusted more the closer it runs to the "
+            "result, and that is learned as it goes.</div>"
             f'<form method="post" action="/browse/blend" style="margin-top:10px;display:flex;gap:8px;align-items:center">'
             f'<input type="hidden" name="blend" value="{flip}"><button>Turn {flip}</button>'
-            f'<span class="dim">Second recognizer: {_e(together.get("partner"))} · '
-            f'reconciled by: {_e(together.get("arbiter")) or "nothing yet (set a Helper model on the Models tab)"}</span></form>'
+            f'<span class="dim">Also listening: {_e(together.get("partner"))} · '
+            f'sense-checked by: {_e(together.get("arbiter")) or "nothing (set a Checker on the Models tab)"}</span></form>'
+            '<form method="post" action="/browse/blend" style="margin-top:8px;display:flex;gap:6px;align-items:center">'
+            '<span class="dim">Recognizers per clip:</span>'
+            + "".join(
+                f'<button name="count" value="{n}"{" disabled" if together.get("count") == n else ""}>{n}</button>'
+                for n in (2, 3, 4)
+            )
+            + "</form>"
         )
         if together.get("trust"):
             parts.append("<table><tr><th>Recognizer</th><th>Trust, learned</th><th>Clips judged</th></tr>")

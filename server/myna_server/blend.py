@@ -25,12 +25,13 @@ from .tuner import agreement, words
 Generate = Callable[[str, str, int], str]
 
 RECONCILE = (
-    "Several speech recognizers transcribed the same short recording and disagree in places. Write the single "
-    "most likely transcript of what was actually said. Rules: use only words that appear in at least one of the "
-    "versions (you may fix spelling to match the known words list); where the versions agree, keep that; where "
-    "they differ, choose the reading that makes sense in context and matches the known words; never add "
-    "commentary, never summarise, never answer what was said. If the versions have nothing in common and none "
-    "is plausible speech, reply with the single word NONE. Reply with the transcript only."
+    "Several speech recognizers transcribed the same short recording and disagree in places. Your job is to "
+    "check sentence structure and sense: write the single most likely transcript of what was actually said, as "
+    "words a person would really say. Rules: use only words that appear in at least one of the versions (you may "
+    "fix spelling to match the known words list); where most versions agree, keep that; where they differ, choose "
+    "the reading that forms a sensible sentence and matches the known words; keep the speaker's own wording, even "
+    "if informal or ungrammatical; never add commentary, never summarise, never answer what was said. If no "
+    "version is plausible speech, reply with the single word NONE. Reply with the transcript only. /no_think"
 )
 
 # Stock phrases a recognizer makes up from noise; never taken from one model alone.
@@ -41,6 +42,24 @@ def default_partner(primary: str) -> str:
     """A second recognizer of a different kind from the first, on the other
     processor: a Whisper on the graphics card pairs with Parakeet on the CPU."""
     return "turbo" if primary.startswith("sherpa:") else "sherpa:parakeet-v2"
+
+
+# Recognizers that fail in different ways, in the order they join the panel.
+PANEL = ("turbo", "sherpa:parakeet-v2", "sherpa:canary", "distil-large-v3", "sherpa:parakeet-v3")
+
+
+def panel(primary: str, count: int, first_partner: str = "") -> list[str]:
+    """The other recognizers to run beside `primary`, `count` in all counting it.
+    At most one more Whisper model than the one in use, since Whisper models
+    share the graphics card."""
+    chosen: list[str] = []
+    for model in ([first_partner] if first_partner else []) + list(PANEL):
+        if len(chosen) >= max(0, min(count, 4) - 1):
+            break
+        whisper_count = sum(not m.startswith("sherpa:") for m in chosen + [primary])
+        if model and model != primary and model not in chosen and (model.startswith("sherpa:") or whisper_count < 2):
+            chosen.append(model)
+    return chosen
 
 
 class Learning:
@@ -134,6 +153,14 @@ def combine(candidates: dict[str, str], learning: Learning, reconcile: Generate 
     lowest = min(agreement(words(a), words(b)) for i, a in enumerate(real) for b in real[i + 1:])
     if lowest >= 0.9:
         return most_trusted(real), "agreed"
+
+    def central() -> str:
+        """The version closest to all the others (the consensus), weighted by trust."""
+        def pull(text: str) -> float:
+            owner_trust = max(learning.trust.get(m, 0.5) for m in models if spoken[m] == text)
+            others = [agreement(words(text), words(other)) for other in real if other is not text]
+            return (sum(others) / len(others) if others else 0.0) + 0.25 * owner_trust
+        return max(real, key=pull)
     if reconcile is not None:
         listed = "\n".join(f"Version {index + 1}: {text}" for index, text in enumerate(real))
         known = ("Known words (names and terms this person uses): " + ", ".join(known_words) + "\n\n") if known_words else ""
@@ -149,4 +176,4 @@ def combine(candidates: dict[str, str], learning: Learning, reconcile: Generate 
         if made and sum(word in heard for word in made) / len(made) >= 0.85 and len(made) <= 1.5 * max(len(words(t)) for t in real):
             learning.reconciled += 1
             return merged, "reconciled"
-    return most_trusted(real), "trusted"
+    return (central(), "consensus") if len(real) >= 3 else (most_trusted(real), "trusted")

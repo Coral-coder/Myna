@@ -267,7 +267,7 @@ LLAMA_BUILD = "b12400"
 LLAMA_ZIP = f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip"
 LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{LLAMA_ZIP}"
 LLAMA_SHA256 = "15eafe06f3ea80f78b80764e1994fd74b5ffa66b5cf0875a3bd9b3ee41a058ef"
-LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793}
+LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794}
 _strays_cleared = False
 
 

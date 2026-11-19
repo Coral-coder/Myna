@@ -618,3 +618,58 @@ def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
     client.post("/browse/blend", headers=AUTH, data={"blend": "off"}, follow_redirects=False)
     off = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
     assert off["text"] == ""
+
+
+def test_a_panel_of_recognizers_and_a_light_checker(tmp_path):
+    from myna_server import blend
+    from myna_server.engines import LlamaWriter
+
+    # The panel: different kinds of recognizer, at most two Whisper models on the card.
+    assert blend.panel("turbo", 3) == ["sherpa:parakeet-v2", "sherpa:canary"]
+    assert blend.panel("sherpa:parakeet-v2", 4) == ["turbo", "sherpa:canary", "distil-large-v3"]
+    assert blend.panel("turbo", 4) == ["sherpa:parakeet-v2", "sherpa:canary", "distil-large-v3"]
+    assert blend.panel("turbo", 2, first_partner="sherpa:sensevoice") == ["sherpa:sensevoice"]
+    assert LlamaWriter(Config(token="x" * 20), "checker").chosen   # a light checker is set up by default
+
+    learning = blend.Learning(None)
+    versions = {"a": "the dog ran to the park", "b": "the dog ran to the bark", "c": "a fog ran to the park"}
+    # With no checker, the version closest to all the others wins.
+    assert blend.combine(versions, learning, None, []) == ("the dog ran to the park", "consensus")
+    # With a checker, its sensible sentence is taken.
+    asked = []
+
+    def checker(instructions, prompt, max_tokens):
+        asked.append(instructions)
+        return "the dog ran to the park"
+
+    assert blend.combine(versions, learning, checker, []) == ("the dog ran to the park", "reconciled")
+    assert "sentence structure and sense" in asked[0]
+
+
+def test_every_panel_member_is_heard_and_the_checker_settles_it(stt):
+    class Says:
+        def __init__(self, name, text):
+            self.name, self.text = name, text
+
+        def transcribe(self, samples):
+            if self.text is None:
+                raise RuntimeError("broken")
+            return self.text
+
+    said = {"sherpa:parakeet-v2": "meet Saoirse at the station", "sherpa:canary": None}
+
+    class Checker(Recorder):
+        pass
+
+    checker = Checker("small", "meet Saoirse at the station")
+    main = NamedStt("turbo")
+    main.transcribe = lambda samples: "meet searsha at the station"
+    app = create_app(Config(token="secret-token", stt_model="turbo"), main, FakeWriter(), checker=checker,
+                     partner_for=lambda model: Says(model, said[model]))
+    client = TestClient(app)
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    assert body["text"] == "meet Saoirse at the station"                # one broken recognizer doesn't stop the rest
+    assert "searsha" in checker.asked[0][1] and "Saoirse" in checker.asked[0][1]
+    client.post("/browse/blend", headers=AUTH, data={"count": "2"}, follow_redirects=False)
+    page = client.get("/browse/compare", headers=AUTH).text
+    assert "Recognizers per clip" in page and "sense-checked by: small" in page

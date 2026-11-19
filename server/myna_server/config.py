@@ -63,6 +63,13 @@ class Config:
     # (see blend.py). The partner is chosen automatically when left empty.
     blend: bool = True
     blend_partner: str = ""
+    # How many recognizers hear each clip, counting the one in use (2 to 4).
+    blend_count: int = 3
+    # A light language model that checks the recognizers' versions make sense
+    # as sentences and settles disagreements. Runs on the processor.
+    checker_repo: str = "bartowski/Qwen_Qwen3-1.7B-GGUF"
+    checker_file: str = "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
+    checker_device: str = "cpu"
     auto_tune: bool = True
     tune_every_hours: int = 24
     tuned_at: float = 0.0
