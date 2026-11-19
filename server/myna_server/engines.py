@@ -6,6 +6,7 @@ without a graphics card: anything with `transcribe` / `generate` will do.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -369,6 +370,60 @@ def cpu_threads(configured: int = 0) -> int:
     return max(2, min(8, (os.cpu_count() or 8) // 4))
 
 
+class Speeds:
+    """How fast each writing model actually runs on this computer, measured
+    from every real request (llama-server reports its own timings), and kept
+    between runs."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.table: dict[str, dict] = {}
+        self._loaded = False
+
+    def _path(self) -> Path:
+        return data_dir() / "speeds.json"
+
+    def _load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            self.table = json.loads(self._path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.table = {}
+
+    def record(self, model_file: str, device: str, timings: dict) -> None:
+        writing = float(timings.get("predicted_per_second") or 0)
+        reading = float(timings.get("prompt_per_second") or 0)
+        if writing <= 0:
+            return
+        drafted = float(timings.get("draft_n") or 0)
+        accepted = float(timings.get("draft_n_accepted") or 0)
+        with self._lock:
+            self._load()
+            row = self.table.setdefault(model_file, {"writing": writing, "reading": reading, "requests": 0})
+            mix = 0.8 if row["requests"] else 0.0   # running average, recent requests count more
+            row["writing"] = row["writing"] * mix + writing * (1 - mix)
+            if reading > 0:
+                row["reading"] = row.get("reading", reading) * mix + reading * (1 - mix)
+            if drafted > 0:
+                row["accepted"] = row.get("accepted", accepted / drafted) * mix + (accepted / drafted) * (1 - mix)
+            row["requests"] += 1
+            row["device"] = device
+            try:
+                self._path().write_text(json.dumps(self.table, indent=1), encoding="utf-8")
+            except OSError:
+                pass
+
+    def get(self, model_file: str) -> dict:
+        with self._lock:
+            self._load()
+            return dict(self.table.get(model_file) or {})
+
+
+speeds = Speeds()
+
+
 class LlamaWriter:
     """A GGUF language model served by llama.cpp's `llama-server`, run beside
     this process and spoken to over localhost."""
@@ -684,6 +739,7 @@ class LlamaWriter:
             )
             with urllib.request.urlopen(request, timeout=600) as reply:
                 answer = json.loads(reply.read())
+            speeds.record(self._file, self._device, answer.get("timings") or {})
             text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()
 

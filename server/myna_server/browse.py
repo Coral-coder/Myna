@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from . import catalog
+from .engines import speeds
 from .store import Store
 
 TABS = (("utterance", "Transcript"), ("conversation", "Conversations"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
@@ -411,8 +412,14 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
                     f'<input type="hidden" name="repo" value="{_e(repo)}"><input type="hidden" name="file" value="{_e(file)}">'
                     f"<button>{label}</button></form>"
                 )
+        measured = speeds.get(file)
+        speed = ""
+        if measured.get("writing"):
+            speed = f' · <b>{measured["writing"]:.0f} words/s</b> here'
+            if measured.get("accepted"):
+                speed += f' ({measured["accepted"]:.0%} of drafts kept)'
         parts.append(
-            f'<div class="row pick"><div>{_e(name)} <span class="dim">{size:g} GB</span>'
+            f'<div class="row pick"><div>{_e(name)} <span class="dim">{size:g} GB{speed}</span>'
             f'<div class="dim">{_e(note)}</div></div><div style="display:flex;gap:6px;align-items:center">{"".join(buttons)}</div></div>'
         )
     if not listed:

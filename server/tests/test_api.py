@@ -926,3 +926,18 @@ def test_old_default_moves_to_the_faster_model_once_and_falls_back_if_it_cannot_
     writer.warm()
     assert tried == ["Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "gemma-4-12b-it-qat-q4_0.gguf"]
     assert writer.name == "gemma-4-12b-it-qat-q4_0" and "Switched to this because" in writer.status
+
+
+def test_writing_speed_is_measured_from_real_requests(tmp_path, monkeypatch, stt):
+    monkeypatch.setenv("MYNA_SERVER_HOME", str(tmp_path))
+    from myna_server.engines import Speeds
+
+    measured = Speeds()
+    measured.record("model.gguf", "shared", {"predicted_per_second": 40.0, "prompt_per_second": 900.0,
+                                             "draft_n": 10, "draft_n_accepted": 7})
+    measured.record("model.gguf", "shared", {"predicted_per_second": 50.0})
+    row = measured.get("model.gguf")
+    assert 40 < row["writing"] < 50 and row["requests"] == 2 and abs(row["accepted"] - 0.7) < 1e-9
+    assert Speeds().get("model.gguf")["requests"] == 2          # kept between runs
+    measured.record("other.gguf", "gpu", {})                     # no timings: nothing recorded
+    assert measured.get("other.gguf") == {}
