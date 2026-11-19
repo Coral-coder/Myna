@@ -289,6 +289,7 @@ def note_page(store: Store, note_id: str) -> str:
 def live_page(store: Store, state: dict | None = None) -> str:
     """What the server is receiving and doing right now, updating by itself."""
     body = _reset_buttons(state or {}, "live") + """
+<h2>Working on</h2><div id="busy" class="dim">…</div>
 <h2>Now</h2><div id="now" class="dim">…</div>
 <h2>Just received</h2><div id="events"><p class="dim">Nothing yet. Lines appear here as the phone sends audio.</p></div>
 <script>
@@ -298,6 +299,10 @@ async function tick() {
     const reply = await fetch('/browse/live.json', {cache: 'no-store'});
     if (reply.status === 401) { location.reload(); return; }
     const d = await reply.json();
+    document.getElementById('busy').innerHTML = (d.busy && d.busy.length)
+      ? d.busy.map(b => '<div class="row">' + esc(b.what) + ' <span class="dim">· ' + b.seconds + ' s</span>' +
+          (b.seconds > 120 ? ' <span class="t">SLOW</span>' : '') + '</div>').join('')
+      : 'Nothing: waiting for audio.';
     document.getElementById('now').innerHTML =
       'Transcription: ' + esc(d.transcriber) + ' — ' + esc(d.transcriber_status) + '<br>' +
       'Writing: ' + esc(d.writer) + ' — ' + esc(d.writer_status) + '<br>' +

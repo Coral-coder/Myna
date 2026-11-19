@@ -110,6 +110,19 @@ def _speech_name(model: str) -> str:
     return model.removeprefix("sherpa:") if model.startswith("sherpa:") else f"whisper-{model}"
 
 
+def fetch_sherpa(key: str, report=lambda text: None) -> None:
+    """Download a sherpa model's files (once), outside the helper process."""
+    from huggingface_hub import hf_hub_download
+
+    from .catalog import SHERPA
+
+    _, repo, files, _ = SHERPA[key]
+    cache = str(data_dir() / "models" / "sherpa")
+    for index, name in enumerate(files):
+        report(f"Downloading {key} ({index + 1} of {len(files)})…")
+        hf_hub_download(repo_id=repo, filename=name, cache_dir=cache)
+
+
 def load_sherpa(key: str, report=lambda text: None):
     """Download (once) and load one of the non-Whisper transcribers."""
     import sherpa_onnx
@@ -173,6 +186,13 @@ class WhisperTranscriber:
         self.essential = False
         self.placed_because = ""
         self._move = False   # placed automatically again before the next clip
+        # Background work (trials, re-processing) uses its own helper process.
+        self.background = False
+
+    def _side(self):
+        from . import sidecar
+
+        return sidecar.background if self.background else sidecar.helper
 
     def _budget_key(self) -> str:
         return f"{self.name}@{id(self)}"
@@ -205,9 +225,7 @@ class WhisperTranscriber:
         A sherpa model's helper process is killed (which ends a stuck request
         at once). It loads again on next use."""
         if self._model_name.startswith("sherpa:"):
-            from .sidecar import helper
-
-            helper.kill()
+            self._side().kill()
         from .memory import budget
 
         budget.forget(self._budget_key())
@@ -241,11 +259,11 @@ class WhisperTranscriber:
             def report(text: str) -> None:
                 self.status = text
 
-            # These run in the helper process (see sidecar.py).
-            from .sidecar import helper
-
+            # These run in a helper process (see sidecar.py). The files are
+            # downloaded here first, so the helper is never busy downloading.
             try:
-                helper.call("stt_load", self._model_name.removeprefix("sherpa:"), report=report)
+                fetch_sherpa(self._model_name.removeprefix("sherpa:"), report)
+                self._side().call("stt_load", self._model_name.removeprefix("sherpa:"), report=report)
                 self._model = "helper"
                 self.device = "cpu"
                 self.status = "Ready on the processor"
@@ -324,10 +342,9 @@ class WhisperTranscriber:
             began = time.perf_counter()
             budget.touch(self._budget_key())
             if self._model_name.startswith("sherpa:"):
-                from .sidecar import helper
-
                 try:
-                    return helper.call("stt", self._model_name.removeprefix("sherpa:"), samples)
+                    return self._side().call("stt", self._model_name.removeprefix("sherpa:"), samples,
+                                             wait=None if self.background else 60)
                 except Exception as error:
                     self._model = None
                     self.status = f"Stopped: {error}"
@@ -1044,7 +1061,7 @@ class Voices:
         from .sidecar import helper
 
         try:
-            pieces = helper.call("split", samples, report=self._report)
+            pieces = helper.call("split", samples, report=self._report, wait=20)
             self.status = "Ready"
             return pieces
         except Exception as error:
@@ -1054,7 +1071,7 @@ class Voices:
     def print_of(self, samples: np.ndarray) -> list[float]:
         from .sidecar import helper
 
-        return helper.call("print", samples, report=self._report)
+        return helper.call("print", samples, report=self._report, wait=20)
 
 
 class VoicesLocal:

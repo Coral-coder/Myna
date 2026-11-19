@@ -1299,3 +1299,52 @@ def test_a_trial_model_that_cannot_run_stops_and_says_why(tmp_path):
     state["hours"] = 1e9
     experiment.run_speech(state, store, Broken(), "now", lambda a: a, threading.Event())
     assert state["done"] == 3 and state["note"].startswith("This model couldn't run")
+
+
+def test_a_slow_speech_check_does_not_freeze_the_server(stt):
+    """The speech check runs off the event loop: pages answer while it waits."""
+    import threading
+    import time as clock
+
+    app = create_app(Config(token="secret-token"), stt, FakeWriter(), partner_for=lambda model, device=None: stt)
+    app.state.save_config = False
+    release = threading.Event()
+
+    def slow(samples):
+        release.wait(5)
+        return 1.0
+
+    app.state.speech_seconds = slow
+    done = {}
+    with TestClient(app) as client:              # one event loop for every request, as in the server
+
+        def send():
+            done["reply"] = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000)))
+
+        worker = threading.Thread(target=send)
+        worker.start()
+        clock.sleep(0.3)
+        started = clock.time()
+        assert client.get("/health", headers=AUTH).status_code == 200
+        waited = clock.time() - started
+        release.set()
+        worker.join(10)
+    assert waited < 2                            # answered while the clip waited
+    assert done["reply"].status_code == 200
+
+
+def test_a_busy_helper_is_skipped_by_live_audio():
+    import threading
+
+    from myna_server.sidecar import Sidecar
+
+    side = Sidecar()
+    side._lock.acquire()                          # something else holds it
+    try:
+        try:
+            side.call("vad", None, wait=0.2)
+            raise AssertionError("should not wait")
+        except RuntimeError as error:
+            assert "busy" in str(error)
+    finally:
+        side._lock.release()

@@ -236,6 +236,41 @@ def create_app(
             said_recently.append((now, line))
         return text, segments
 
+    # What the server is busy with right now, for the Live page: id -> (what, since).
+    busy: dict[int, list] = {}
+    busy_ids = iter(range(1, 10**9))
+    live_inflight = {"count": 0}
+    import asyncio as _asyncio
+
+    clip_slots = _asyncio.Semaphore(3)   # clips worked on at once; more wait, then are refused
+
+    class doing:
+        """`with doing("what"):` lists a job on the Live page while it runs."""
+
+        def __init__(self, what: str) -> None:
+            self.what = what
+            self.id = next(busy_ids)
+
+        def __enter__(self):
+            busy[self.id] = [self.what, time.time()]
+            return self
+
+        def step(self, what: str) -> None:
+            if self.id in busy:
+                busy[self.id][0] = what
+
+        def __exit__(self, *exc) -> None:
+            busy.pop(self.id, None)
+
+    app.state.doing = doing
+
+    def wait_for_live() -> None:
+        """Background work pauses while live audio is being transcribed."""
+        while live_inflight["count"] > 0:
+            time.sleep(0.25)
+
+    app.state.wait_for_live = wait_for_live
+
     @app.post("/v1/transcribe")
     async def transcribe(request: Request, _: None = Depends(paired)) -> dict:
         import hashlib
@@ -273,8 +308,10 @@ def create_app(
                     from .sidecar import helper as side
 
                     def detect(samples):
-                        return side.call("vad", samples, timeout=60)
-                if detect(raw_audio) < 0.2:
+                        return side.call("vad", samples, timeout=60, wait=10)
+                # Off the event loop: waiting on the helper here would freeze
+                # every page and every other request.
+                if await run_in_threadpool(detect, raw_audio) < 0.2:
                     stats["no_speech"] = stats.get("no_speech", 0) + 1
                     note("transcribe", "speech detector", time.perf_counter() - began, "", seconds)
                     return {"text": "", "audio_seconds": round(seconds, 3),
@@ -331,10 +368,26 @@ def create_app(
             return " ".join(piece["text"] for piece in out), out
 
         try:
+            await _asyncio.wait_for(clip_slots.acquire(), timeout=45)
+        except _asyncio.TimeoutError:
+            # Too much at once: refuse rather than queue forever; the phone
+            # keeps the audio and sends it again.
+            raise HTTPException(status_code=503, detail="The server is busy; send this clip again shortly.",
+                                headers={"Retry-After": "30"})
+        live_inflight["count"] += 1
+        job = doing(f"Live clip ({seconds:.0f} s of audio)")
+        job.__enter__()
+        try:
             text, segments = await run_in_threadpool(work)
         except Exception as error:
+            job.__exit__()
+            live_inflight["count"] -= 1
+            clip_slots.release()
             note("transcribe", transcriber.name, time.perf_counter() - began, str(error), seconds, failed=True)
             raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
+        job.__exit__()
+        live_inflight["count"] -= 1
+        clip_slots.release()
         text, segments = drop_repeats(text, segments)
         stats["transcribed"] += 1
         note("transcribe", transcriber.name, time.perf_counter() - began, text, seconds)
@@ -421,9 +474,12 @@ def create_app(
     def run_reprocess(hours: float) -> None:
         model = transcriber.name
         try:
+            job = doing(f"Re-transcribing the last {hours:g} hours with {model}")
+            job.__enter__()
             clips = store.clips_since(time.time() - hours * 3600, without_model=model)
             reprocess.update(running=True, done=0, total=len(clips), model=model, note="")
             for clip in clips:
+                wait_for_live()
                 if transcriber.name != model:
                     reprocess["note"] = "Stopped: the model was changed part-way."
                     break
@@ -440,6 +496,7 @@ def create_app(
             if not reprocess["note"]:
                 reprocess["note"] = "Finished." if clips else "Nothing to do: this model has already done every kept recording in that span."
         finally:
+            job.__exit__()
             reprocess["running"] = False
 
     @app.post("/browse/reprocess")
@@ -676,6 +733,8 @@ def create_app(
         if talk_state["running"] or tune_state["running"] or daily_state["running"]:
             return 0
         talk_state["running"] = True
+        job = doing("Writing up conversations")
+        job.__enter__()
         try:
             def progress(text: str) -> None:
                 talk_state["status"] = text
@@ -695,6 +754,7 @@ def create_app(
             talk_state["status"] = f"Couldn't write up a conversation: {error}"
             return 0
         finally:
+            job.__exit__()
             talk_state["running"] = False
 
     app.state.run_conversations = run_conversations
@@ -834,7 +894,9 @@ def create_app(
 
     @app.get("/browse/live.json")
     def browse_live_json(_: None = Depends(paired)) -> dict:
-        return {**engines_state(), **stats, "events": list(activity)[-80:]}
+        now = time.time()
+        working = [{"what": what, "seconds": round(now - since)} for what, since in list(busy.values())]
+        return {**engines_state(), **stats, "events": list(activity)[-80:], "busy": working}
 
     # -- the Experiment tab: find a model, try it on the last few hours ------------
 
@@ -851,6 +913,8 @@ def create_app(
                 candidate = trying_engine.get("speech")
                 if candidate is None:
                     candidate = partner_for(trying["model"]) if partner_for is not None else None
+                    if candidate is not None:
+                        candidate.background = True   # its own helper; never in live audio's way
                     trying_engine["speech"] = candidate
                 if candidate is None:
                     trying["note"] = "This server can't load a second recognizer."
@@ -861,7 +925,9 @@ def create_app(
                     trying["note"] = f"Couldn't get this model ready: {error}"
                     return
                 trying["note"] = ""
-                experiment.run_speech(trying, store, candidate, transcriber.name, level, trying_stop)
+                with doing(f"Trying {trying['model']} on the last {trying['hours']:g} hours"):
+                    experiment.run_speech(trying, store, candidate, transcriber.name, level, trying_stop,
+                                          pause=wait_for_live)
             else:
                 try:
                     experiment.prepare_writing(trying, trial)
@@ -869,7 +935,8 @@ def create_app(
                     trying["note"] = f"Couldn't get this model ready: {error}"
                     return
                 trying["note"] = ""
-                experiment.run_writing(trying, store, trial.generate, config.owner_name, trying_stop)
+                with doing(f"Trying {trying['file']} on the last {trying['hours']:g} hours of conversations"):
+                    experiment.run_writing(trying, store, trial.generate, config.owner_name, trying_stop)
             if not trying["note"]:
                 trying["note"] = "Finished. Read the results below, then keep it or throw it out."
         except Exception as error:

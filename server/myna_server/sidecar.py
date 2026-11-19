@@ -100,32 +100,48 @@ class Sidecar:
         self._process.start()
         child.close()
 
-    def call(self, op: str, *args, report=None, timeout: float = 900):
-        with self._lock:
-            self._ensure()
-            try:
-                self._connection.send((op, args))
-                while True:
-                    if not self._connection.poll(timeout):
-                        raise RuntimeError("the helper took too long")
-                    kind, value = self._connection.recv()
-                    if kind == "status":
-                        if report:
-                            report(value)
-                    elif kind == "ok":
-                        return value
-                    else:
-                        raise RuntimeError(value)
-            except (EOFError, OSError, BrokenPipeError) as error:
-                code = None
-                if self._process is not None:
-                    self._process.join(timeout=2)
-                    code = self._process.exitcode
-                self._process = None
-                self.crashes += 1
-                shown = f"0x{code & 0xFFFFFFFF:08x}" if isinstance(code, int) else "unknown"
-                raise RuntimeError(f"its helper process stopped unexpectedly (code {shown})") from error
+    def call(self, op: str, *args, report=None, timeout: float = 900, wait: float | None = None):
+        """Run `op` in the helper. `wait` bounds how long to queue behind
+        another request (None = as long as it takes); live audio uses a short
+        wait so a slow job elsewhere can't hold it up."""
+        if not self._lock.acquire(timeout=-1 if wait is None else wait):
+            raise RuntimeError("the helper is busy with something else")
+        try:
+            return self._call(op, *args, report=report, timeout=timeout)
+        finally:
+            self._lock.release()
+
+    def _call(self, op: str, *args, report=None, timeout: float = 900):
+        self._ensure()
+        try:
+            self._connection.send((op, args))
+            while True:
+                if not self._connection.poll(timeout):
+                    # Its answer would arrive in reply to the next request, so
+                    # stop it; it starts again cleanly on next use.
+                    self.kill()
+                    raise RuntimeError("the helper took too long and was restarted")
+                kind, value = self._connection.recv()
+                if kind == "status":
+                    if report:
+                        report(value)
+                elif kind == "ok":
+                    return value
+                else:
+                    raise RuntimeError(value)
+        except (EOFError, OSError, BrokenPipeError) as error:
+            code = None
+            if self._process is not None:
+                self._process.join(timeout=2)
+                code = self._process.exitcode
+            self._process = None
+            self.crashes += 1
+            shown = f"0x{code & 0xFFFFFFFF:08x}" if isinstance(code, int) else "unknown"
+            raise RuntimeError(f"its helper process stopped unexpectedly (code {shown})") from error
 
 
-# One helper for the whole worker.
+# The helper for live audio, and a second one for background work (trying a
+# model on the Experiment tab, re-processing, tuning), so that background work
+# never queues in front of live audio.
 helper = Sidecar()
+background = Sidecar()

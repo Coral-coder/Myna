@@ -216,7 +216,8 @@ def prepare_writing(state: State, trial) -> None:
 # -- running a trial --------------------------------------------------------------------
 
 
-def run_speech(state: State, store, candidate, current_name: str, level, stop: threading.Event) -> None:
+def run_speech(state: State, store, candidate, current_name: str, level, stop: threading.Event,
+               pause=None) -> None:
     """Transcribe the kept recordings of the last few hours with `candidate`."""
     import wave
 
@@ -235,6 +236,8 @@ def run_speech(state: State, store, candidate, current_name: str, level, stop: t
         if stop.is_set():
             state["note"] = "Stopped."
             break
+        if pause is not None:
+            pause()   # live audio first
         if failures >= 3 and not results:
             # It can't run at all: say why, rather than failing every recording.
             state["note"] = f"This model couldn't run: {state.get('first_error', '')}"
