@@ -38,11 +38,11 @@ def main() -> None:
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
     checker = LlamaWriter(config, "checker")
     audio_dir = data_dir() / "audio"
-    def partner_for(model: str):
-        """A second recognizer beside the one in use, with its own settings."""
+    def partner_for(model: str, device: str | None = None):
+        """Another recognizer beside the one in use, with its own settings."""
         from dataclasses import replace
 
-        return WhisperTranscriber(replace(config, stt_model=model))
+        return WhisperTranscriber(replace(config, stt_model=model, stt_device=device or config.stt_device))
 
     app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
                      helper=helper, summarizer=summarizer, audio_dir=audio_dir, partner_for=partner_for,

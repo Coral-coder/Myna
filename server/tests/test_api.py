@@ -679,15 +679,16 @@ def test_choosing_the_recognizers_by_hand(stt):
     from myna_server import blend
 
     assert blend.panel("turbo", 3, picked=["sherpa:sensevoice", "large-v3"]) == ["sherpa:sensevoice", "large-v3"]
-    # At most two Whisper models in all.
-    assert blend.panel("turbo", 3, picked=["large-v3", "distil-large-v3"]) == ["large-v3"]
+    # Chosen by hand: as many as ticked, the main one left out.
+    assert blend.panel("turbo", 3, picked=["large-v3", "distil-large-v3", "turbo", "medium.en"]) == \
+        ["large-v3", "distil-large-v3", "medium.en"]
 
     config = Config(token="secret-token", stt_model="turbo")
     app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=lambda model: NamedStt(model))
     app.state.save_config = False
     client = TestClient(app)
     page = client.get("/browse/models", headers=AUTH).text
-    assert "Speech recognizers" in page and "MAIN" in page and "Also listen" in page and "chosen automatically" in page
+    assert "Speech recognizers" in page and "MAIN" in page and "Save choices" in page and "chosen automatically" in page
     # Take one off the automatic panel, put another on.
     client.post("/browse/blend", headers=AUTH, data={"listen": "sherpa:canary", "back": "models"}, follow_redirects=False)
     assert config.blend_models == ["sherpa:parakeet-v2"]
@@ -705,3 +706,32 @@ def test_choosing_the_recognizers_by_hand(stt):
     assert config.blend is False
     client.post("/browse/blend", headers=AUTH, data={"listen": "auto", "blend": "on"}, follow_redirects=False)
     assert config.blend and config.blend_models == []
+
+
+def test_tick_any_number_of_recognizers_and_extra_whisper_models_go_to_the_processor(stt):
+    made = []
+
+    def partner_for(model, device=None):
+        made.append((model, device))
+        return NamedStt(model)
+
+    config = Config(token="secret-token", stt_model="turbo")
+    app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=partner_for)
+    app.state.save_config = False
+    client = TestClient(app)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert 'type="checkbox" name="model"' in page and "Save choices" in page
+    ticked = ["large-v3", "distil-large-v3", "medium.en", "sherpa:parakeet-v2", "sherpa:canary", "sherpa:sensevoice"]
+    client.post("/browse/blend", headers={**AUTH, "Content-Type": "application/x-www-form-urlencoded"},
+                follow_redirects=False, content="listening=1&back=models&" + "&".join(f"model={m}" for m in ticked))
+    assert config.blend_models == ticked and config.blend
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32)))
+    assert len(made) == 6
+    devices = dict(made)
+    assert devices["large-v3"] is None                                   # second Whisper shares the card
+    assert devices["distil-large-v3"] == "cpu" and devices["medium.en"] == "cpu"   # the rest on the processor
+    assert devices["sherpa:parakeet-v2"] is None
+    # Unticking everything leaves only the main recognizer.
+    client.post("/browse/blend", headers={**AUTH, "Content-Type": "application/x-www-form-urlencoded"},
+                content="listening=1&back=models", follow_redirects=False)
+    assert config.blend_models == [] and config.blend is False

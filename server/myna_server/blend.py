@@ -50,11 +50,11 @@ PANEL = ("turbo", "sherpa:parakeet-v2", "sherpa:canary", "distil-large-v3", "she
 
 def panel(primary: str, count: int, first_partner: str = "", picked: list[str] | None = None) -> list[str]:
     """The other recognizers to run beside `primary`, `count` in all counting it.
-    `picked` (chosen by hand) replaces the automatic list. At most two Whisper
-    models in all, since Whisper models share the graphics card."""
-    chosen: list[str] = []
+    `picked` (chosen by hand) replaces the automatic list and is used as given,
+    however many. The automatic list keeps to two Whisper models in all."""
     if picked:
-        count = len(picked) + 1
+        return [model for model in dict.fromkeys(picked) if model and model != primary]
+    chosen: list[str] = []
     for model in list(picked or []) or ([first_partner] if first_partner else []) + list(PANEL):
         if len(chosen) >= max(0, min(count, 4) - 1):
             break

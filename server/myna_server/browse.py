@@ -273,18 +273,22 @@ def _choices(field: str, options, current: str) -> str:
 
 
 def _recognizers(config, listening: list[str], trust: dict, readout: dict) -> str:
-    """Every speech model, with what it has shown on this person's audio, and
-    buttons to make it the main recognizer or put it on the panel."""
+    """Every speech model, with what it has shown on this person's audio: a
+    button to make one the main recognizer, and a tick box to have any number
+    of others listen alongside it and be merged into one transcript."""
     names = {key: name for key, name, _ in catalog.SPEECH}
 
     def short(key: str) -> str:
         return key.removeprefix("sherpa:") if key.startswith("sherpa:") else f"whisper-{key}"
 
     out = [
-        '<div class="dim">The <b>main</b> recognizer always listens. Up to three more can listen alongside it '
-        "(at most two Whisper models in all, since they share the graphics card). The figures are from your own "
-        "audio this past week: how fast each one ran, and how closely it matched the agreed transcript.</div>",
-        "<table><tr><th>Model</th><th>Speed</th><th>Trust</th><th>Recordings</th><th></th></tr>",
+        '<div class="dim">The <b>main</b> recognizer always listens. Tick as many others as you like to listen '
+        "alongside it; what they all hear is merged into one transcript and checked for sense. Two Whisper models "
+        "run on the graphics card; any more run on the processor. Each one ticked adds work for every clip. The "
+        "figures are from your own audio this past week.</div>",
+        '<form method="post" action="/browse/blend"><input type="hidden" name="listening" value="1">'
+        '<input type="hidden" name="back" value="models">',
+        "<table><tr><th>Listen</th><th>Model</th><th>Speed</th><th>Trust</th><th>Recordings</th><th></th></tr>",
     ]
     for key, name, note in catalog.SPEECH:
         row = readout.get(short(key)) or {}
@@ -292,28 +296,25 @@ def _recognizers(config, listening: list[str], trust: dict, readout: dict) -> st
         speed = f"{audio / took:.0f}×" if took else ""
         learned = f"{trust[short(key)]:.0%}" if short(key) in trust else ""
         if key == config.stt_model:
+            box = '<input type="checkbox" checked disabled title="The main recognizer always listens">'
             action = '<span class="t">MAIN</span>'
         else:
-            on = key in listening
-            action = (
-                '<div style="display:flex;gap:6px">'
-                f'<form method="post" action="/browse/models" style="margin:0"><input type="hidden" name="speech" value="{_e(key)}">'
-                "<button>Make main</button></form>"
-                f'<form method="post" action="/browse/blend" style="margin:0"><input type="hidden" name="listen" value="{_e(key)}">'
-                f'<input type="hidden" name="back" value="models"><button>{"Stop listening" if on else "Also listen"}</button></form>'
-                + ('<span class="t">LISTENING</span>' if on else "")
-                + "</div>"
-            )
+            ticked = " checked" if key in listening else ""
+            box = f'<input type="checkbox" name="model" value="{_e(key)}"{ticked}>'
+            action = f'<button name="speech" value="{_e(key)}" formaction="/browse/models">Make main</button>'
         out.append(
-            f'<tr><td>{_e(name)}<div class="dim">{_e(note)}</div></td><td>{speed}</td><td>{learned}</td>'
-            f'<td>{row.get("clips") or ""}</td><td>{action}</td></tr>'
+            f'<tr><td>{box}</td><td>{_e(name)}<div class="dim">{_e(note)}</div></td><td>{speed}</td>'
+            f'<td>{learned}</td><td>{row.get("clips") or ""}</td><td>{action}</td></tr>'
         )
     out.append("</table>")
     automatic = "chosen by hand" if config.blend_models else "chosen automatically"
     out.append(
-        f'<div class="dim">Listening alongside: {_e(", ".join(names.get(m, m) for m in listening) or "none")} ({automatic}).</div>'
+        '<div style="display:flex;gap:8px;align-items:center;margin-top:10px"><button>Save choices</button>'
+        f'<span class="dim">Listening alongside now: {_e(", ".join(names.get(m, m) for m in listening) or "none")} '
+        f"({automatic}).</span></div></form>"
         + ('<form method="post" action="/browse/blend" style="margin-top:6px"><input type="hidden" name="listen" value="auto">'
-           '<input type="hidden" name="back" value="models"><button>Choose automatically again</button></form>'
+           '<input type="hidden" name="blend" value="on"><input type="hidden" name="back" value="models">'
+           "<button>Choose automatically again</button></form>"
            if config.blend_models else "")
     )
     return "".join(out)

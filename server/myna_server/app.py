@@ -107,10 +107,20 @@ def create_app(
         if not config.blend or partner_for is None or tune_state["running"]:
             return []
         out = []
+        # Two Whisper models fit on the graphics card; any further Whisper
+        # models chosen run on the processor instead, so there is no limit.
+        on_card = 0 if config.stt_model.startswith("sherpa:") or config.stt_device == "cpu" else 1
         for model in blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models):
-            if model not in engines_made:
-                engines_made[model] = partner_for(model)
-            out.append(engines_made[model])
+            device = None
+            if not model.startswith("sherpa:"):
+                if on_card < 2 and config.stt_device != "cpu":
+                    on_card += 1
+                else:
+                    device = "cpu"
+            key = f"{model}@{device or 'auto'}"
+            if key not in engines_made:
+                engines_made[key] = partner_for(model, device) if device else partner_for(model)
+            out.append(engines_made[key])
         partner["engine"] = out[0] if out else None
         partner["model"] = ", ".join(engine.name for engine in out)
         return out
@@ -396,12 +406,17 @@ def create_app(
             config.blend_count = min(max(int(form["count"]), 2), 4)
             config.blend_models = []
         speech_keys = {key for key, _, _ in catalog.SPEECH}
-        if form.get("listen") in speech_keys:
+        if "listening" in form:
+            # The checkbox list: every ticked model listens alongside the main one.
+            ticked = [m for m in parse_qs((await request.body()).decode()).get("model", []) if m in speech_keys]
+            config.blend_models = [m for m in ticked if m != config.stt_model]
+            config.blend = bool(config.blend_models)
+        elif form.get("listen") in speech_keys:
             wanted = form["listen"]
             current = list(config.blend_models) or blend.panel(config.stt_model, config.blend_count, config.blend_partner)
             if wanted in current:
                 current.remove(wanted)
-            elif len(current) < 3:
+            else:
                 current.append(wanted)
             config.blend_models = current
             config.blend = bool(current)   # nothing listening alongside = just the main one
