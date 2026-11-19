@@ -94,9 +94,14 @@ def run_speech(state: State, store, candidate, current_name: str, level, stop: t
     took_total = audio_total = 0.0
     agree: list[float] = []
     results = []
+    failures = 0
     for clip in clips:
         if stop.is_set():
             state["note"] = "Stopped."
+            break
+        if failures >= 3 and not results:
+            # It can't run at all: say why, rather than failing every recording.
+            state["note"] = f"This model couldn't run: {state.get('first_error', '')}"
             break
         try:
             with wave.open(clip["path"], "rb") as source:
@@ -113,7 +118,10 @@ def run_speech(state: State, store, candidate, current_name: str, level, stop: t
                 agree.append(agreement(words(before), words(text)))
             results.append({"at": clip["at"], "before": before, "after": text})
         except Exception as error:
-            state["note"] = f"A clip failed: {error}"
+            failures += 1
+            state.setdefault("first_error", str(error)[:400])
+            if results:
+                state["note"] = f"{failures} recordings failed, the first with: {state['first_error']}"
         state["done"] += 1
     state["results"] = results[-60:][::-1]
     state["summary"] = {

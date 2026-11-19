@@ -31,17 +31,36 @@ class Writer(Protocol):
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str: ...
 
 
+_dll_dirs_added = False
+
+
 def _add_nvidia_dll_dirs() -> None:
-    """On Windows the CUDA libraries arrive as pip packages; make them findable."""
-    if sys.platform != "win32":
+    """On Windows the CUDA libraries arrive as pip packages; make them findable.
+
+    Once only: this used to add the folders to PATH again on every model load,
+    until PATH grew too long for Windows ("The filename or extension is too
+    long", WinError 206) and nothing could load."""
+    global _dll_dirs_added
+    if sys.platform != "win32" or _dll_dirs_added:
         return
+    _dll_dirs_added = True
+    path = os.environ.get("PATH", "")
+    present = {part.rstrip("\\/").lower() for part in path.split(os.pathsep) if part}
+    added = []
     for entry in sys.path:
         root = Path(entry) / "nvidia"
         if not root.is_dir():
             continue
         for bin_dir in root.glob("*/bin"):
-            os.add_dll_directory(str(bin_dir))
-            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+            try:
+                os.add_dll_directory(str(bin_dir))
+            except OSError:
+                pass
+            if str(bin_dir).rstrip("\\/").lower() not in present:
+                present.add(str(bin_dir).rstrip("\\/").lower())
+                added.append(str(bin_dir))
+    if added:
+        os.environ["PATH"] = os.pathsep.join(added + ([path] if path else []))
 
 
 # Whisper invents these when it is given near-silence or noise.

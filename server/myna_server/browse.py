@@ -763,10 +763,11 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
         parts.append(f'<h2>Trying: {_e(name)}</h2><div class="dim">Over the last {trying.get("hours")} hours. '
                      f'{_e(progress)} {_e(trying.get("note"))} {_e(status)}</div>')
         controls = []
+        finished_any = bool(trying.get("results"))
         if trying.get("running"):
             controls.append('<form method="post" action="/browse/experiment" style="margin:0">'
                             '<button name="action" value="stop">Stop</button></form>')
-        else:
+        elif finished_any:
             if trying.get("kind") == "speech":
                 controls.append('<form method="post" action="/browse/experiment" style="margin:0">'
                                 '<input type="hidden" name="action" value="keep"><button>✓ Keep it as the recognizer</button></form>')
@@ -780,7 +781,7 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
                         '<button name="action" value="drop">✕ Throw it out</button></form>')
         parts.append(f'<div style="display:flex;gap:8px;margin:8px 0">{"".join(controls)}</div>')
         summary = trying.get("summary") or {}
-        if trying.get("kind") == "speech" and summary:
+        if trying.get("kind") == "speech" and summary.get("clips"):
             parts.append(
                 f'<div class="row">{summary.get("clips", 0)} recordings · {summary.get("pace", 0)}x real time · '
                 f'agrees with the current transcript {summary.get("agreement", 0):.0%} · heard speech the current one '

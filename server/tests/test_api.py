@@ -1274,3 +1274,25 @@ def test_experiment_tab_tries_a_model_and_keeps_or_drops_it(tmp_path, monkeypatc
     assert config.stt_model == "someone/faster-whisper-tiny" and stt.name == "someone/faster-whisper-tiny"
     page = client.get("/browse/experiment", headers=AUTH).text
     assert "Tried before" in page and "KEPT" in page
+
+
+def test_a_trial_model_that_cannot_run_stops_and_says_why(tmp_path):
+    import threading
+
+    from myna_server import experiment
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "e.db")
+    for i in range(10):
+        store.add_clip(9e9 - i, 2.0, str(tmp_path / f"{i}.wav"))   # files missing: every clip fails
+
+    class Broken:
+        name = "broken"
+
+        def transcribe(self, samples):
+            raise RuntimeError("no")
+
+    state = experiment.new_state()
+    state["hours"] = 1e9
+    experiment.run_speech(state, store, Broken(), "now", lambda a: a, threading.Event())
+    assert state["done"] == 3 and state["note"].startswith("This model couldn't run")
