@@ -616,7 +616,9 @@ def create_app(
             def progress(text: str) -> None:
                 talk_state["status"] = text
 
-            cheap = helper.generate if chosen(helper) else None
+            # The keep-or-discard call is a quick yes/no: a small model does it
+            # (Omi uses a cheap model for this step too), the main one writes.
+            cheap = helper.generate if chosen(helper) else (checker.generate if chosen(checker) else None)
             handled = conversations.run_pending(store, writer.generate, cheap, time.time(), config.owner_name,
                                                 most, progress)
             if most > 2:  # the button: also try again the ones that failed before
