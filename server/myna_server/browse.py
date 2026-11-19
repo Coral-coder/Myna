@@ -350,6 +350,16 @@ def _reset_buttons(state: dict, back: str) -> str:
     )
     if state.get("reset_status"):
         out.append(f'<p class="dim">{_e(state["reset_status"])}</p>')
+    use = state.get("memory") or {}
+    if use:
+        out.append(
+            "<h2>Memory</h2>"
+            f'<div class="dim">Graphics card: {_e(use.get("gpu"))} · Memory: {_e(use.get("ram"))}. Models load one at '
+            "a time; when there isn't room, the one used longest ago is unloaded and loads again when next needed. "
+            "The main recognizer is always kept.</div>"
+            + "".join(f'<div class="row">{_e(line)}</div>' for line in use.get("loaded") or [])
+            + (f'<p class="dim">{_e(use.get("note"))}</p>' if use.get("note") else "")
+        )
     return "".join(out)
 
 

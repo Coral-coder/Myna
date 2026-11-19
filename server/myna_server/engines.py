@@ -148,10 +148,30 @@ class WhisperTranscriber:
         self.status = "Not loaded yet (loads on first use)"
         # The wearer's own words, given to Whisper as words to listen for.
         self.hotwords = ""
+        # The main recognizer is never unloaded to make room for another model.
+        self.essential = False
+
+    def _budget_key(self) -> str:
+        return f"{self.name}@{id(self)}"
+
+    def _unload_for_room(self) -> bool:
+        """Called by the memory budget: free this model unless it is in use."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            self._model = None
+            self.device = "unloaded"
+            self.status = "Unloaded to make room; loads again when needed"
+            return True
+        finally:
+            self._lock.release()
 
     def use(self, model_name: str) -> None:
         """Switch to another Whisper model; it loads on its next use."""
+        from .memory import budget
+
         with self._lock:
+            budget.forget(self._budget_key())
             self._model = None
             self._model_name = model_name
             self.name = _speech_name(model_name)
@@ -165,12 +185,18 @@ class WhisperTranscriber:
             from .sidecar import helper
 
             helper.kill()
+        from .memory import budget
+
+        budget.forget(self._budget_key())
         self._model = None
         self.status = "Stopped; reloading…"
 
     def reload(self) -> None:
         """Drop the loaded model so it loads again with the current settings."""
+        from .memory import budget
+
         with self._lock:
+            budget.forget(self._budget_key())
             self._model = None
             # Choosing where it runs again is also the way to retry the
             # graphics card after it crashed.
@@ -207,7 +233,10 @@ class WhisperTranscriber:
         _add_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
 
+        from .memory import GB, WHISPER_GB, budget
+
         self.status = "Downloading and loading…"
+        size = WHISPER_GB.get(self._model_name, 2.0) * GB
         cache = str(data_dir() / "models" / "whisper")
         # If loading onto the graphics card killed the worker last time, the
         # mark below is still there: use the processor instead of crashing again.
@@ -220,15 +249,23 @@ class WhisperTranscriber:
                     raise RuntimeError("processor chosen")
                 if crashed_before:
                     raise RuntimeError("the graphics card crashed the server last time")
+                # Make room on the card first; if it can't be made, use the processor.
+                if not budget.make_room(self._budget_key(), "gpu", size):
+                    raise RuntimeError("not enough room on the graphics card")
                 mark.write_text("1")
-                self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16", download_root=cache)
+                with budget.loading:
+                    self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16",
+                                               download_root=cache)
                 mark.unlink(missing_ok=True)
                 self.device = "cuda"
                 self.status = "Ready on the graphics card"
             except Exception:
                 if not crashed_before:
                     mark.unlink(missing_ok=True)
-                self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8", download_root=cache)
+                budget.make_room(self._budget_key(), "ram", size)
+                with budget.loading:
+                    self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8",
+                                               download_root=cache)
                 self.device = "cpu"
                 why = "" if wants_cpu else (
                     " (loading on the graphics card crashed the server earlier; choose Graphics card again on the Models tab to retry)"
@@ -238,11 +275,16 @@ class WhisperTranscriber:
         except Exception as error:
             self.status = f"Couldn't load: {error}"
             raise
+        budget.register(self._budget_key(), "gpu" if self.device == "cuda" else "ram", size,
+                        self._unload_for_room, keep=self.essential)
         return self._model
 
     def transcribe(self, samples: np.ndarray) -> str:
+        from .memory import budget
+
         with self._lock:
             model = self._load()
+            budget.touch(self._budget_key())
             if self._model_name.startswith("sherpa:"):
                 from .sidecar import helper
 
@@ -317,6 +359,9 @@ class LlamaWriter:
     def force_stop(self) -> None:
         """Kill the model's runner now, even in the middle of an answer (the
         waiting request then fails at once). It loads again on next use."""
+        from .memory import budget
+
+        budget.forget(self._budget_key())
         process = self._process
         if process is not None:
             try:
@@ -360,7 +405,25 @@ class LlamaWriter:
             except Exception:
                 pass  # the reason is in `status`
 
+    def _budget_key(self) -> str:
+        return f"{self.name}@{self._role}"
+
+    def _unload_for_room(self) -> bool:
+        """Called by the memory budget to free this model's memory. Refuses
+        (returns False) if the model is in use right now."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            self._stop()
+            self.status = "Unloaded to make room; loads again when needed"
+            return True
+        finally:
+            self._lock.release()
+
     def _stop(self) -> None:
+        from .memory import budget
+
+        budget.forget(self._budget_key())
         if self._process is not None:
             try:
                 self._process.terminate()
@@ -458,31 +521,60 @@ class LlamaWriter:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             # Where it runs: all on the graphics card, all on the processor, or
             # (no setting) llama.cpp fits what it can on the card by itself.
+            from .memory import GB, budget, file_size
+
             device = self._device
+            size = file_size(model) + 1.0 * GB * max(1.0, self._config.llm_context / 8192)
+            key = self._budget_key()
+            # Make room first, unloading idle models if needed. If the card
+            # still can't take it, share it with the processor instead.
+            if device == "gpu" and not budget.make_room(key, "gpu", size):
+                device = "shared"
+            if device in ("cpu", "shared"):
+                budget.make_room(key, "ram", size)
             layers = {"gpu": ["-ngl", "999"], "cpu": ["-ngl", "0"]}.get(device, [])
-            self._process = subprocess.Popen(
-                [str(exe), "-m", model, *layers, "-c", str(self._config.llm_context),
-                 "--host", "127.0.0.1", "--port", str(self._port)],
-                stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
-            )
             import time
 
+            budget.loading.acquire()   # one model loads at a time
+            loading = True
+            try:
+                self._process = subprocess.Popen(
+                    [str(exe), "-m", model, *layers, "-c", str(self._config.llm_context),
+                     "--host", "127.0.0.1", "--port", str(self._port)],
+                    stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
+                )
+            except Exception:
+                loading = False
+                budget.loading.release()
+                raise
+
+            def loaded() -> None:
+                nonlocal loading
+                if loading:
+                    loading = False
+                    budget.loading.release()
+
             deadline = time.time() + 600
-            while time.time() < deadline:
-                if self._process.poll() is not None:
-                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-400:]
-                    raise RuntimeError(f"The model runner stopped while loading. {tail.strip()}")
-                try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{self._port}/health", timeout=3) as reply:
-                        if reply.status == 200:
-                            where = {"gpu": "the graphics card", "cpu": "the processor"}.get(
-                                device, "the graphics card and processor together"
-                            )
-                            self.status = f"Ready on {where}"
-                            return
-                except Exception:
-                    time.sleep(1)
-            raise RuntimeError("The model took too long to load.")
+            try:
+                while time.time() < deadline:
+                    if self._process.poll() is not None:
+                        tail = log_path.read_text(encoding="utf-8", errors="replace")[-400:]
+                        raise RuntimeError(f"The model runner stopped while loading. {tail.strip()}")
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{self._port}/health", timeout=3) as reply:
+                            if reply.status == 200:
+                                where = {"gpu": "the graphics card", "cpu": "the processor"}.get(
+                                    device, "the graphics card and processor together"
+                                )
+                                self.status = f"Ready on {where}"
+                                budget.register(key, "gpu" if device == "gpu" else "ram", size,
+                                                self._unload_for_room, keep=self._role == "checker")
+                                return
+                    except Exception:
+                        time.sleep(1)
+                raise RuntimeError("The model took too long to load.")
+            finally:
+                loaded()
         except Exception as error:
             self._stop()
             self.status = f"Couldn't load: {error}"
@@ -494,8 +586,11 @@ class LlamaWriter:
 
         if not self.chosen:
             raise RuntimeError("no model has been chosen for this")
+        from .memory import budget
+
         with self._lock:
             self._ensure_running()
+            budget.touch(self._budget_key())
             body = json.dumps(
                 {
                     "messages": [

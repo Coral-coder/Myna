@@ -35,6 +35,7 @@ def main() -> None:
         return
     store = Store(data_dir() / "myna.db")
     transcriber, writer, voices = WhisperTranscriber(config), LlamaWriter(config), Voices()
+    transcriber.essential = True  # the main recognizer is never unloaded to make room
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
     checker = LlamaWriter(config, "checker")
     audio_dir = data_dir() / "audio"

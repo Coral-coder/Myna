@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, blend, browse, catalog, conversations, daily, tuner, web
+from . import ask, blend, browse, catalog, conversations, daily, memory, tuner, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -322,6 +322,7 @@ def create_app(
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
             "checker_status": getattr(checker, "status", "") if checker is not None else "",
             "reset_status": reset_state["status"],
+            "memory": memory.budget.snapshot(),
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "blend": {

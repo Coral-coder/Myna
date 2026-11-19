@@ -810,3 +810,67 @@ def test_the_helper_process_can_be_stopped_mid_request():
     worker.join(timeout=10)
     assert failed and not worker.is_alive()       # the waiting request ends at once
     assert side._process is None and side.crashes == 0
+
+
+def test_memory_budget_unloads_the_least_recently_used_to_make_room():
+    import threading as threads
+    import time as clock
+
+    from myna_server.memory import GB, Budget
+
+    budget = Budget()
+    free = {"gpu": 1.0 * GB}
+    budget.probe = {"gpu": lambda: (free["gpu"], 12 * GB), "ram": lambda: (100 * GB, 128 * GB)}
+    unloaded = []
+
+    def model(name, size, busy=False):
+        def unload():
+            if busy:
+                return False                  # in use right now: left alone
+            unloaded.append(name)
+            free["gpu"] += size * GB
+            return True
+        return unload
+
+    budget.register("main-whisper", "gpu", 2 * GB, model("main-whisper", 2), keep=True)   # never unloaded
+    budget.register("old-helper", "gpu", 3 * GB, model("old-helper", 3))
+    clock.sleep(0.01)
+    budget.register("busy-checker", "gpu", 2 * GB, model("busy-checker", 2, busy=True))
+    clock.sleep(0.01)
+    budget.register("recent-writer", "gpu", 5 * GB, model("recent-writer", 5))
+    budget.touch("recent-writer")
+
+    # Needs 4 GB (+ margin): the oldest idle one goes first, and that is enough.
+    assert budget.make_room("summary", "gpu", 3 * GB) is True
+    assert unloaded == ["old-helper"]
+    # Needs far more: everything idle goes, but not the kept or the busy one, and it still doesn't fit.
+    assert budget.make_room("huge", "gpu", 30 * GB) is False
+    assert unloaded == ["old-helper", "recent-writer"]
+    names = " ".join(budget.snapshot()["loaded"])
+    assert "main-whisper" in names and "busy-checker" in names and "old-helper" not in names
+    # Memory that can't be read never blocks a load.
+    budget.probe["gpu"] = lambda: None
+    assert budget.make_room("any", "gpu", 99 * GB) is True
+
+    # One model loads at a time.
+    order = []
+
+    def load(name):
+        with budget.loading:
+            order.append(f"{name} start")
+            clock.sleep(0.1)
+            order.append(f"{name} end")
+
+    workers = [threads.Thread(target=load, args=(n,)) for n in ("a", "b")]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert order[1].endswith("end") and order[3].endswith("end")   # never two loads overlapping
+
+
+def test_memory_readout_is_on_the_live_and_models_tabs(stt):
+    client = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter()))
+    for page in ("/browse/live", "/browse/models"):
+        html = client.get(page, headers=AUTH).text
+        assert "<h2>Memory</h2>" in html and "Graphics card:" in html and "Models load one at a time" in html
