@@ -110,8 +110,8 @@ def create_app(
 
     def others():
         """The other recognizers on the panel, made on first need."""
-        if not config.blend or partner_for is None or tune_state["running"]:
-            return []
+        if config.simple_mode or not config.blend or partner_for is None or tune_state["running"]:
+            return []   # simple mode: just the one recognizer
         out = []
         # Two Whisper models fit on the graphics card; any further Whisper
         # models chosen run on the processor instead, so there is no limit.
@@ -156,7 +156,7 @@ def create_app(
                 pass  # one recognizer failing (or stuck) never stops the others
         if len(candidates) < 2:
             return first
-        reconcile = checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None)
+        reconcile = None if config.simple_mode else (checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None))
         text, how = blend.combine(candidates, learning, reconcile, words_known)
         learning.note(candidates, text)
         text = clean(text)
@@ -325,8 +325,8 @@ def create_app(
         def work() -> tuple[str, list[dict]]:
             """The text, and (when the voice models are there) the clip split
             by speaker, each stretch with its speaker's voice print."""
-            if voices is None:
-                return hear(audio), []
+            if voices is None or config.simple_mode:
+                return hear(audio), []   # simple mode: no per-clip speaker split
             try:
                 pieces = by_speaker(voices.split(audio))
             except Exception:
@@ -741,7 +741,7 @@ def create_app(
 
             # The keep-or-discard call is a quick yes/no: a small model does it
             # (Omi uses a cheap model for this step too), the main one writes.
-            cheap = helper.generate if chosen(helper) else (checker.generate if chosen(checker) else None)
+            cheap = None if config.simple_mode else (helper.generate if chosen(helper) else (checker.generate if chosen(checker) else None))
             handled = conversations.run_pending(store, writer.generate, cheap, time.time(), config.owner_name,
                                                 most, progress)
             if most > 2:  # the button: also try again the ones that failed before
@@ -761,7 +761,7 @@ def create_app(
 
     def run_indexing() -> int:
         """Give new or changed conversations, notes and memories their meaning-vectors."""
-        if not chosen(embedder) or not hasattr(embedder, "embed"):
+        if config.simple_mode or not chosen(embedder) or not hasattr(embedder, "embed"):
             return 0
         from . import meaning
 
@@ -851,6 +851,23 @@ def create_app(
             daily_state["running"] = False
 
     app.state.run_daily = run_daily
+
+    @app.post("/browse/simple")
+    async def set_simple(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        config.simple_mode = form.get("simple") != "off"
+        if getattr(app.state, "save_config", True):
+            config.save()
+        # Free the extra models' memory the moment simple mode is turned on.
+        if config.simple_mode:
+            for extra in (helper, summarizer, checker, embedder):
+                if extra is not None and hasattr(extra, "stop"):
+                    await run_in_threadpool(extra.stop)
+        return RedirectResponse("/browse/models", status_code=303)
 
     @app.post("/browse/daily")
     async def start_daily(request: Request, _: None = Depends(paired)):

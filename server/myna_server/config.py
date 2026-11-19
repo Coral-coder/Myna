@@ -30,8 +30,8 @@ class Config:
     stt_model: str = "turbo"
     # Language model: a Hugging Face GGUF repo and file for llama.cpp. Gemma 4
     # 12B (about 7 GB) leaves room on a 12 GB card for Whisper beside it.
-    llm_repo: str = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
-    llm_file: str = "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+    llm_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
+    llm_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
     # If the main model can't load, the server switches to this one instead.
     llm_fallback_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
     llm_fallback_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
@@ -69,7 +69,11 @@ class Config:
     owner_name: str = ""
     # Two recognizers hear every clip and are combined into one transcript
     # (see blend.py). The partner is chosen automatically when left empty.
-    blend: bool = True
+    # Simple mode (Omi-style): one recognizer, one writing model, nothing else
+    # loaded — no recognizer panel, no checker/helper/summary/embedder, no
+    # per-clip speaker splitting, no auto-tuning. Keeps a 12 GB card breathing.
+    simple_mode: bool = True
+    blend: bool = False
     blend_partner: str = ""
     # How many recognizers hear each clip, counting the one in use (2 to 4).
     blend_count: int = 3
@@ -94,7 +98,7 @@ class Config:
     # Skip clips the speech detector finds no speech in (Omi gates its
     # recognizers the same way). The bar is low so far-away speech passes.
     speech_gate: bool = True
-    auto_tune: bool = True
+    auto_tune: bool = False
     tune_every_hours: int = 24
     tuned_at: float = 0.0
 
@@ -127,6 +131,16 @@ class Config:
                 setattr(config, f"{role}_device", "auto")
             config.stt_device = "auto"
             config.upgraded_to = "auto-devices"
+        if config.upgraded_to == "auto-devices":
+            # The server was doing too much at once for a 12 GB card. Simple
+            # mode: one recognizer, one writer, nothing else. Also drop the
+            # 23 GB shared model to one that fits the card, unless chosen by hand.
+            config.simple_mode = True
+            config.blend = False
+            config.auto_tune = False
+            if config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf":
+                config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
+            config.upgraded_to = "simple-mode"
         config.save(path)
         return config
 

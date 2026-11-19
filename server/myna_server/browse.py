@@ -431,6 +431,24 @@ def _reset_buttons(state: dict, back: str) -> str:
     return "".join(out)
 
 
+def _simple_banner(config) -> str:
+    """The Simple-mode switch at the top of the Models page."""
+    on = getattr(config, "simple_mode", True)
+    other = "off" if on else "on"
+    label = "Full" if on else "Simple (Omi-style)"
+    return (
+        '<div style="border:1px solid #e9e9e6;border-radius:10px;padding:12px;margin-bottom:14px">'
+        f'<b>Simple mode: {"ON" if on else "OFF"}</b>'
+        '<div class="dim" style="margin:4px 0 8px">One recognizer and one writing model, nothing else — no '
+        'recognizer panel, no checker/helper/summary/search models, no per-clip speaker splitting, no auto-tuning. '
+        'This is the Omi-style setup and keeps a 12 GB card from being overwhelmed. Turn it off only if the machine '
+        'has room to spare.</div>'
+        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<input type="hidden" name="simple" value="{other}"><button>Switch to {label}</button></form>'
+        "</div>"
+    )
+
+
 def models_page(store: Store, config, state: dict, listening: list[str] | None = None,
                 trust: dict | None = None, readout: dict | None = None) -> str:
     """Choose which models transcribe and write, and where each runs."""
@@ -441,6 +459,7 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
         "table{border-collapse:collapse;width:100%;margin-top:8px}td,th{text-align:left;padding:6px 10px 6px 0;"
         "border-bottom:1px solid #ffffff12;font-size:13px;vertical-align:top}th{font:11px ui-monospace,monospace;"
         "letter-spacing:.1em;text-transform:uppercase;color:#6a6c6e}</style>",
+        _simple_banner(config),
         "<h2>Transcription</h2>",
         f'<div class="dim">{_e(state.get("transcriber"))} — {_e(state.get("transcriber_status"))}</div>',
         "<h2>Transcription runs on</h2>",

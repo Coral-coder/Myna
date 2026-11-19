@@ -50,7 +50,7 @@ def stt():
 
 @pytest.fixture
 def client(stt):
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     return TestClient(create_app(config, stt, FakeWriter()))
 
 
@@ -194,7 +194,7 @@ def test_models_page_lists_choices_and_switches(stt):
         def use(self, repo, file):
             self.name = file.removesuffix(".gguf")
 
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     app = create_app(config, stt, SwitchableWriter())
     app.state.save_config = False
     client = TestClient(app)
@@ -236,7 +236,7 @@ def test_choosing_where_models_run_and_big_models_are_shared(stt):
         def use(self, repo, file):
             self.name = file.removesuffix(".gguf")
 
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     app = create_app(config, stt, SwitchableWriter())
     app.state.save_config = False
     client = TestClient(app)
@@ -297,7 +297,7 @@ def test_transcribe_splits_a_clip_by_speaker(stt):
         def print_of(self, audio):
             return [float(audio.size)]
 
-    client = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=FakeVoices()))
+    client = TestClient(create_app(Config(token="secret-token", simple_mode=False), stt, FakeWriter(), voices=FakeVoices()))
     body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 5, dtype=np.float32))).json()
     segments = body["segments"]
     # Speaker 0's two pieces joined, then speaker 1; the sliver is dropped. The
@@ -316,7 +316,7 @@ def test_one_speaker_is_transcribed_whole_and_no_voices_still_works(stt, client)
         def print_of(self, audio):
             return [1.0, 2.0]
 
-    solo = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=OneVoice()))
+    solo = TestClient(create_app(Config(token="secret-token", simple_mode=False), stt, FakeWriter(), voices=OneVoice()))
     body = solo.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 3, dtype=np.float32))).json()
     assert body["text"] == "heard 48000 samples" and len(body["segments"]) == 1 and body["segments"][0]["voice"] == [1.0, 2.0]
     plain = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
@@ -431,7 +431,7 @@ def test_models_page_assigns_jobs_to_models(stt):
         def use(self, repo, file):
             self.name = file.removesuffix(".gguf")
 
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     helper, summary = Switchable(), Switchable()
     app = create_app(config, stt, Switchable(), helper=helper, summarizer=summary)
     app.state.save_config = False
@@ -440,7 +440,7 @@ def test_models_page_assigns_jobs_to_models(stt):
     client.post("/browse/models", headers=AUTH, data={"role": "helper", **form}, follow_redirects=False)
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
                 data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
-    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("Qwen3.6")
+    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("gemma-4-12b")
     assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "auto"  # placed automatically
     page = client.get("/browse/models", headers=AUTH).text
     assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
@@ -609,7 +609,7 @@ def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
             return ""
 
     main = Deaf("main")
-    app = create_app(Config(token="secret-token"), main, FakeWriter(), partner_for=lambda model: Partner())
+    app = create_app(Config(token="secret-token", simple_mode=False, blend=True), main, FakeWriter(), partner_for=lambda model: Partner())
     client = TestClient(app)
     client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
         change("person", "p1", {"name": "Saoirse", "createdAt": 1}, 1),
@@ -669,7 +669,7 @@ def test_every_panel_member_is_heard_and_the_checker_settles_it(stt):
     checker = Checker("small", "meet Saoirse at the station")
     main = NamedStt("turbo")
     main.transcribe = lambda samples: "meet searsha at the station"
-    app = create_app(Config(token="secret-token", stt_model="turbo"), main, FakeWriter(), checker=checker,
+    app = create_app(Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True), main, FakeWriter(), checker=checker,
                      partner_for=lambda model: Says(model, said[model]))
     client = TestClient(app)
     body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
@@ -688,7 +688,7 @@ def test_choosing_the_recognizers_by_hand(stt):
     assert blend.panel("turbo", 3, picked=["large-v3", "distil-large-v3", "turbo", "medium.en"]) == \
         ["large-v3", "distil-large-v3", "medium.en"]
 
-    config = Config(token="secret-token", stt_model="turbo")
+    config = Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True)
     app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=lambda model: NamedStt(model))
     app.state.save_config = False
     client = TestClient(app)
@@ -720,7 +720,7 @@ def test_tick_any_number_of_recognizers_and_extra_whisper_models_go_to_the_proce
         made.append((model, device))
         return NamedStt(model)
 
-    config = Config(token="secret-token", stt_model="turbo")
+    config = Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True)
     app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=partner_for)
     app.state.save_config = False
     client = TestClient(app)
@@ -767,7 +767,7 @@ def test_stop_and_reload_buttons(stt):
 
     writer, checker = Stoppable("big"), Stoppable("small")
     main = Resettable("whisper-turbo")
-    app = create_app(Config(token="secret-token", stt_model="turbo"), main, writer, checker=checker,
+    app = create_app(Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True), main, writer, checker=checker,
                      partner_for=lambda model: Resettable(model))
     exits = []
     app.state.exit = lambda: exits.append(True)
@@ -900,23 +900,27 @@ def test_how_a_model_is_split_between_the_card_and_memory():
     assert cpu_threads(12) == 12 and 2 <= cpu_threads() <= 8
 
 
-def test_old_default_moves_to_the_faster_model_once_and_falls_back_if_it_cannot_load(tmp_path):
+def test_heavy_default_moves_to_a_lighter_model_and_falls_back_if_it_cannot_load(tmp_path):
     import json as js
 
     from myna_server.engines import LlamaWriter
 
     path = tmp_path / "config.json"
-    path.write_text(js.dumps({"token": "x" * 20, "llm_repo": "google/gemma-4-12B-it-qat-q4_0-gguf",
-                              "llm_file": "gemma-4-12b-it-qat-q4_0.gguf", "llm_device": "gpu"}))
+    # An old install on the heavy 35B shared model is moved to one that fits the card,
+    # and simple mode is turned on.
+    path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "auto-devices",
+                              "llm_repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+                              "llm_file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"}))
     config = Config.load(path)
-    assert config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" and config.llm_device == "auto"
+    assert config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf" and config.simple_mode is True and config.blend is False
+
     # A model chosen by hand afterwards is never moved again.
-    config.llm_file = "phi-4-Q4_K_M.gguf"
-    config.save(path)
+    path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "simple-mode", "llm_file": "phi-4-Q4_K_M.gguf"}))
     assert Config.load(path).llm_file == "phi-4-Q4_K_M.gguf"
 
     # If the main model can't load, the fallback is used.
-    writer = LlamaWriter(Config(token="x" * 20))
+    writer = LlamaWriter(Config(token="x" * 20, llm_repo="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+                                llm_file="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"))
     tried = []
 
     def ensure():
@@ -931,7 +935,6 @@ def test_old_default_moves_to_the_faster_model_once_and_falls_back_if_it_cannot_
     writer.warm()
     assert tried == ["Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "gemma-4-12b-it-qat-q4_0.gguf"]
     assert writer.name == "gemma-4-12b-it-qat-q4_0" and "Switched to this because" in writer.status
-
 
 def test_writing_speed_is_measured_from_real_requests(tmp_path, monkeypatch, stt):
     monkeypatch.setenv("MYNA_SERVER_HOME", str(tmp_path))
@@ -1026,7 +1029,8 @@ def test_existing_setups_get_the_larger_context_once(tmp_path):
     path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "qwen3.6-mtp", "llm_context": 8192,
                               "llm_file": "phi-4-Q4_K_M.gguf"}))
     config = Config.load(path)
-    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "auto-devices"
+    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "simple-mode"
+    assert config.simple_mode is True and config.blend is False
 
 
 def test_a_lone_yeah_from_one_recognizer_is_dropped():
@@ -1068,7 +1072,7 @@ def test_the_panel_works_in_parallel_and_silence_is_skipped(stt):
             return "hello there"
 
     main = Slow("whisper-turbo")
-    app = create_app(Config(token="secret-token", stt_model="turbo"), main, FakeWriter(),
+    app = create_app(Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True), main, FakeWriter(),
                      partner_for=lambda model: Slow(model))
     client = TestClient(app)
     tone = (np.sin(np.linspace(0, 900, 16000)) * 0.2).astype(np.float32)
@@ -1088,7 +1092,7 @@ def test_clips_with_no_speech_are_not_transcribed(stt):
             Counting.calls += 1
             return "words"
 
-    app = create_app(Config(token="secret-token"), Counting("whisper-turbo"), FakeWriter(),
+    app = create_app(Config(token="secret-token", simple_mode=False, blend=True), Counting("whisper-turbo"), FakeWriter(),
                      partner_for=lambda model: Counting(model))
     found = {"seconds": 0.0}
     app.state.speech_seconds = lambda samples: found["seconds"]
@@ -1194,7 +1198,7 @@ def test_the_same_line_is_not_given_twice(client, stt):
 def test_a_model_used_for_two_jobs_is_loaded_once():
     from myna_server.engines import LlamaWriter
 
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     config.helper_repo, config.helper_file = config.llm_repo, config.llm_file
     main, helper = LlamaWriter(config, "llm"), LlamaWriter(config, "helper")
     main.generate = lambda instructions, prompt, most: "from the main runner"
@@ -1256,7 +1260,7 @@ def test_experiment_tab_tries_a_model_and_keeps_or_drops_it(tmp_path, monkeypatc
         made.append(model)
         return Candidate("whisper-" + model)
 
-    config = Config(token="secret-token")
+    config = Config(token="secret-token", simple_mode=False)
     app = create_app(config, stt, FakeWriter(), audio_dir=tmp_path, partner_for=partner_for)
     app.state.save_config = False
     client = TestClient(app)
@@ -1348,3 +1352,28 @@ def test_a_busy_helper_is_skipped_by_live_audio():
             assert "busy" in str(error)
     finally:
         side._lock.release()
+
+
+def test_simple_mode_runs_one_recognizer_and_one_writer(stt):
+    # In simple mode the panel never runs even with partners configured, and the
+    # whole clip is transcribed without diarization.
+    class CountingStt(NamedStt):
+        calls = 0
+
+        def transcribe(self, samples):
+            CountingStt.calls += 1
+            return "hello"
+
+    main = CountingStt("whisper-turbo")
+    app = create_app(Config(token="secret-token", simple_mode=True, blend=True),
+                     main, FakeWriter(), partner_for=lambda model: CountingStt("partner"))
+    client = TestClient(app)
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000))).json()
+    assert body["text"] == "hello" and body["segments"] == []     # no speaker split
+    assert CountingStt.calls == 1                                   # just the one recognizer, no panel
+
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Simple mode: ON" in page and "Switch to Full" in page
+    client.post("/browse/simple", headers=AUTH, data={"simple": "off"}, follow_redirects=False)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Simple mode: OFF" in page and "Switch to Simple" in page
