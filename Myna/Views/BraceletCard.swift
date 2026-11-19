@@ -17,6 +17,7 @@ struct BraceletCard: View {
     @State private var fetchSecret = ""
     @State private var fetchToken = ""
     @State private var showAccountFetch = false
+    @State private var showOwnKeyTest = false
     @State private var acctSessionToken = ""
     @State private var acctPassphrase = ""
     @State private var acctProof = ""
@@ -54,6 +55,7 @@ struct BraceletCard: View {
                 capturedKeySection
                 accountFetchSection
                 serverFetchSection
+                ownKeyTestSection
                 if bee.isReadyForControl, bee.deviceState == .mute {
                     VStack(alignment: .leading, spacing: 8) {
                         detailRow(icon: "mic.slash.fill", text: "The bracelet is muted, so it isn't sending audio.", tint: MynaTheme.gold)
@@ -131,6 +133,47 @@ struct BraceletCard: View {
             .padding(.top, 6)
         } label: {
             Text("Advanced: paste captured key").braceletLabel()
+        }
+        .tint(MynaTheme.ink.opacity(0.6))
+    }
+
+    /// The experiment that settles whether a Bee-free key generator is possible:
+    /// install our OWN randomly generated key (wrapped in a real captured
+    /// envelope) on a factory-reset bracelet and see whether the firmware takes
+    /// it. Accepted → the key isn't signature-bound, so Myna can mint its own.
+    @ViewBuilder
+    private var ownKeyTestSection: some View {
+        DisclosureGroup(isExpanded: $showOwnKeyTest) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Settles whether Myna can generate its own bracelet key instead of ever asking Bee. It puts a key Myna made itself onto the bracelet, wrapped in a real captured envelope, and checks whether the firmware accepts it.")
+                    .braceletCaption()
+                Text("First capture your real Bee key once (so Myna has a genuine envelope), then FACTORY-RESET the bracelet and reconnect — the bracelet only accepts a new key while reset. If the test is rejected, nothing changes and you set up normally. If it's accepted, the bracelet runs your own key from then on.")
+                    .braceletCaption()
+                if let result = bee.ownKeyTestResult {
+                    Text(result)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button {
+                    bee.runOwnKeyTest()
+                } label: {
+                    HStack(spacing: 8) {
+                        if bee.ownKeyTestRunning { ProgressView().controlSize(.small).tint(MynaTheme.cyan) }
+                        Text(bee.ownKeyTestRunning ? "Testing…" : "Test my own key")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    }
+                }
+                .tint(MynaTheme.cyan)
+                .disabled(bee.ownKeyTestRunning || !bee.canRunOwnKeyTest)
+                if !bee.canRunOwnKeyTest {
+                    Text("Capture your real Bee key first (above), then this unlocks.")
+                        .braceletCaption()
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced: test my own key (experimental)").braceletLabel()
         }
         .tint(MynaTheme.ink.opacity(0.6))
     }
