@@ -4,6 +4,7 @@ phone's records in step with the database here."""
 from __future__ import annotations
 
 import hmac
+import os
 import ipaddress
 import threading
 import time
@@ -320,6 +321,7 @@ def create_app(
             "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
             "checker_status": getattr(checker, "status", "") if checker is not None else "",
+            "reset_status": reset_state["status"],
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "blend": {
@@ -525,6 +527,66 @@ def create_app(
         threading.Thread(target=run_tune, daemon=True).start()
         return RedirectResponse("/browse/compare", status_code=303)
 
+    # -- stopping and reloading models that have hung --------------------------
+
+    reset_state = {"status": ""}
+
+    def reset(which: str) -> str:
+        """Stop a model at once (even mid-request) and load it again. "all"
+        restarts the whole worker, which frees every bit of memory it holds."""
+        stamp = time.strftime("%H:%M:%S")
+        if which == "all":
+            reset_state["status"] = f"{stamp}: restarting the whole server; back in a minute or two."
+
+            def leave() -> None:
+                time.sleep(1.5)  # let the page answer first
+                getattr(app.state, "exit", lambda: os._exit(3))()
+
+            threading.Thread(target=leave, daemon=True).start()
+            return reset_state["status"]
+        done = []
+        if which in ("transcriber", "recognition"):
+            if hasattr(transcriber, "force_reset"):
+                transcriber.force_reset()
+                done.append(transcriber.name)
+            for engine in list(engines_made.values()):
+                if hasattr(engine, "force_reset"):
+                    engine.force_reset()
+            engines_made.clear()
+            if voices is not None and hasattr(voices, "force_reset"):
+                voices.force_reset()
+            done.append("the other recognizers and the voice models")
+
+            def again() -> None:
+                if hasattr(transcriber, "warm"):
+                    transcriber.warm()
+                if voices is not None and hasattr(voices, "warm"):
+                    voices.warm()
+
+            threading.Thread(target=again, daemon=True).start()
+        elif which in roles and roles[which] is not None:
+            model = roles[which]
+            if hasattr(model, "force_stop"):
+                model.force_stop()
+            done.append(getattr(model, "name", which))
+            if which != "summary" and hasattr(model, "warm"):
+                threading.Thread(target=model.warm, daemon=True).start()
+        reset_state["status"] = f"{stamp}: stopped and reloading {', '.join(done) or 'nothing'}."
+        return reset_state["status"]
+
+    app.state.reset = reset
+
+    @app.post("/browse/reset")
+    async def start_reset(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        reset(form.get("which", ""))
+        back = form.get("back", "live")
+        return RedirectResponse("/browse/models" if back == "models" else "/browse/live", status_code=303)
+
     # -- writing up finished conversations, the way Omi does --------------------
 
     talk_state = {"running": False, "status": ""}
@@ -641,7 +703,7 @@ def create_app(
 
     @app.get("/browse/live", response_class=HTMLResponse)
     def browse_live(_: None = Depends(paired)) -> str:
-        return browse.live_page(store)
+        return browse.live_page(store, engines_state())
 
     @app.get("/browse/live.json")
     def browse_live_json(_: None = Depends(paired)) -> dict:

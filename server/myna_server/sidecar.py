@@ -69,11 +69,25 @@ class Sidecar:
         self._connection = None
         self.crashes = 0
 
+    def kill(self) -> None:
+        """Stop the helper process now, even in the middle of a request (a
+        request waiting on it then fails at once). It starts again on next use,
+        with a clean slate."""
+        process = self._process
+        if process is not None:
+            try:
+                process.kill()
+                process.join(timeout=5)
+            except Exception:
+                pass
+        self._process = None
+        self.crashes = 0
+
     def _ensure(self) -> None:
         if self._process is not None and self._process.is_alive():
             return
-        if self._process is not None:
-            self.crashes += 1  # it died between requests
+        if self._process is not None and self._process.exitcode not in (None, -9):
+            self.crashes += 1  # it died between requests (not by being stopped)
             self._process = None
         if self.crashes >= 3:
             raise RuntimeError("switched off after stopping unexpectedly three times; restart the server to try again")

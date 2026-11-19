@@ -157,6 +157,17 @@ class WhisperTranscriber:
             self.name = _speech_name(model_name)
             self.status = "Not loaded yet (loads on first use)"
 
+    def force_reset(self) -> None:
+        """Stop and unload now, without waiting for a stuck request to finish.
+        A sherpa model's helper process is killed (which ends a stuck request
+        at once). It loads again on next use."""
+        if self._model_name.startswith("sherpa:"):
+            from .sidecar import helper
+
+            helper.kill()
+        self._model = None
+        self.status = "Stopped; reloading…"
+
     def reload(self) -> None:
         """Drop the loaded model so it loads again with the current settings."""
         with self._lock:
@@ -302,6 +313,18 @@ class LlamaWriter:
     @property
     def chosen(self) -> bool:
         return bool(self._repo and self._file)
+
+    def force_stop(self) -> None:
+        """Kill the model's runner now, even in the middle of an answer (the
+        waiting request then fails at once). It loads again on next use."""
+        process = self._process
+        if process is not None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        self._process = None
+        self.status = "Stopped; reloading…" if self.chosen else "Not chosen"
 
     def stop(self) -> None:
         """Unload the model (frees its memory); it loads again on next use."""
@@ -509,6 +532,12 @@ class Voices:
 
     def _report(self, text: str) -> None:
         self.status = text
+
+    def force_reset(self) -> None:
+        from .sidecar import helper
+
+        helper.kill()
+        self.status = "Stopped; reloading…"
 
     def warm(self) -> None:
         from .sidecar import helper

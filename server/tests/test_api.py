@@ -735,3 +735,78 @@ def test_tick_any_number_of_recognizers_and_extra_whisper_models_go_to_the_proce
     client.post("/browse/blend", headers={**AUTH, "Content-Type": "application/x-www-form-urlencoded"},
                 content="listening=1&back=models", follow_redirects=False)
     assert config.blend_models == [] and config.blend is False
+
+
+def test_stop_and_reload_buttons(stt):
+    import time as clock
+
+    class Stoppable(Recorder):
+        def __init__(self, name):
+            super().__init__(name, "ok")
+            self.killed = self.warmed = 0
+
+        def force_stop(self):
+            self.killed += 1
+
+        def warm(self):
+            self.warmed += 1
+
+    class Resettable(NamedStt):
+        resets = 0
+
+        def force_reset(self):
+            Resettable.resets += 1
+
+        def warm(self):
+            pass
+
+    writer, checker = Stoppable("big"), Stoppable("small")
+    main = Resettable("whisper-turbo")
+    app = create_app(Config(token="secret-token", stt_model="turbo"), main, writer, checker=checker,
+                     partner_for=lambda model: Resettable(model))
+    exits = []
+    app.state.exit = lambda: exits.append(True)
+    client = TestClient(app)
+    for page in ("/browse/live", "/browse/models"):
+        html = client.get(page, headers=AUTH).text
+        assert "Stop &amp; reload" in html and "Restart everything" in html
+    assert client.post("/browse/reset", data={"which": "llm"}).status_code == 401
+
+    client.post("/browse/reset", headers=AUTH, data={"which": "llm"}, follow_redirects=False)
+    clock.sleep(0.1)
+    assert writer.killed == 1 and writer.warmed == 1 and checker.killed == 0
+
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32)))  # make the panel
+    reply = client.post("/browse/reset", headers=AUTH, data={"which": "recognition", "back": "models"}, follow_redirects=False)
+    assert reply.headers["location"] == "/browse/models" and Resettable.resets == 3   # the main one and two on the panel
+    assert "stopped and reloading" in client.get("/browse/live", headers=AUTH).text
+
+    client.post("/browse/reset", headers=AUTH, data={"which": "all"}, follow_redirects=False)
+    clock.sleep(1.8)
+    assert exits == [True]          # the whole worker restarts; the launcher brings it back
+
+
+def test_the_helper_process_can_be_stopped_mid_request():
+    import threading as threads
+    import time as clock
+
+    from myna_server.sidecar import Sidecar
+
+    side = Sidecar()
+    side._ensure()
+    assert side._process.is_alive()
+    failed = []
+
+    def stuck():
+        try:
+            side.call("stt", "no-such-model", np.zeros(10, dtype=np.float32), timeout=30)
+        except Exception as error:
+            failed.append(str(error))
+
+    worker = threads.Thread(target=stuck)
+    worker.start()
+    clock.sleep(0.3)
+    side.kill()
+    worker.join(timeout=10)
+    assert failed and not worker.is_alive()       # the waiting request ends at once
+    assert side._process is None and side.crashes == 0

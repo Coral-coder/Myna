@@ -224,9 +224,9 @@ def note_page(store: Store, note_id: str) -> str:
     return _frame("note", "", "".join(parts), store.counts())
 
 
-def live_page(store: Store) -> str:
+def live_page(store: Store, state: dict | None = None) -> str:
     """What the server is receiving and doing right now, updating by itself."""
-    body = """
+    body = _reset_buttons(state or {}, "live") + """
 <h2>Now</h2><div id="now" class="dim">…</div>
 <h2>Just received</h2><div id="events"><p class="dim">Nothing yet. Lines appear here as the phone sends audio.</p></div>
 <script>
@@ -320,6 +320,39 @@ def _recognizers(config, listening: list[str], trust: dict, readout: dict) -> st
     return "".join(out)
 
 
+def _reset_buttons(state: dict, back: str) -> str:
+    """Stop-and-reload buttons for when a model hangs or memory runs out."""
+    rows = [
+        ("recognition", "Speech recognition", f'{state.get("transcriber", "")} — {state.get("transcriber_status", "")}'),
+        ("llm", "Writing (main)", f'{state.get("writer", "")} — {state.get("writer_status", "")}'),
+        ("checker", "Checker", state.get("checker_status", "")),
+        ("helper", "Helper", state.get("helper_status", "")),
+        ("summary", "Summary", state.get("summary_status", "")),
+    ]
+    out = [
+        '<style>.rb{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:6px 12px;'
+        'border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}</style>'
+        "<h2>Stuck or out of memory?</h2>",
+        '<div class="dim">Stop &amp; reload ends a model at once, even in the middle of a job, frees its memory and '
+        "loads it again. Restart everything restarts the whole server, which frees all of it; it is back in a minute "
+        "or two.</div>",
+    ]
+    for key, label, status in rows:
+        out.append(
+            f'<div class="row" style="display:flex;gap:12px;align-items:center;justify-content:space-between">'
+            f'<div>{_e(label)}<div class="dim">{_e(status)}</div></div>'
+            f'<form method="post" action="/browse/reset" style="margin:0"><input type="hidden" name="which" value="{key}">'
+            f'<input type="hidden" name="back" value="{back}"><button class="rb">Stop &amp; reload</button></form></div>'
+        )
+    out.append(
+        f'<form method="post" action="/browse/reset" style="margin-top:10px"><input type="hidden" name="which" value="all">'
+        f'<input type="hidden" name="back" value="{back}"><button class="rb">Restart everything</button></form>'
+    )
+    if state.get("reset_status"):
+        out.append(f'<p class="dim">{_e(state["reset_status"])}</p>')
+    return "".join(out)
+
+
 def models_page(store: Store, config, state: dict, listening: list[str] | None = None,
                 trust: dict | None = None, readout: dict | None = None) -> str:
     """Choose which models transcribe and write, and where each runs."""
@@ -396,6 +429,7 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
             f'<div class="row pick"><div>{_e(shown)}<div class="dim">{_e(state.get(status_key))}</div></div>{clear}</div>'
             f"<h2>{title} runs on</h2>" + _choices(f"{role}_device", catalog.LLM_DEVICES, getattr(config, f"{role}_device"))
         )
+    parts.insert(1, _reset_buttons(state, "models"))
     return _frame("models", "", "".join(parts), store.counts())
 
 
