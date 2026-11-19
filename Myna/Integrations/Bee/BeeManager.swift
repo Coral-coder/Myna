@@ -498,17 +498,32 @@ final class BeeManager: ObservableObject {
     @Published private(set) var ownKeyTestResult: String?
     private var ownKeyProbe: CheckedContinuation<Bool, Never>?
     private var ownKeyCandidate: Data?
+    /// Use a captured token as the envelope instead of a synthetic one. Off by
+    /// default: the whole point is to need no Bee token at all.
+    @Published var ownKeyUseCaptured = false
 
-    /// True if we can run the test now: a real token is captured for this
-    /// bracelet (so we have a genuine envelope to reuse) and it's connected.
-    var canRunOwnKeyTest: Bool {
-        guard !deviceID.isEmpty else { return false }
-        guard let token = BeeKeyVault.existingToken(deviceID: deviceID), token.count >= 44 else { return false }
-        return true
+    /// Whether the test can run. It no longer needs a captured key — a synthetic
+    /// envelope is built from the device id — so this is always allowed.
+    var canRunOwnKeyTest: Bool { true }
+
+    /// True when a captured token exists (so the "use captured envelope" option
+    /// is worth offering).
+    var hasCapturedEnvelope: Bool {
+        (BeeKeyVault.existingToken(deviceID: deviceID)?.count ?? 0) >= 44
     }
 
-    /// Install our own key on the bracelet, wrapped in a real captured envelope,
-    /// and report whether the firmware accepts it. Run on a factory-reset bracelet.
+    /// Device id hex ("a1b2…") → bytes.
+    static func hexBytes(_ hex: String) -> [UInt8] {
+        let clean = hex.lowercased().filter(\.isHexDigit)
+        var out: [UInt8] = []
+        var i = clean.startIndex
+        while let j = clean.index(i, offsetBy: 2, limitedBy: clean.endIndex), j <= clean.endIndex {
+            if let b = UInt8(clean[i..<j], radix: 16) { out.append(b) }
+            i = j
+        }
+        return out
+    }
+
     /// Arm (or disarm) the test. Once armed, Myna stops normal provisioning for
     /// this bracelet and runs the test itself the instant the bracelet is seen
     /// unsealed — so the auto-connect can't seal it out from under the test.
@@ -517,10 +532,6 @@ final class BeeManager: ObservableObject {
             ownKeyTestArmed = false
             ownKeyTestResult = "Test disarmed. Normal setup resumes on the next connect."
             log("Own-key test disarmed.")
-            return
-        }
-        guard BeeKeyVault.existingToken(deviceID: deviceID) != nil else {
-            ownKeyTestResult = "I need your real Bee key captured once first (it stays stored). Fetch it above, then arm this."
             return
         }
         ownKeyTestArmed = true
@@ -535,20 +546,32 @@ final class BeeManager: ObservableObject {
     private func performOwnKeyTest() {
         guard !ownKeyTestRunning else { return }
         ownKeyTestArmed = false
-        guard let real = BeeKeyVault.existingToken(deviceID: deviceID), real.count >= 44 else {
-            ownKeyTestResult = "I need your real Bee key captured once first (it stays stored). Fetch it above, then arm this."
-            return
-        }
-        // Build: real envelope, but bytes 12..<28 are our own random AES-128 key.
-        var bytes = [UInt8](real)
+
+        // Our own random AES-128 key.
         var ownKey = [UInt8](repeating: 0, count: BeeProtocol.keyLength)
         _ = SecRandomCopyBytes(kSecRandomDefault, ownKey.count, &ownKey)
+
+        // The 108-byte envelope the firmware expects. By default we build it
+        // ourselves from the device id alone — NO Bee token needed. If you have
+        // a captured token and asked to use it, we reuse that real envelope
+        // (more of its structure is guaranteed correct) and only swap the key.
+        var bytes: [UInt8]
+        let source: String
+        if ownKeyUseCaptured, let real = BeeKeyVault.existingToken(deviceID: deviceID), real.count >= 44 {
+            bytes = [UInt8](real)
+            source = "your captured envelope (only the key swapped)"
+        } else {
+            bytes = [UInt8](repeating: 0, count: 108)
+            let id = Self.hexBytes(deviceID)
+            for i in 0..<min(8, id.count) { bytes[i] = id[i] }   // device id up front, our best guess at the layout
+            source = "a synthetic envelope built from your device id — no Bee token"
+        }
         for i in 0..<BeeProtocol.keyLength { bytes[12 + i] = ownKey[i] }
         let candidate = Data(bytes)
         ownKeyCandidate = candidate
         ownKeyTestRunning = true
-        ownKeyTestResult = "Testing a self-generated key on the bracelet…"
-        log("Own-key test: installing a token carrying our own key (envelope \(candidate.count) B, key = our random 16 B).")
+        ownKeyTestResult = "Testing a self-generated key (\(source))…"
+        log("Own-key test: writing \(candidate.count)-B token — \(source).")
         Task { @MainActor in
             let accepted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                 ownKeyProbe = cont
@@ -568,12 +591,17 @@ final class BeeManager: ObservableObject {
                 installedToken = candidate
                 installDecryptor()
                 requestSessionNonce()
-                ownKeyTestResult = "FORGEABLE — the bracelet accepted our own key. The firmware doesn't verify a Bee signature over the key, so Myna can generate keys from the device id with no Bee cloud. The bracelet is now running your own key; if audio flows, it's confirmed end to end."
-                log("Own-key test: ACCEPTED. The key is not signature-bound; a local generator is viable.")
+                let howBuilt = ownKeyUseCaptured ? "a captured envelope" : "a fully synthetic token (just device id + our key)"
+                ownKeyTestResult = "FORGEABLE — the bracelet accepted \(howBuilt). The firmware doesn't verify a Bee signature over the key, so Myna can generate keys from the device id with no Bee cloud. The bracelet is now running your own key; if audio flows, it's confirmed end to end."
+                log("Own-key test: ACCEPTED (\(howBuilt)). The key is not signature-bound; a local generator is viable.")
             } else {
                 ownKeyCandidate = nil
-                ownKeyTestResult = "REJECTED — the bracelet did not accept a token carrying our own key. Most likely the key is cryptographically signed by Bee (so a local generator isn't possible and the captured Bee key is the way); but if the device log shows ‘already set’ rather than ‘invalidParam’, it was still sealed — factory-reset it, reconnect, and run this again. The bracelet is untouched either way."
-                log("Own-key test: not accepted. See whether the reply was invalidParam (signed) or alreadySet (still sealed).")
+                if ownKeyUseCaptured {
+                    ownKeyTestResult = "SIGNED — even with a real captured envelope and only the key changed, the bracelet refused it. The key is cryptographically signed by Bee, so a local generator isn't possible for this firmware; your captured key is the way. (If the log says ‘already set’ not ‘invalidParam’, it was still sealed — factory-reset and run again.) The bracelet is untouched."
+                } else {
+                    ownKeyTestResult = "The synthetic token was refused. That could mean the key is signed — OR just that our guess at the envelope's non-key bytes (header/device-id layout) is wrong. To tell them apart: if you have a captured key, turn on ‘use captured envelope’ and run again. If the captured one is ALSO refused, it's truly signed. (If the log says ‘already set’, it was still sealed — factory-reset and retry.) The bracelet is untouched."
+                }
+                log("Own-key test: not accepted (\(ownKeyUseCaptured ? "captured" : "synthetic") envelope). Check invalidParam vs alreadySet.")
             }
         }
     }

@@ -147,8 +147,15 @@ struct BraceletCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Settles whether Myna can generate its own bracelet key instead of ever asking Bee. It puts a key Myna made itself onto the bracelet, wrapped in a real captured envelope, and checks whether the firmware accepts it.")
                     .braceletCaption()
-                Text("Tap Arm, then factory-reset the bracelet on the device (press its button 5× until blue+green). Myna stops its normal setup so the reset bracelet stays unsealed, and runs the test by itself the moment it reconnects — no race, no timing. Rejected → nothing changed, set up normally. Accepted → the bracelet runs your own key from then on.")
+                Text("No Bee key needed. Myna builds a whole key token itself from your device id and installs it. Tap Arm, then factory-reset the bracelet on the device (press its button 5× until blue+green). Myna stops its normal setup so the reset bracelet stays unsealed, and runs the test the moment it reconnects — no race. Accepted → the bracelet runs your own key and you never need Bee again. Refused → see the result for what it means.")
                     .braceletCaption()
+                if bee.hasCapturedEnvelope {
+                    Toggle(isOn: Binding(get: { bee.ownKeyUseCaptured }, set: { bee.ownKeyUseCaptured = $0 })) {
+                        Text("Use my captured key's envelope (only the key is changed)")
+                            .braceletCaption()
+                    }
+                    .tint(MynaTheme.cyan)
+                }
                 if let result = bee.ownKeyTestResult {
                     Text(result)
                         .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -166,11 +173,7 @@ struct BraceletCard: View {
                     }
                 }
                 .tint(bee.ownKeyTestArmed ? MynaTheme.magenta : MynaTheme.cyan)
-                .disabled(bee.ownKeyTestRunning || !bee.canRunOwnKeyTest)
-                if !bee.canRunOwnKeyTest {
-                    Text("Capture your real Bee key first (above), then this unlocks.")
-                        .braceletCaption()
-                }
+                .disabled(bee.ownKeyTestRunning)
             }
             .padding(.top, 6)
         } label: {
