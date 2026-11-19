@@ -1404,6 +1404,9 @@ def test_speaker_separation_runs_even_in_lean_mode(stt):
 
 
 def test_a_cached_model_is_not_downloaded_again(monkeypatch):
+    import sys
+    import types
+
     from myna_server import engines
 
     calls = []
@@ -1414,8 +1417,11 @@ def test_a_cached_model_is_not_downloaded_again(monkeypatch):
             raise FileNotFoundError("not cached")
         return f"/cache/{filename}"
 
-    import huggingface_hub
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf)
+    # huggingface_hub isn't installed in the test env; cached_hf imports it
+    # internally, so give it a stub module.
+    stub = types.ModuleType("huggingface_hub")
+    stub.hf_hub_download = fake_hf
+    monkeypatch.setitem(sys.modules, "huggingface_hub", stub)
 
     # Already cached: one offline hit, no download.
     assert engines.cached_hf("r", "already.bin", "/cache") == "/cache/already.bin"
