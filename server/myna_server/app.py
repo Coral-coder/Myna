@@ -102,6 +102,9 @@ def create_app(
         return known_words["list"]
 
     engines_made: dict = {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="recognizer")
 
     def others():
         """The other recognizers on the panel, made on first need."""
@@ -130,16 +133,21 @@ def create_app(
         """Transcribe one stretch with every recognizer on the panel, combined
         into one transcript; the checker settles disagreements."""
         words_known = vocabulary()
-        first = transcriber.transcribe(audio)
         panel_now = others()
         if not panel_now:
-            return first
-        candidates = {transcriber.name: first}
+            return transcriber.transcribe(audio)
+        # Every recognizer works on the clip at the same time (the graphics
+        # card and the processor in parallel) rather than one after another.
+        jobs = {transcriber.name: pool.submit(transcriber.transcribe, audio)}
         for engine in panel_now:
+            jobs[engine.name] = pool.submit(engine.transcribe, audio)
+        first = jobs.pop(transcriber.name).result()   # the main one failing is an error, as before
+        candidates = {transcriber.name: first}
+        for name, job in jobs.items():
             try:
-                candidates[engine.name] = engine.transcribe(audio)
+                candidates[name] = job.result(timeout=120)
             except Exception:
-                pass  # one recognizer failing never stops the others
+                pass  # one recognizer failing (or stuck) never stops the others
         if len(candidates) < 2:
             return first
         reconcile = checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None)
@@ -208,6 +216,12 @@ def create_app(
         seconds = samples.size / rate if rate else 0.0
         began = time.perf_counter()
         raw_audio = resample_to_16k(samples, rate)
+        # Digital silence (a muted or idle microphone): nothing to transcribe.
+        # Far-away speech is far louder than this.
+        if raw_audio.size == 0 or (loudness(raw_audio) < 0.0002 and float(np.abs(raw_audio).max()) < 0.002):
+            note("transcribe", transcriber.name, 0.0, "", seconds)
+            return {"text": "", "audio_seconds": round(seconds, 3), "took_seconds": 0.0,
+                    "engine": transcriber.name, "segments": []}
         # Quiet (far-away) speech is brought up to a working level first.
         audio = level(raw_audio)
 

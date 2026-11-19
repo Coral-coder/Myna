@@ -38,6 +38,11 @@ def wav_bytes(samples: np.ndarray, rate: int = 16000, channels: int = 1) -> byte
     return buffer.getvalue()
 
 
+def quiet(count, dtype=None):
+    """Quiet room noise (not digital silence, which is skipped)."""
+    return (np.random.default_rng(0).standard_normal(count) * 0.01).astype(np.float32)
+
+
 @pytest.fixture
 def stt():
     return FakeTranscriber()
@@ -72,7 +77,7 @@ def test_transcribe_round_trip(client, stt):
 
 
 def test_transcribe_resamples_and_downmixes(client, stt):
-    stereo = np.zeros(48000 * 2, dtype=np.float32)
+    stereo = quiet(48000 * 2)
     reply = client.post("/v1/transcribe", content=wav_bytes(stereo, rate=48000, channels=2), headers=AUTH)
     assert reply.status_code == 200
     assert reply.json()["audio_seconds"] == 1.0
@@ -82,7 +87,7 @@ def test_transcribe_resamples_and_downmixes(client, stt):
 def test_transcribe_rejects_bad_input(client):
     assert client.post("/v1/transcribe", content=b"", headers=AUTH).status_code == 400
     assert client.post("/v1/transcribe", content=b"not audio", headers=AUTH).status_code == 400
-    assert client.post("/v1/transcribe", content=wav_bytes(np.zeros(10)), headers={}).status_code == 401
+    assert client.post("/v1/transcribe", content=wav_bytes(quiet(10)), headers={}).status_code == 401
 
 
 def test_generate(client):
@@ -293,7 +298,7 @@ def test_transcribe_splits_a_clip_by_speaker(stt):
             return [float(audio.size)]
 
     client = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=FakeVoices()))
-    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 5, dtype=np.float32))).json()
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 5, dtype=np.float32))).json()
     segments = body["segments"]
     # Speaker 0's two pieces joined, then speaker 1; the sliver is dropped. The
     # last second, where nobody was found, is still transcribed, with no voice.
@@ -312,9 +317,9 @@ def test_one_speaker_is_transcribed_whole_and_no_voices_still_works(stt, client)
             return [1.0, 2.0]
 
     solo = TestClient(create_app(Config(token="secret-token"), stt, FakeWriter(), voices=OneVoice()))
-    body = solo.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 3, dtype=np.float32))).json()
+    body = solo.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 3, dtype=np.float32))).json()
     assert body["text"] == "heard 48000 samples" and len(body["segments"]) == 1 and body["segments"][0]["voice"] == [1.0, 2.0]
-    plain = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    plain = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
     assert plain["segments"] == [] and plain["text"] == "heard 16000 samples"
 
 
@@ -339,7 +344,7 @@ def test_audio_is_kept_and_another_model_can_be_run_over_it(tmp_path):
     app.state.save_config = False
     client = TestClient(app)
     for _ in range(2):
-        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000 * 2, dtype=np.float32)))
+        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2, dtype=np.float32)))
     assert len(list(tmp_path.rglob("*.wav"))) == 2
 
     stt.use("model-b")
@@ -610,13 +615,13 @@ def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
         change("person", "p1", {"name": "Saoirse", "createdAt": 1}, 1),
         change("memory", "m1", {"content": "Lives near Kilkenny. Visits Kilkenny often.", "createdAt": 1}, 1),
     ]})
-    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
     assert body["text"] == "Saoirse is coming on Friday"                 # the partner caught what the main one missed
     assert "Saoirse" in main.hotwords and "Kilkenny" in main.hotwords    # the wearer's words reach the recognizer
     page = client.get("/browse/compare", headers=AUTH).text
     assert "Models working together" in page and "partner" in page and "1 clips where one caught speech" in page
     client.post("/browse/blend", headers=AUTH, data={"blend": "off"}, follow_redirects=False)
-    off = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    off = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
     assert off["text"] == ""
 
 
@@ -667,7 +672,7 @@ def test_every_panel_member_is_heard_and_the_checker_settles_it(stt):
     app = create_app(Config(token="secret-token", stt_model="turbo"), main, FakeWriter(), checker=checker,
                      partner_for=lambda model: Says(model, said[model]))
     client = TestClient(app)
-    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
     assert body["text"] == "meet Saoirse at the station"                # one broken recognizer doesn't stop the rest
     assert "searsha" in checker.asked[0][1] and "Saoirse" in checker.asked[0][1]
     client.post("/browse/blend", headers=AUTH, data={"count": "2"}, follow_redirects=False)
@@ -725,7 +730,7 @@ def test_tick_any_number_of_recognizers_and_extra_whisper_models_go_to_the_proce
     client.post("/browse/blend", headers={**AUTH, "Content-Type": "application/x-www-form-urlencoded"},
                 follow_redirects=False, content="listening=1&back=models&" + "&".join(f"model={m}" for m in ticked))
     assert config.blend_models == ticked and config.blend
-    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32)))
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32)))
     assert len(made) == 6
     devices = dict(made)
     assert devices["large-v3"] is None                                   # second Whisper shares the card
@@ -776,7 +781,7 @@ def test_stop_and_reload_buttons(stt):
     clock.sleep(0.1)
     assert writer.killed == 1 and writer.warmed == 1 and checker.killed == 0
 
-    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32)))  # make the panel
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32)))  # make the panel
     reply = client.post("/browse/reset", headers=AUTH, data={"which": "recognition", "back": "models"}, follow_redirects=False)
     assert reply.headers["location"] == "/browse/models" and Resettable.resets == 3   # the main one and two on the panel
     assert "stopped and reloading" in client.get("/browse/live", headers=AUTH).text
@@ -1043,3 +1048,33 @@ def test_whisper_drops_an_unsure_lone_yeah():
 
     assert keep_segments([S(text=" Yeah.", no_speech_prob=0.4, avg_logprob=-0.9)]) == []
     assert keep_segments([S(text=" Yeah.", no_speech_prob=0.02, avg_logprob=-0.1)]) == ["Yeah."]
+
+
+def test_the_panel_works_in_parallel_and_silence_is_skipped(stt):
+    import threading as threads
+    import time as clock
+
+    running, peak = [0], [0]
+    gate = threads.Lock()
+
+    class Slow(NamedStt):
+        def transcribe(self, samples):
+            with gate:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            clock.sleep(0.2)
+            with gate:
+                running[0] -= 1
+            return "hello there"
+
+    main = Slow("whisper-turbo")
+    app = create_app(Config(token="secret-token", stt_model="turbo"), main, FakeWriter(),
+                     partner_for=lambda model: Slow(model))
+    client = TestClient(app)
+    tone = (np.sin(np.linspace(0, 900, 16000)) * 0.2).astype(np.float32)
+    began = clock.time()
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(tone)).json()
+    assert body["text"] == "hello there" and peak[0] == 3       # all three at once
+    assert clock.time() - began < 0.55                          # not 3 × 0.2 s one after another
+    silent = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    assert silent["text"] == "" and silent["took_seconds"] == 0.0
