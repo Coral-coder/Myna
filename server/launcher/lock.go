@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"html"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -23,7 +25,29 @@ type lock struct {
 const sessionCookie = "myna_session"
 
 func newLock(settings *launcherSettings) *lock {
-	return &lock{settings: settings, sessions: map[string]bool{}}
+	l := &lock{settings: settings, sessions: map[string]bool{}}
+	// Unlocking survives updates and restarts: the open sessions are kept on
+	// disk (this computer only) until Lock is pressed.
+	if raw, err := os.ReadFile(sub("sessions.json")); err == nil {
+		var saved []string
+		if json.Unmarshal(raw, &saved) == nil {
+			for _, id := range saved {
+				l.sessions[id] = true
+			}
+		}
+	}
+	return l
+}
+
+// saveSessions writes the open sessions to disk. Call with l.mu held.
+func (l *lock) saveSessions() {
+	ids := make([]string, 0, len(l.sessions))
+	for id := range l.sessions {
+		ids = append(ids, id)
+	}
+	raw, _ := json.Marshal(ids)
+	_ = os.MkdirAll(home(), 0o700)
+	_ = os.WriteFile(sub("sessions.json"), raw, 0o600)
 }
 
 func (l *lock) unlocked(r *http.Request) bool {
@@ -42,14 +66,19 @@ func (l *lock) open(w http.ResponseWriter) {
 	id := hex.EncodeToString(raw)
 	l.mu.Lock()
 	l.sessions[id] = true
+	l.saveSessions()
 	l.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	// A lasting cookie (the window keeps its own cookie store on disk), so a
+	// new window after an update is still unlocked.
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: id, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: 400 * 24 * 3600})
 }
 
 // lockAll ends every unlocked session: the next view needs the password.
 func (l *lock) lockAll() {
 	l.mu.Lock()
 	l.sessions = map[string]bool{}
+	l.saveSessions()
 	l.mu.Unlock()
 }
 
