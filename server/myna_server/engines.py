@@ -146,6 +146,8 @@ class WhisperTranscriber:
         self._lock = threading.Lock()
         self.device = "unloaded"
         self.status = "Not loaded yet (loads on first use)"
+        # The wearer's own words, given to Whisper as words to listen for.
+        self.hotwords = ""
 
     def use(self, model_name: str) -> None:
         """Switch to another Whisper model; it loads on its next use."""
@@ -250,6 +252,7 @@ class WhisperTranscriber:
                 vad_filter=True,
                 vad_parameters={"threshold": 0.15, "min_silence_duration_ms": 600, "speech_pad_ms": 400},
                 condition_on_previous_text=False,
+                hotwords=self.hotwords or None,
             )
             return " ".join(keep_segments(segments)).strip()
 

@@ -554,3 +554,67 @@ def test_conversations_are_split_kept_or_discarded_and_written_up_like_omi(stt):
     writer.reply = '{"reply": "March.", "search": ""}'
     client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the launch?"})
     assert "Launch moved" in writer.asked[-1][1] and "REMEMBERED FROM CONVERSATIONS" in writer.asked[-1][1]
+
+
+def test_two_recognizers_are_combined_and_trust_is_learned(tmp_path):
+    from myna_server import blend
+
+    learning = blend.Learning(tmp_path / "learning.json")
+    # Agreement: kept as is.
+    text, how = blend.combine({"a": "pass the salt please", "b": "pass the salt please"}, learning, None, [])
+    assert (text, how) == ("pass the salt please", "agreed")
+    # One hears speech, the other only noise or a stock phrase: the speech is kept.
+    text, how = blend.combine({"a": "", "b": "the meeting moved to Tuesday"}, learning, None, [])
+    assert (text, how) == ("the meeting moved to Tuesday", "rescued")
+    assert blend.combine({"a": "Thank you.", "b": ""}, learning, None, []) == ("", "agreed")
+    # Disagreement: reconciled by a writing model, using the wearer's words...
+    asked = []
+
+    def arbiter(instructions, prompt, max_tokens):
+        asked.append(prompt)
+        return "call Saoirse about the Kilkenny trip"
+
+    text, how = blend.combine({"a": "call searsha about the kill kenny trip", "b": "call Saoirse about the Kilkenny trip"},
+                              learning, arbiter, ["Saoirse", "Kilkenny"])
+    assert (text, how) == ("call Saoirse about the Kilkenny trip", "reconciled") and "Saoirse, Kilkenny" in asked[0]
+    # ...but never accepted if it invents words nobody heard.
+    text, how = blend.combine({"a": "call searsha about the trip", "b": "call Saoirse about the trip"},
+                              learning, lambda *a: "please buy a new car tomorrow", [])
+    assert how == "trusted" and text in ("call searsha about the trip", "call Saoirse about the trip")
+    # Trust moves toward whichever model matched the result.
+    for _ in range(10):
+        learning.note({"good": "the cat sat", "bad": "a hat that"}, "the cat sat")
+    assert learning.trust["good"] > 0.9 > learning.trust["bad"]
+    learning.save()
+    assert blend.Learning(tmp_path / "learning.json").trust["good"] > 0.9   # kept between runs
+    assert blend.default_partner("turbo").startswith("sherpa:") and blend.default_partner("sherpa:canary") == "turbo"
+
+
+def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
+    class Partner:
+        name = "partner"
+
+        def transcribe(self, samples):
+            return "Saoirse is coming on Friday"
+
+    class Deaf(NamedStt):
+        hotwords = ""
+
+        def transcribe(self, samples):
+            return ""
+
+    main = Deaf("main")
+    app = create_app(Config(token="secret-token"), main, FakeWriter(), partner_for=lambda model: Partner())
+    client = TestClient(app)
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("person", "p1", {"name": "Saoirse", "createdAt": 1}, 1),
+        change("memory", "m1", {"content": "Lives near Kilkenny. Visits Kilkenny often.", "createdAt": 1}, 1),
+    ]})
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    assert body["text"] == "Saoirse is coming on Friday"                 # the partner caught what the main one missed
+    assert "Saoirse" in main.hotwords and "Kilkenny" in main.hotwords    # the wearer's words reach the recognizer
+    page = client.get("/browse/compare", headers=AUTH).text
+    assert "Models working together" in page and "partner" in page and "1 clips where one caught speech" in page
+    client.post("/browse/blend", headers=AUTH, data={"blend": "off"}, follow_redirects=False)
+    off = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
+    assert off["text"] == ""

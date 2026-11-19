@@ -35,13 +35,15 @@ def serve(connection) -> None:
             if op == "stt_load":
                 (key,) = args
                 if key not in recognizers:
-                    recognizers.clear()  # one at a time: don't hold several in memory
+                    while len(recognizers) >= 2:  # at most two held: the one in use and its partner
+                        recognizers.pop(next(iter(recognizers)))
                     recognizers[key] = engines.load_sherpa(key, status)
                 result = None
             elif op == "stt":
                 key, samples = args
                 if key not in recognizers:
-                    recognizers.clear()
+                    while len(recognizers) >= 2:
+                        recognizers.pop(next(iter(recognizers)))
                     recognizers[key] = engines.load_sherpa(key, status)
                 result = engines.decode_sherpa(recognizers[key], key, samples)
             elif op == "voices_load":

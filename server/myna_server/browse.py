@@ -408,7 +408,7 @@ document.getElementById('bar').onsubmit = async (event) => {
 
 
 def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: int,
-                 tune: dict | None = None, auto_tune: bool = True) -> str:
+                 tune: dict | None = None, auto_tune: bool = True, together: dict | None = None) -> str:
     """Run the chosen transcription model over the kept recordings, and read
     off how each model did on the same audio."""
     since = (datetime.now() - timedelta(hours=hours)).timestamp()
@@ -432,6 +432,32 @@ def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: i
         parts.append(f'<p>Running {_e(job.get("model"))}: {job.get("done", 0)} of {job.get("total", 0)} recordings…</p>')
     elif job.get("note"):
         parts.append(f'<p class="dim">{_e(job.get("note"))}</p>')
+
+    if together is not None:
+        parts.append("<h2>Models working together</h2>")
+        state = "On" if together.get("on") else "Off"
+        flip = "off" if together.get("on") else "on"
+        parts.append(
+            f'<div class="dim">{state}. Two different recognizers hear every clip. Where they agree, that is the transcript; '
+            "where one catches speech the other missed, it is kept; where they disagree, the Helper model reconciles "
+            "them using your own words. Each recognizer is trusted more the closer it runs to the agreed result, and "
+            "that is learned as it goes.</div>"
+            f'<form method="post" action="/browse/blend" style="margin-top:10px;display:flex;gap:8px;align-items:center">'
+            f'<input type="hidden" name="blend" value="{flip}"><button>Turn {flip}</button>'
+            f'<span class="dim">Second recognizer: {_e(together.get("partner"))} · '
+            f'reconciled by: {_e(together.get("arbiter")) or "nothing yet (set a Helper model on the Models tab)"}</span></form>'
+        )
+        if together.get("trust"):
+            parts.append("<table><tr><th>Recognizer</th><th>Trust, learned</th><th>Clips judged</th></tr>")
+            for name, value in sorted(together["trust"].items(), key=lambda pair: -pair[1]):
+                parts.append(f'<tr><td>{_e(name)}</td><td>{value:.0%}</td><td>{together["heard"].get(name, 0)}</td></tr>')
+            parts.append("</table>")
+            parts.append(
+                f'<div class="dim">{together.get("rescued", 0)} clips where one caught speech the other missed · '
+                f'{together.get("reconciled", 0)} disagreements reconciled.</div>'
+            )
+        if together.get("words"):
+            parts.append(f'<div class="dim" style="margin-top:8px">Your words, learned so far: {_e(", ".join(together["words"]))}</div>')
 
     tune = tune or {}
     parts.append("<h2>Automatic tuning</h2>")

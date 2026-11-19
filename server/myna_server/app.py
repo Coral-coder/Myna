@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, browse, catalog, conversations, daily, tuner, web
+from . import ask, blend, browse, catalog, conversations, daily, tuner, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -71,12 +71,65 @@ def create_app(
     helper=None,
     summarizer=None,
     audio_dir=None,
+    partner_for=None,
+    learning_path=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
     roles = {"llm": writer, "helper": helper, "summary": summarizer}
 
     def chosen(model) -> bool:
         return model is not None and getattr(model, "chosen", True)
+
+    # -- recognizers working together -------------------------------------------
+
+    learning = blend.Learning(learning_path)
+    partner = {"model": "", "engine": None}
+    known_words = {"at": 0.0, "list": []}
+    blend_stats = {"last": ""}
+
+    def vocabulary() -> list[str]:
+        """The wearer's own words, refreshed every ten minutes."""
+        if time.time() - known_words["at"] > 600:
+            known_words["at"] = time.time()
+            try:
+                known_words["list"] = blend.vocabulary(store)
+            except Exception:
+                pass
+            if hasattr(transcriber, "hotwords"):
+                transcriber.hotwords = ", ".join(known_words["list"][:40])
+        return known_words["list"]
+
+    def second_opinion():
+        """The partner recognizer for the model in use, made on first need."""
+        if not config.blend or partner_for is None or tune_state["running"]:
+            return None
+        wanted = config.blend_partner or blend.default_partner(config.stt_model)
+        if wanted == config.stt_model:
+            return None
+        if partner["model"] != wanted:
+            partner["model"], partner["engine"] = wanted, partner_for(wanted)
+        return partner["engine"]
+
+    def hear(audio) -> str:
+        """Transcribe one stretch: with both recognizers when blending is on,
+        combined into one transcript."""
+        words_known = vocabulary()
+        first = transcriber.transcribe(audio)
+        other = second_opinion()
+        if other is None:
+            return first
+        try:
+            second = other.transcribe(audio)
+        except Exception:
+            return first
+        candidates = {transcriber.name: first, other.name: second}
+        reconcile = helper.generate if chosen(helper) else None
+        text, how = blend.combine(candidates, learning, reconcile, words_known)
+        learning.note(candidates, text)
+        blend_stats["last"] = how
+        if sum(learning.heard.values()) % 20 == 0:
+            learning.save()
+        return text
     app = FastAPI(title="Myna server", version=__version__)
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
@@ -143,13 +196,13 @@ def create_app(
             """The text, and (when the voice models are there) the clip split
             by speaker, each stretch with its speaker's voice print."""
             if voices is None:
-                return transcriber.transcribe(audio), []
+                return hear(audio), []
             try:
                 pieces = by_speaker(voices.split(audio))
             except Exception:
-                return transcriber.transcribe(audio), []
+                return hear(audio), []
             if not pieces:
-                return transcriber.transcribe(audio), []
+                return hear(audio), []
             prints: dict[int, list[float]] = {}
             for speaker in {piece[2] for piece in pieces}:
                 own = np.concatenate([audio[int(a * 16000) : int(b * 16000)] for a, b, who in pieces if who == speaker])
@@ -160,7 +213,7 @@ def create_app(
             out = []
             if len(prints) == 1:
                 # One speaker: transcribe the clip whole (better than in pieces).
-                whole = transcriber.transcribe(audio)
+                whole = hear(audio)
                 if whole:
                     out.append({"text": whole, "start": round(pieces[0][0], 2),
                                 "duration": round(pieces[-1][1] - pieces[0][0], 2), "voice": prints[pieces[0][2]]})
@@ -178,7 +231,7 @@ def create_app(
             if len(audio) / 16000 - cursor >= 1.0:
                 spans.append((cursor, len(audio) / 16000, None))
             for start, end, speaker in spans:
-                said = transcriber.transcribe(audio[int(start * 16000) : int(end * 16000)])
+                said = hear(audio[int(start * 16000) : int(end * 16000)])
                 if said:
                     out.append({"text": said, "start": round(start, 2), "duration": round(end - start, 2),
                                 "voice": prints[speaker] if speaker is not None else []})
@@ -250,6 +303,14 @@ def create_app(
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
+            "blend": {
+                "on": bool(config.blend and partner_for is not None),
+                "partner": getattr(partner["engine"], "name", "") or "",
+                "partner_status": getattr(partner["engine"], "status", "") or "",
+                "last": blend_stats["last"],
+                "reconciled": learning.reconciled,
+                "rescued": learning.rescued,
+            },
             "daily": dict(daily_state),
         }
 
@@ -299,8 +360,30 @@ def create_app(
 
     @app.get("/browse/compare", response_class=HTMLResponse)
     def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
+        together = {
+            "on": bool(config.blend and partner_for is not None),
+            "partner": config.blend_partner or blend.default_partner(config.stt_model),
+            "trust": dict(learning.trust), "heard": dict(learning.heard),
+            "reconciled": learning.reconciled, "rescued": learning.rescued,
+            "words": list(known_words["list"]), "arbiter": helper.name if chosen(helper) else "",
+        }
         return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days,
-                                   dict(tune_state), config.auto_tune)
+                                   dict(tune_state), config.auto_tune, together)
+
+    @app.post("/browse/blend")
+    async def set_blend(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        if form.get("blend") in ("on", "off"):
+            config.blend = form["blend"] == "on"
+        if "partner" in form and (form["partner"] == "" or form["partner"] in {key for key, _, _ in catalog.SPEECH}):
+            config.blend_partner = form["partner"]
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/compare", status_code=303)
 
     # -- choosing the transcription model by itself ----------------------------
 

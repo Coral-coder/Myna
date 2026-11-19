@@ -37,8 +37,15 @@ def main() -> None:
     transcriber, writer, voices = WhisperTranscriber(config), LlamaWriter(config), Voices()
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
     audio_dir = data_dir() / "audio"
+    def partner_for(model: str):
+        """A second recognizer beside the one in use, with its own settings."""
+        from dataclasses import replace
+
+        return WhisperTranscriber(replace(config, stt_model=model))
+
     app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
-                     helper=helper, summarizer=summarizer, audio_dir=audio_dir)
+                     helper=helper, summarizer=summarizer, audio_dir=audio_dir, partner_for=partner_for,
+                     learning_path=data_dir() / "learning.json")
 
     def housekeeping() -> None:
         """Once a minute: write the day's summary when the day has gone quiet,

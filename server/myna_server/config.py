@@ -59,6 +59,10 @@ class Config:
     conversations: bool = True
     # The wearer's name, for memories ("Sam prefers…"). Empty = "the wearer".
     owner_name: str = ""
+    # Two recognizers hear every clip and are combined into one transcript
+    # (see blend.py). The partner is chosen automatically when left empty.
+    blend: bool = True
+    blend_partner: str = ""
     auto_tune: bool = True
     tune_every_hours: int = 24
     tuned_at: float = 0.0

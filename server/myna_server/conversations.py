@@ -24,6 +24,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Callable
 
+from .blend import vocabulary
 from .store import Store
 
 Generate = Callable[[str, str, int], str]
@@ -194,7 +195,7 @@ def _same(a: str, b: str) -> bool:
 
 
 def process(lines: list[dict], names: dict[str, str], songs: list[dict], known_memories: list[str],
-            owner: str, write: Generate, cheap: Generate | None = None) -> dict:
+            owner: str, write: Generate, cheap: Generate | None = None, known_words: list[str] | None = None) -> dict:
     """One conversation, from its transcript lines to a finished record."""
     text = transcript_text(lines, names)
     spoken = " ".join(line.get("text", "") for line in lines)
@@ -213,6 +214,9 @@ def process(lines: list[dict], names: dict[str, str], songs: list[dict], known_m
 
     instructions = STRUCTURE.replace("CATEGORY_LIST", ", ".join(CATEGORIES)).replace("DENSITY", density(words))
     when = f"The conversation took place on {_clock(started, '%A %d %B %Y')} from {_clock(started)} to {_clock(ended)}."
+    if known_words:
+        when += ("\nNames and terms this person uses (prefer these spellings when the transcript clearly means them): "
+                 + ", ".join(known_words[:40]) + ".")
     note = _json(write(instructions, f"{when}\n\nTRANSCRIPT:\n{text[:28000]}\n\nJSON:", 1600))
     record["title"] = str(note.get("title") or "Untitled conversation")[:120]
     record["gist"] = str(note.get("gist") or "")[:160]
@@ -273,7 +277,7 @@ def run_pending(store: Store, write: Generate, cheap: Generate | None, now: floa
         start, end = group[0]["at"], group[-1]["at"]
         progress(f"Writing up the conversation from {_clock(start)}…")
         songs = [song for song in store.browse("song", limit=300) if start - 60 <= song["at"] <= end + 60]
-        record = process(group, names, songs, known, owner, write, cheap)
+        record = process(group, names, songs, known, owner, write, cheap, vocabulary(store))
         store.sync(0, [{"kind": "conversation", "id": f"c-{int(start * 1000)}", "updated_at": now,
                         "deleted": False, "data": record}])
         known += [memory["content"] for memory in record["memories"]]
