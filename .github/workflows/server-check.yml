@@ -1,0 +1,40 @@
+name: Check Myna Server
+
+# Runs the server's tests and builds the exe on every push, without publishing.
+# Publishing is the separate, hand-started "Release Myna Server".
+
+on:
+  push:
+    branches: [main, bee-remember-login, tailscale-ios]
+    paths:
+      - server/**
+      - .github/workflows/server-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/launcher/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test the worker
+        working-directory: server
+        run: |
+          pip install -q fastapi uvicorn httpx numpy pytest
+          python -m pytest -q tests
+          python tests/check_llama_flags.py
+      - name: Test and build the launcher
+        working-directory: server
+        run: |
+          zip -q -r launcher/payload.zip pyproject.toml uv.lock myna_server -x '*__pycache__*'
+          cd launcher
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .

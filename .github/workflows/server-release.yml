@@ -4,13 +4,10 @@ name: Release Myna Server
 # manifest naming its version and checksum, to the `server-latest` release.
 # Running servers check that manifest and update themselves.
 
+# Only when started by hand: the owner decides when a new server goes out.
+# Pushes run the checks below without publishing anything.
 on:
   workflow_dispatch:
-  push:
-    branches: [main, bee-remember-login, tailscale-ios]
-    paths:
-      - server/**
-      - .github/workflows/server-release.yml
 
 permissions:
   contents: write
