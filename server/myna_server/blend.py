@@ -48,12 +48,14 @@ def default_partner(primary: str) -> str:
 PANEL = ("turbo", "sherpa:parakeet-v2", "sherpa:canary", "distil-large-v3", "sherpa:parakeet-v3")
 
 
-def panel(primary: str, count: int, first_partner: str = "") -> list[str]:
+def panel(primary: str, count: int, first_partner: str = "", picked: list[str] | None = None) -> list[str]:
     """The other recognizers to run beside `primary`, `count` in all counting it.
-    At most one more Whisper model than the one in use, since Whisper models
-    share the graphics card."""
+    `picked` (chosen by hand) replaces the automatic list. At most two Whisper
+    models in all, since Whisper models share the graphics card."""
     chosen: list[str] = []
-    for model in ([first_partner] if first_partner else []) + list(PANEL):
+    if picked:
+        count = len(picked) + 1
+    for model in list(picked or []) or ([first_partner] if first_partner else []) + list(PANEL):
         if len(chosen) >= max(0, min(count, 4) - 1):
             break
         whisper_count = sum(not m.startswith("sherpa:") for m in chosen + [primary])

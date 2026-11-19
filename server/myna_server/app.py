@@ -107,7 +107,7 @@ def create_app(
         if not config.blend or partner_for is None or tune_state["running"]:
             return []
         out = []
-        for model in blend.panel(config.stt_model, config.blend_count, config.blend_partner):
+        for model in blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models):
             if model not in engines_made:
                 engines_made[model] = partner_for(model)
             out.append(engines_made[model])
@@ -371,7 +371,7 @@ def create_app(
     def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
         together = {
             "on": bool(config.blend and partner_for is not None),
-            "partner": ", ".join(blend.panel(config.stt_model, config.blend_count, config.blend_partner)),
+            "partner": ", ".join(blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models)),
             "trust": dict(learning.trust), "heard": dict(learning.heard),
             "reconciled": learning.reconciled, "rescued": learning.rescued,
             "words": list(known_words["list"]),
@@ -394,6 +394,24 @@ def create_app(
             config.blend_partner = form["partner"]
         if form.get("count", "").isdigit():
             config.blend_count = min(max(int(form["count"]), 2), 4)
+            config.blend_models = []
+        speech_keys = {key for key, _, _ in catalog.SPEECH}
+        if form.get("listen") in speech_keys:
+            wanted = form["listen"]
+            current = list(config.blend_models) or blend.panel(config.stt_model, config.blend_count, config.blend_partner)
+            if wanted in current:
+                current.remove(wanted)
+            elif len(current) < 3:
+                current.append(wanted)
+            config.blend_models = current
+            config.blend = bool(current)   # nothing listening alongside = just the main one
+        if form.get("listen") == "auto":
+            config.blend_models = []
+        back = form.get("back", "")
+        if getattr(app.state, "save_config", True):
+            config.save()
+        if back == "models":
+            return RedirectResponse("/browse/models", status_code=303)
         if getattr(app.state, "save_config", True):
             config.save()
         return RedirectResponse("/browse/compare", status_code=303)
@@ -616,7 +634,9 @@ def create_app(
 
     @app.get("/browse/models", response_class=HTMLResponse)
     def browse_models(_: None = Depends(paired)) -> str:
-        return browse.models_page(store, config, engines_state())
+        listening = blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models)
+        readout = {row["model"]: row for row in store.model_readout(time.time() - 7 * 86400)}
+        return browse.models_page(store, config, engines_state(), listening, dict(learning.trust), readout)
 
     @app.post("/browse/models")
     async def choose_model(request: Request, _: None = Depends(paired)):

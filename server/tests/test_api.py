@@ -673,3 +673,35 @@ def test_every_panel_member_is_heard_and_the_checker_settles_it(stt):
     client.post("/browse/blend", headers=AUTH, data={"count": "2"}, follow_redirects=False)
     page = client.get("/browse/compare", headers=AUTH).text
     assert "Recognizers per clip" in page and "sense-checked by: small" in page
+
+
+def test_choosing_the_recognizers_by_hand(stt):
+    from myna_server import blend
+
+    assert blend.panel("turbo", 3, picked=["sherpa:sensevoice", "large-v3"]) == ["sherpa:sensevoice", "large-v3"]
+    # At most two Whisper models in all.
+    assert blend.panel("turbo", 3, picked=["large-v3", "distil-large-v3"]) == ["large-v3"]
+
+    config = Config(token="secret-token", stt_model="turbo")
+    app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=lambda model: NamedStt(model))
+    app.state.save_config = False
+    client = TestClient(app)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Speech recognizers" in page and "MAIN" in page and "Also listen" in page and "chosen automatically" in page
+    # Take one off the automatic panel, put another on.
+    client.post("/browse/blend", headers=AUTH, data={"listen": "sherpa:canary", "back": "models"}, follow_redirects=False)
+    assert config.blend_models == ["sherpa:parakeet-v2"]
+    reply = client.post("/browse/blend", headers=AUTH, data={"listen": "sherpa:sensevoice", "back": "models"},
+                        follow_redirects=False)
+    assert reply.headers["location"] == "/browse/models"
+    assert config.blend_models == ["sherpa:parakeet-v2", "sherpa:sensevoice"]
+    assert "chosen by hand" in client.get("/browse/models", headers=AUTH).text
+    # Making another model the main one works from the same table.
+    client.post("/browse/models", headers=AUTH, data={"speech": "sherpa:parakeet-v3"}, follow_redirects=False)
+    assert config.stt_model == "sherpa:parakeet-v3"
+    # Removing them all leaves just the main recognizer; "automatically" brings the panel back.
+    for model in ("sherpa:parakeet-v2", "sherpa:sensevoice"):
+        client.post("/browse/blend", headers=AUTH, data={"listen": model}, follow_redirects=False)
+    assert config.blend is False
+    client.post("/browse/blend", headers=AUTH, data={"listen": "auto", "blend": "on"}, follow_redirects=False)
+    assert config.blend and config.blend_models == []

@@ -65,6 +65,9 @@ class Config:
     blend_partner: str = ""
     # How many recognizers hear each clip, counting the one in use (2 to 4).
     blend_count: int = 3
+    # The recognizers chosen by hand to listen alongside the one in use.
+    # Empty = chosen automatically.
+    blend_models: list = field(default_factory=list)
     # A light language model that checks the recognizers' versions make sense
     # as sentences and settles disagreements. Runs on the processor.
     checker_repo: str = "bartowski/Qwen_Qwen3-1.7B-GGUF"
