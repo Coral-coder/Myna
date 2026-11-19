@@ -692,6 +692,13 @@ def create_app(
             except ValueError:
                 index = -1
             await run_in_threadpool(facts.decide, store, form["conversation"], index, action == "keep")
+        elif form.get("todo") and action in ("add", "dismiss"):
+            try:
+                index = int(form.get("index", "-1"))
+            except ValueError:
+                index = -1
+            await run_in_threadpool(facts.decide_todo, store, form["todo"], index, action == "add")
+            return RedirectResponse("/browse?kind=item", status_code=303)
         elif form.get("memory"):
             await run_in_threadpool(facts.mark, store, form["memory"], action)
         return RedirectResponse("/browse?kind=memory", status_code=303)

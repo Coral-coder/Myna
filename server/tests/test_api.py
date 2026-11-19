@@ -1148,3 +1148,21 @@ def test_confirming_learned_memories(tmp_path):
     assert "brother" not in material  # rejected: never used
     assert facts.mark(store, saved[0]["id"], "forget")
     assert store.browse("memory")[0]["archived"]
+
+
+def test_suggested_todos_are_added_or_dismissed(tmp_path):
+    from myna_server import facts
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "t.db")
+    store.sync(0, [{"kind": "conversation", "id": "c-2", "updated_at": 1, "data": {
+        "startedAt": 1, "title": "Planning",
+        "actionItems": [{"description": "Email the venue", "due_at": "2026-12-01T09:00"},
+                        {"description": "Think about it", "due_at": ""}]}}])
+    assert [t["description"] for t in facts.pending_todos(store)] == ["Email the venue", "Think about it"]
+    assert facts.decide_todo(store, "c-2", 0, add=True)
+    assert facts.decide_todo(store, "c-2", 1, add=False)
+    assert facts.pending_todos(store) == []
+    items = store.browse("item")
+    assert len(items) == 1 and items[0]["text"] == "Email the venue" and items[0]["source"] == "conversation"
+    assert items[0]["dueDate"] > 0

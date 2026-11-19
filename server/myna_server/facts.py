@@ -64,3 +64,48 @@ def mark(store: Store, memory_id: str, action: str) -> bool:
         record["archived"] = True
     _save(store, "memory", memory_id, record)
     return True
+
+
+# -- to-dos picked out of conversations ------------------------------------------
+
+
+def pending_todos(store: Store, most: int = 100) -> list[dict]:
+    """To-dos a write-up picked out, not yet added to the list or dismissed."""
+    out = []
+    for row in store.browse("conversation", limit=400):
+        if row.get("discarded") or row.get("failed"):
+            continue
+        for index, item in enumerate(row.get("actionItems") or []):
+            if isinstance(item, dict) and not item.get("status") and item.get("description"):
+                out.append({"conversation": row["id"], "index": index, "description": item["description"],
+                            "due": item.get("due_at", ""), "title": row.get("title", ""), "at": row["at"]})
+    return out[:most]
+
+
+def _due(text: str) -> float | None:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(str(text).strip()[:16]).timestamp()
+    except ValueError:
+        return None
+
+
+def decide_todo(store: Store, conversation_id: str, index: int, add: bool) -> bool:
+    record = store.get("conversation", conversation_id)
+    items = (record or {}).get("actionItems") or []
+    if not 0 <= index < len(items) or not isinstance(items[index], dict):
+        return False
+    item = items[index]
+    item["status"] = "added" if add else "dismissed"
+    if add:
+        item_id = str(uuid.uuid4()).upper()
+        item["itemId"] = item_id
+        data = {"kind": "todo", "text": item["description"], "detail": f"From: {record.get('title', '')}",
+                "isDone": False, "createdAt": time.time(), "source": "conversation", "noteID": ""}
+        due = _due(item.get("due_at", ""))
+        if due is not None:
+            data["dueDate"] = due
+        _save(store, "item", item_id, data)
+    _save(store, "conversation", conversation_id, record)
+    return True

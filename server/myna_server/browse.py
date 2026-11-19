@@ -202,6 +202,24 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
             parts.insert(0, "<h2>Is this right?</h2><div class=\"dim\">Things Myna noticed about you in conversations. "
                             "Keep the true ones; they become memories it trusts. Wrong ones are never used again.</div>"
                             + "".join(rows_html) + "<h2>Memories</h2>")
+    if kind == "item" and not query:
+        from .facts import pending_todos
+
+        waiting = pending_todos(store)
+        if waiting:
+            rows_html = []
+            for item in waiting:
+                hidden = (f'<input type="hidden" name="todo" value="{_e(item["conversation"])}">'
+                          f'<input type="hidden" name="index" value="{item["index"]}">')
+                due = f' · due {_e(item["due"])}' if item["due"] else ""
+                rows_html.append(
+                    f'<div class="row pick"><div>{_e(item["description"])}<div class="dim">from '
+                    f'<a href="/browse/conversation?id={quote(item["conversation"])}">{_e(item["title"])}</a>{due}</div></div>'
+                    '<div style="display:flex;gap:6px">'
+                    + _fact_button(hidden, "add", "Add") + _fact_button(hidden, "dismiss", "Dismiss") + "</div></div>"
+                )
+            parts.insert(0, "<h2>Add to your list?</h2><div class=\"dim\">To-dos picked out of your conversations. "
+                            "Added ones go on your list on the phone too.</div>" + "".join(rows_html) + "<h2>Your lists</h2>")
     if kind == "song" and parts:
         parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
     if kind == "conversation":
