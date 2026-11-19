@@ -1232,3 +1232,45 @@ def test_models_are_placed_by_measured_speed(tmp_path, monkeypatch):
         table.record_speech("small.en", "cpu", 10, 0.5)
     assert engines.choose_speech_device("small.en", 0.9 * GB)[0] == "cpu"   # 20x real time: fast enough
     assert engines.choose_speech_device("large-v3", 3.6 * GB)[0] == "gpu"
+
+
+def test_experiment_tab_tries_a_model_and_keeps_or_drops_it(tmp_path, monkeypatch):
+    import time as clock
+
+    from myna_server import experiment
+
+    monkeypatch.setattr(experiment, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(experiment, "search", lambda kind, q, most=20: [
+        {"repo": "someone/faster-whisper-tiny", "downloads": 1200, "likes": 3, "updated": "2026-10-01"}])
+
+    class Candidate(NamedStt):
+        def transcribe(self, samples):
+            return "pass the salt please"
+
+    stt = NamedStt("model-a")
+    made = []
+
+    def partner_for(model, device=None):
+        made.append(model)
+        return Candidate("whisper-" + model)
+
+    config = Config(token="secret-token")
+    app = create_app(config, stt, FakeWriter(), audio_dir=tmp_path, partner_for=partner_for)
+    app.state.save_config = False
+    client = TestClient(app)
+    client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2, dtype=np.float32)))
+
+    page = client.get("/browse/experiment?kind=speech&q=tiny", headers=AUTH).text
+    assert "someone/faster-whisper-tiny" in page and "Try it" in page and "Experiment" in page
+    client.post("/browse/experiment", headers=AUTH, follow_redirects=False,
+                data={"action": "try", "kind": "speech", "model": "someone/faster-whisper-tiny", "hours": "1"})
+    for _ in range(100):
+        page = client.get("/browse/experiment?kind=speech", headers=AUTH).text
+        if "Finished" in page:
+            break
+        clock.sleep(0.05)
+    assert "Finished" in page and "pass the salt please" in page and "Keep it as the recognizer" in page
+    client.post("/browse/experiment", headers=AUTH, data={"action": "keep"}, follow_redirects=False)
+    assert config.stt_model == "someone/faster-whisper-tiny" and stt.name == "someone/faster-whisper-tiny"
+    page = client.get("/browse/experiment", headers=AUTH).text
+    assert "Tried before" in page and "KEPT" in page

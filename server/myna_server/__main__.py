@@ -39,6 +39,7 @@ def main() -> None:
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
     checker = LlamaWriter(config, "checker")
     embedder = LlamaWriter(config, "embedder")
+    trial = LlamaWriter(config, "trial")
     audio_dir = data_dir() / "audio"
     def partner_for(model: str, device: str | None = None):
         """Another recognizer beside the one in use, with its own settings."""
@@ -48,7 +49,7 @@ def main() -> None:
 
     app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
                      helper=helper, summarizer=summarizer, audio_dir=audio_dir, partner_for=partner_for,
-                     learning_path=data_dir() / "learning.json", checker=checker, embedder=embedder)
+                     learning_path=data_dir() / "learning.json", checker=checker, embedder=embedder, trial=trial)
 
     def housekeeping() -> None:
         """Once a minute: write the day's summary when the day has gone quiet,

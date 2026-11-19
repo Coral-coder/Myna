@@ -72,7 +72,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     for kind, title in TABS:
         on = ' class="on"' if kind == active else ""
         links.append(f'<a{on} href="/browse?kind={kind}">{title} {counts.get(kind, 0)}</a>')
-    for key, title in (("ask", "Ask"), ("live", "Live"), ("compare", "Compare"), ("models", "Models")):
+    for key, title in (("ask", "Ask"), ("live", "Live"), ("compare", "Compare"), ("models", "Models"), ("experiment", "Experiment")):
         on = ' class="on"' if key == active else ""
         links.append(f'<a{on} href="/browse/{key}"{" style=margin-left:auto" if key == "ask" else ""}>{title}</a>')
     links.append('<a href="/">Settings</a>')
@@ -82,7 +82,7 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
         'background:none;border-radius:99px;cursor:pointer">Lock</button></form>'
     )
     search = ""
-    if active not in ("live", "models", "ask", "compare", "daily", "conversation-detail"):
+    if active not in ("live", "models", "ask", "compare", "daily", "conversation-detail", "experiment"):
         search = (
             f'<form method="get" action="/browse"><input type="hidden" name="kind" value="{_e(active)}">'
             f'<input name="q" placeholder="Search" value="{_e(query)}"></form>'
@@ -728,3 +728,143 @@ def conversation_page(store: Store, record_id: str) -> str:
         parts.append("<h2>Music heard</h2>" + "".join(f'<div class="row">{_e(song)}</div>' for song in talk["songs"]))
     parts.append(f'<h2>Transcript</h2><pre>{_e(talk.get("transcript"))}</pre>')
     return _frame("conversation", "", "".join(parts), store.counts())
+
+
+def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str, found: list[dict],
+                    files: list[dict], problem: str, tried: list[dict], current: dict, trial_status: str) -> str:
+    """Find a model on Hugging Face, run it over the last few hours, then keep it or throw it out."""
+    from .catalog import SHERPA
+
+    kind = "speech" if kind == "speech" else "writing"
+    button = ('<style>button{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;'
+              "padding:6px 12px;border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}"
+              ".pick{display:flex;gap:12px;align-items:center;justify-content:space-between}"
+              ".pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}.pair>div{border:1px solid #2a2c30;border-radius:8px;padding:8px}"
+              "select{background:#141517;color:#e9e9e6;border:1px solid #444;border-radius:6px;padding:4px}</style>")
+    hours = ('<select name="hours">' + "".join(
+        f'<option value="{h}"{" selected" if h == 3 else ""}>last {h} hour{"s" if h != 1 else ""}</option>'
+        for h in (1, 3, 6, 12, 24, 48)) + "</select>")
+
+    def try_form(fields: str, label: str = "Try it") -> str:
+        return (f'<form method="post" action="/browse/experiment" style="display:flex;gap:6px;margin:0">'
+                f'<input type="hidden" name="action" value="try"><input type="hidden" name="kind" value="{kind}">'
+                f"{fields}{hours}<button>{label}</button></form>")
+
+    parts = [button, "<h1>Experiment</h1>",
+             '<div class="dim">Find a model on Hugging Face, run it over the last few hours of your own audio or '
+             "conversations, and read what it did beside what the current model did. Keep it, or throw it out and "
+             "try another. Nothing you have is changed until you keep one.</div>"]
+
+    # -- the model being tried -------------------------------------------------------------
+    if trying.get("model") or trying.get("file"):
+        name = trying.get("model") or f'{trying.get("repo")} · {trying.get("file")}'
+        progress = f'{trying.get("done", 0)} of {trying.get("total", 0)}' if trying.get("total") else ""
+        status = trial_status if trying.get("kind") == "writing" and trying.get("running") else ""
+        parts.append(f'<h2>Trying: {_e(name)}</h2><div class="dim">Over the last {trying.get("hours")} hours. '
+                     f'{_e(progress)} {_e(trying.get("note"))} {_e(status)}</div>')
+        controls = []
+        if trying.get("running"):
+            controls.append('<form method="post" action="/browse/experiment" style="margin:0">'
+                            '<button name="action" value="stop">Stop</button></form>')
+        else:
+            if trying.get("kind") == "speech":
+                controls.append('<form method="post" action="/browse/experiment" style="margin:0">'
+                                '<input type="hidden" name="action" value="keep"><button>✓ Keep it as the recognizer</button></form>')
+            else:
+                controls.append('<form method="post" action="/browse/experiment" style="display:flex;gap:6px;margin:0">'
+                                '<input type="hidden" name="action" value="keep"><select name="role">'
+                                '<option value="llm">as Main</option><option value="helper">as Helper</option>'
+                                '<option value="summary">as Summary</option><option value="checker">as Checker</option>'
+                                "</select><button>✓ Keep it</button></form>")
+        controls.append('<form method="post" action="/browse/experiment" style="margin:0">'
+                        '<button name="action" value="drop">✕ Throw it out</button></form>')
+        parts.append(f'<div style="display:flex;gap:8px;margin:8px 0">{"".join(controls)}</div>')
+        summary = trying.get("summary") or {}
+        if trying.get("kind") == "speech" and summary:
+            parts.append(
+                f'<div class="row">{summary.get("clips", 0)} recordings · {summary.get("pace", 0)}x real time · '
+                f'agrees with the current transcript {summary.get("agreement", 0):.0%} · heard speech the current one '
+                f'missed in {summary.get("heard_more", 0)} · heard nothing where it heard something in '
+                f'{summary.get("heard_less", 0)}</div>'
+                f'<div class="pair" style="margin-top:6px"><div class="t">NOW ({_e(current.get("speech"))})</div>'
+                '<div class="t">THIS MODEL</div></div>')
+            for row in trying.get("results") or []:
+                if row["before"] == row["after"]:
+                    continue
+                parts.append(f'<div class="dim">{_e(_when(row["at"], "%a %H:%M"))}</div><div class="pair">'
+                             f'<div>{_e(row["before"]) or "<span class=dim>(nothing)</span>"}</div>'
+                             f'<div>{_e(row["after"]) or "<span class=dim>(nothing)</span>"}</div></div>')
+        if trying.get("kind") == "writing" and trying.get("results"):
+            parts.append(f'<div class="row">{summary.get("conversations", 0)} conversations written up again in '
+                         f'{summary.get("seconds", 0)} s. Left: as written now ({_e(current.get("llm"))}); right: this model.</div>')
+            for row in trying["results"]:
+                def card(rec: dict) -> str:
+                    todo = "".join(f"<li>{_e(i.get('description'))}</li>" for i in rec.get("actionItems") or [])
+                    mems = "".join(f"<li>{_e(m.get('content'))}</li>" for m in rec.get("memories") or [])
+                    if rec.get("discarded"):
+                        return '<span class="dim">Discarded as not worth keeping</span>'
+                    return (f'<b>{_e(rec.get("emoji"))} {_e(rec.get("title"))}</b><div>{_e(rec.get("overview"))}</div>'
+                            + (f'<div class="dim">To do</div><ul>{todo}</ul>' if todo else "")
+                            + (f'<div class="dim">Remembered</div><ul>{mems}</ul>' if mems else ""))
+                parts.append(f'<div class="dim">{_e(_when(row["at"], "%a %H:%M"))} · {row["took"]} s</div>'
+                             f'<div class="pair"><div>{card(row["before"])}</div><div>{card(row["after"])}</div></div>')
+
+    # -- finding one --------------------------------------------------------------------------
+    tabs = "".join(
+        f'<a href="/browse/experiment?kind={k}" style="margin-right:14px{";font-weight:600" if k == kind else ""}">{t}</a>'
+        for k, t in (("writing", "Writing models"), ("speech", "Speech models")))
+    parts.append(f"<h2>Find a model</h2><div>{tabs}</div>")
+    hint = ("Writing models are GGUF files: try “qwen3”, “gemma”, “phi”, “deepseek”, “mistral”."
+            if kind == "writing" else
+            "Speech models here are Whisper models made for faster-whisper (CTranslate2): try “whisper”, "
+            "“distil”, “turbo”, “faster-whisper”.")
+    parts.append(f'<form method="get" action="/browse/experiment" style="display:flex;gap:6px;margin:8px 0">'
+                 f'<input type="hidden" name="kind" value="{kind}"><input name="q" value="{_e(query)}" '
+                 f'placeholder="Search Hugging Face"><button>Search</button></form><div class="dim">{hint}</div>')
+    if problem:
+        parts.append(f'<p class="dim">{_e(problem)}</p>')
+    if repo and kind == "writing":
+        parts.append(f'<h2>{_e(repo)}</h2><div class="dim">Pick a file. Smaller files are faster and lighter, '
+                     "a little less careful; about 4–5 bits per weight (Q4_K_M) is the usual balance. "
+                     "Up to about 11 GB fits wholly on the graphics card.</div>")
+        for row in files:
+            fields = (f'<input type="hidden" name="repo" value="{_e(repo)}">'
+                      f'<input type="hidden" name="file" value="{_e(row["file"])}">')
+            parts.append(f'<div class="row pick"><div>{_e(row["file"])} <span class="dim">{row["gb"]:g} GB</span></div>'
+                         f"{try_form(fields)}</div>")
+        if not files and not problem:
+            parts.append('<p class="dim">No GGUF files in this repository.</p>')
+    for row in found:
+        meta = f'{row["downloads"]:,} downloads · {row["likes"]} likes · updated {_e(row["updated"])}'
+        link = f'<a href="https://huggingface.co/{_e(row["repo"])}">page</a>'
+        if kind == "writing":
+            action = f'<a href="/browse/experiment?kind=writing&q={quote(query)}&repo={quote(row["repo"])}">Files →</a>'
+        else:
+            action = try_form(f'<input type="hidden" name="model" value="{_e(row["repo"])}">')
+        parts.append(f'<div class="row pick"><div>{_e(row["repo"])}<div class="dim">{meta} · {link}</div></div>{action}</div>')
+    if query and not found and not problem:
+        parts.append('<p class="dim">Nothing found. Try a shorter search.</p>')
+    if kind == "speech":
+        parts.append("<h2>Built in</h2><div class=\"dim\">The other recognizers this server can run.</div>")
+        for key in SHERPA:
+            model = f"sherpa:{key}"
+            if model == current.get("speech"):
+                continue
+            parts.append(f'<div class="row pick"><div>{_e(key)}</div>'
+                         f'{try_form(chr(10) + f"<input type=hidden name=model value={_e(model)}>")}</div>')
+        for size in ("small.en", "medium.en", "distil-large-v3", "turbo", "large-v3"):
+            if size == current.get("speech"):
+                continue
+            parts.append(f'<div class="row pick"><div>Whisper {_e(size)}</div>'
+                         f'{try_form(f"<input type=hidden name=model value={_e(size)}>")}</div>')
+
+    # -- tried before ---------------------------------------------------------------------------
+    if tried:
+        parts.append("<h2>Tried before</h2>")
+        for row in tried[:20]:
+            s = row.get("summary") or {}
+            detail = (f'{s.get("agreement", 0):.0%} agreement, {s.get("pace", 0)}x real time' if row.get("kind") == "speech"
+                      else f'{s.get("conversations", 0)} conversations in {s.get("seconds", 0)} s')
+            parts.append(f'<div class="row">{_e(row.get("model"))} <span class="t">{_e(str(row.get("outcome")).upper())}</span>'
+                         f'<div class="dim">{_e(_when(row.get("at"), "%d %b %H:%M"))} · {detail}</div></div>')
+    return _frame("experiment", "", "".join(parts), store.counts())

@@ -76,6 +76,7 @@ def create_app(
     learning_path=None,
     checker=None,
     embedder=None,
+    trial=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
     roles = {"llm": writer, "helper": helper, "summary": summarizer, "checker": checker, "embedder": embedder}
@@ -834,6 +835,120 @@ def create_app(
     @app.get("/browse/live.json")
     def browse_live_json(_: None = Depends(paired)) -> dict:
         return {**engines_state(), **stats, "events": list(activity)[-80:]}
+
+    # -- the Experiment tab: find a model, try it on the last few hours ------------
+
+    from . import experiment
+
+    trying = experiment.new_state()
+    trying_stop = threading.Event()
+    trying_engine: dict = {}
+
+    def run_trial() -> None:
+        try:
+            trying["note"] = ""
+            if trying["kind"] == "speech":
+                candidate = trying_engine.get("speech")
+                if candidate is None:
+                    candidate = partner_for(trying["model"]) if partner_for is not None else None
+                    trying_engine["speech"] = candidate
+                if candidate is None:
+                    trying["note"] = "This server can't load a second recognizer."
+                    return
+                experiment.run_speech(trying, store, candidate, transcriber.name, level, trying_stop)
+            else:
+                experiment.run_writing(trying, store, trial.generate, config.owner_name, trying_stop)
+            if not trying["note"]:
+                trying["note"] = "Finished. Read the results below, then keep it or throw it out."
+        except Exception as error:
+            trying["note"] = f"Couldn't run it: {error}"
+        finally:
+            trying["running"] = False
+
+    def end_trial(kept: str) -> None:
+        """Free the model being tried and note how it went."""
+        if trying["model"] or trying["file"]:
+            experiment.remember({"at": time.time(), "kind": trying["kind"], "model": trying["model"] or
+                                 f'{trying["repo"]}/{trying["file"]}', "hours": trying["hours"],
+                                 "summary": trying["summary"], "outcome": kept})
+        trying_stop.set()
+        candidate = trying_engine.pop("speech", None)
+        if candidate is not None and hasattr(candidate, "_unload_for_room"):
+            candidate._unload_for_room()
+        if trial is not None and hasattr(trial, "force_stop"):
+            trial.force_stop()
+            trial.use("", "")
+        trying.clear()
+        trying.update(experiment.new_state())
+
+    @app.get("/browse/experiment", response_class=HTMLResponse)
+    def browse_experiment(kind: str = "writing", q: str = "", repo: str = "", _: None = Depends(paired)) -> str:
+        found, files, problem = [], [], ""
+        try:
+            if q:
+                found = experiment.search(kind, q)
+            if repo and kind == "writing":
+                files = experiment.gguf_files(repo)
+        except Exception as error:
+            problem = f"Couldn't reach Hugging Face: {error}"
+        current = {"speech": config.stt_model, "llm": config.llm_file, "helper": config.helper_file,
+                   "summary": config.summary_file, "checker": config.checker_file}
+        return browse.experiment_page(store, dict(trying), kind, q, repo, found, files, problem,
+                                      experiment.history(), current, getattr(trial, "status", ""))
+
+    @app.post("/browse/experiment")
+    async def experiment_action(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        action = form.get("action", "")
+        if action == "try" and not trying["running"]:
+            end_trial("replaced") if (trying["model"] or trying["file"]) else None
+            try:
+                hours = min(max(float(form.get("hours", "3")), 0.25), 24 * 7)
+            except ValueError:
+                hours = 3
+            kind = "speech" if form.get("kind") == "speech" else "writing"
+            trying_stop.clear()
+            trying.update(kind=kind, hours=hours, running=True, note="Starting… (the model downloads first)",
+                          started=time.time(), model=form.get("model", ""), repo=form.get("repo", ""),
+                          file=form.get("file", ""))
+            if kind == "writing":
+                if trial is None or not trying["repo"] or not trying["file"].endswith(".gguf"):
+                    trying.update(running=False, note="Pick a .gguf file to try.")
+                    return RedirectResponse("/browse/experiment", status_code=303)
+                await run_in_threadpool(trial.use, trying["repo"], trying["file"])
+            elif not trying["model"]:
+                trying.update(running=False, note="Pick a speech model to try.")
+                return RedirectResponse("/browse/experiment?kind=speech", status_code=303)
+            threading.Thread(target=run_trial, daemon=True).start()
+        elif action == "stop":
+            trying_stop.set()
+        elif action == "drop":
+            await run_in_threadpool(end_trial, "thrown out")
+        elif action == "keep" and not trying["running"] and (trying["model"] or trying["file"]):
+            if trying["kind"] == "speech" and hasattr(transcriber, "use"):
+                model = trying["model"]
+                await run_in_threadpool(end_trial, "kept")
+                await run_in_threadpool(transcriber.use, model)
+                config.stt_model = model
+                if hasattr(transcriber, "warm"):
+                    threading.Thread(target=transcriber.warm, daemon=True).start()
+            elif trying["kind"] == "writing":
+                role = form.get("role", "llm")
+                target = roles.get(role) if role in ("llm", "helper", "summary", "checker") else None
+                if target is not None and hasattr(target, "use"):
+                    repo, file = trying["repo"], trying["file"]
+                    await run_in_threadpool(end_trial, f"kept as {role}")
+                    await run_in_threadpool(target.use, repo, file)
+                    if hasattr(target, "warm"):
+                        threading.Thread(target=target.warm, daemon=True).start()
+            if getattr(app.state, "save_config", True):
+                config.save()
+            return RedirectResponse("/browse/models", status_code=303)
+        return RedirectResponse(f"/browse/experiment?kind={trying.get('kind') or form.get('kind', 'writing')}", status_code=303)
 
     @app.get("/browse/models", response_class=HTMLResponse)
     def browse_models(_: None = Depends(paired)) -> str:

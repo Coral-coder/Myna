@@ -352,7 +352,7 @@ LLAMA_BUILD = "b12400"
 LLAMA_ZIP = f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip"
 LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{LLAMA_ZIP}"
 LLAMA_SHA256 = "15eafe06f3ea80f78b80764e1994fd74b5ffa66b5cf0875a3bd9b3ee41a058ef"
-LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794, "embedder": 8795}
+LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794, "embedder": 8795, "trial": 8796}
 _strays_cleared = False
 
 
@@ -579,7 +579,7 @@ def choose_device(role: str, model_file: str, size: float, moe: bool, card_total
 # earlier job's uses that one's runner, so the model is loaded once.
 _SHARE_ORDER = ("llm", "helper", "summary", "checker")
 _WRITERS: dict[str, "LlamaWriter"] = {}
-_ROLE_NAMES = {"llm": "Main", "helper": "Helper", "summary": "Summary", "checker": "Checker"}
+_ROLE_NAMES = {"llm": "Main", "helper": "Helper", "summary": "Summary", "checker": "Checker", "trial": "Trial"}
 
 
 class LlamaWriter:

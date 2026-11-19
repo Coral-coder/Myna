@@ -316,3 +316,12 @@ class Store:
         scores = matrix @ query
         best = np.argsort(-scores)[:most]
         return [(float(scores[i]), rows[i]["kind"], rows[i]["id"]) for i in best]
+
+    def transcript_of(self, clip_id: int, model: str) -> str | None:
+        """What `model` heard in one kept clip, if it has done it."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT text FROM transcripts WHERE clip_id = ? AND model = ? ORDER BY made_at DESC LIMIT 1",
+                (clip_id, model),
+            ).fetchone()
+        return row["text"] if row else None
