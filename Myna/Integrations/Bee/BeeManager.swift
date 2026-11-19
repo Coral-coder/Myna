@@ -332,6 +332,22 @@ final class BeeManager: ObservableObject {
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
 
+        // The own-key test is armed: take over before any provisioning seals the
+        // bracelet. If it's still sealed, unseal it ourselves; once it reports
+        // unsealed, write our own key and read the result.
+        if ownKeyTestArmed {
+            if isSealed {
+                // We can't unseal in software (only the button combo does), but
+                // we CAN refuse to re-seal: hold here so the bracelet stays as-is
+                // until it's factory-reset, instead of provisioning over it.
+                ownKeyTestResult = "Armed, but the bracelet is still sealed. Factory-reset it on the device (press the button 5× until blue+green), keep it near the phone, and the test runs by itself the moment it reconnects unsealed. Myna will not re-seal it in the meantime."
+                log("Own-key test armed; bracelet sealed — holding (not provisioning) until a factory reset.")
+            } else {
+                performOwnKeyTest()
+            }
+            return   // never run normal provisioning while the test is armed
+        }
+
         // A captured Bee-signed token (pasted in Backstage) gives the AES key
         // directly — bytes 12..<28 — with no Bee server at all.
         let capturedToken = BeeKeyVault.existingToken(deviceID: deviceID)
@@ -478,6 +494,7 @@ final class BeeManager: ObservableObject {
     /// Whether the last secure-IDs reply said the bracelet is sealed.
     private(set) var lastSealed = false
     @Published private(set) var ownKeyTestRunning = false
+    @Published private(set) var ownKeyTestArmed = false
     @Published private(set) var ownKeyTestResult: String?
     private var ownKeyProbe: CheckedContinuation<Bool, Never>?
     private var ownKeyCandidate: Data?
@@ -492,14 +509,34 @@ final class BeeManager: ObservableObject {
 
     /// Install our own key on the bracelet, wrapped in a real captured envelope,
     /// and report whether the firmware accepts it. Run on a factory-reset bracelet.
-    func runOwnKeyTest() {
-        guard !ownKeyTestRunning else { return }
-        guard let real = BeeKeyVault.existingToken(deviceID: deviceID), real.count >= 44 else {
-            ownKeyTestResult = "Capture your real Bee key once first (connect and fetch it), so I have a genuine envelope to test with."
+    /// Arm (or disarm) the test. Once armed, Myna stops normal provisioning for
+    /// this bracelet and runs the test itself the instant the bracelet is seen
+    /// unsealed — so the auto-connect can't seal it out from under the test.
+    func armOwnKeyTest() {
+        if ownKeyTestArmed || ownKeyTestRunning {
+            ownKeyTestArmed = false
+            ownKeyTestResult = "Test disarmed. Normal setup resumes on the next connect."
+            log("Own-key test disarmed.")
             return
         }
-        guard lastSealed == false else {
-            ownKeyTestResult = "The bracelet is still sealed with a key. Factory-reset it first (so it will accept a new key), reconnect, then run this."
+        guard BeeKeyVault.existingToken(deviceID: deviceID) != nil else {
+            ownKeyTestResult = "I need your real Bee key captured once first (it stays stored). Fetch it above, then arm this."
+            return
+        }
+        ownKeyTestArmed = true
+        if lastSealed == false, !deviceID.isEmpty {
+            performOwnKeyTest()   // already connected and unsealed — go now
+        } else {
+            ownKeyTestResult = "Armed. Factory-reset the bracelet on the device (press the button 5× until blue+green). Myna won't re-seal it, and the test runs by itself the moment it reconnects unsealed."
+            log("Own-key test armed; waiting for an unsealed connect.")
+        }
+    }
+
+    private func performOwnKeyTest() {
+        guard !ownKeyTestRunning else { return }
+        ownKeyTestArmed = false
+        guard let real = BeeKeyVault.existingToken(deviceID: deviceID), real.count >= 44 else {
+            ownKeyTestResult = "I need your real Bee key captured once first (it stays stored). Fetch it above, then arm this."
             return
         }
         // Build: real envelope, but bytes 12..<28 are our own random AES-128 key.

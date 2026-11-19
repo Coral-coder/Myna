@@ -147,7 +147,7 @@ struct BraceletCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Settles whether Myna can generate its own bracelet key instead of ever asking Bee. It puts a key Myna made itself onto the bracelet, wrapped in a real captured envelope, and checks whether the firmware accepts it.")
                     .braceletCaption()
-                Text("First capture your real Bee key once (so Myna has a genuine envelope), then FACTORY-RESET the bracelet and reconnect — the bracelet only accepts a new key while reset. If the test is rejected, nothing changes and you set up normally. If it's accepted, the bracelet runs your own key from then on.")
+                Text("Tap Arm, then factory-reset the bracelet on the device (press its button 5× until blue+green). Myna stops its normal setup so the reset bracelet stays unsealed, and runs the test by itself the moment it reconnects — no race, no timing. Rejected → nothing changed, set up normally. Accepted → the bracelet runs your own key from then on.")
                     .braceletCaption()
                 if let result = bee.ownKeyTestResult {
                     Text(result)
@@ -156,15 +156,16 @@ struct BraceletCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Button {
-                    bee.runOwnKeyTest()
+                    bee.armOwnKeyTest()
                 } label: {
                     HStack(spacing: 8) {
                         if bee.ownKeyTestRunning { ProgressView().controlSize(.small).tint(MynaTheme.cyan) }
-                        Text(bee.ownKeyTestRunning ? "Testing…" : "Test my own key")
+                        Text(bee.ownKeyTestRunning ? "Testing…"
+                             : (bee.ownKeyTestArmed ? "Armed — waiting for reset (tap to cancel)" : "Arm the test"))
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                     }
                 }
-                .tint(MynaTheme.cyan)
+                .tint(bee.ownKeyTestArmed ? MynaTheme.magenta : MynaTheme.cyan)
                 .disabled(bee.ownKeyTestRunning || !bee.canRunOwnKeyTest)
                 if !bee.canRunOwnKeyTest {
                     Text("Capture your real Bee key first (above), then this unlocks.")
