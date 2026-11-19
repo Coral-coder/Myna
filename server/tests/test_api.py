@@ -440,7 +440,7 @@ def test_models_page_assigns_jobs_to_models(stt):
     client.post("/browse/models", headers=AUTH, data={"role": "helper", **form}, follow_redirects=False)
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
                 data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
-    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("gemma-4-12b")
+    assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("Qwen3.6")
     assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "auto"  # placed automatically
     page = client.get("/browse/models", headers=AUTH).text
     assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
@@ -912,10 +912,12 @@ def test_heavy_default_moves_to_a_lighter_model_and_falls_back_if_it_cannot_load
                               "llm_repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
                               "llm_file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"}))
     config = Config.load(path)
-    assert config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf" and config.simple_mode is True and config.blend is False
+    # The big hybrid writer is kept (lean layers relieve the card, not downgrading the model).
+    assert config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+    assert config.simple_mode is True and config.blend is False and config.speakers is True
 
-    # A model chosen by hand afterwards is never moved again.
-    path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "simple-mode", "llm_file": "phi-4-Q4_K_M.gguf"}))
+    # A model chosen by hand is not moved.
+    path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "big-and-speakers", "llm_file": "phi-4-Q4_K_M.gguf"}))
     assert Config.load(path).llm_file == "phi-4-Q4_K_M.gguf"
 
     # If the main model can't load, the fallback is used.
@@ -1029,8 +1031,8 @@ def test_existing_setups_get_the_larger_context_once(tmp_path):
     path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "qwen3.6-mtp", "llm_context": 8192,
                               "llm_file": "phi-4-Q4_K_M.gguf"}))
     config = Config.load(path)
-    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "simple-mode"
-    assert config.simple_mode is True and config.blend is False
+    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "big-and-speakers"
+    assert config.simple_mode is True and config.blend is False and config.speakers is True
 
 
 def test_a_lone_yeah_from_one_recognizer_is_dropped():
@@ -1373,7 +1375,29 @@ def test_simple_mode_runs_one_recognizer_and_one_writer(stt):
     assert CountingStt.calls == 1                                   # just the one recognizer, no panel
 
     page = client.get("/browse/models", headers=AUTH).text
-    assert "Simple mode: ON" in page and "Switch to Full" in page
+    assert "Lean layers: ON" in page and "Switch to Full" in page
     client.post("/browse/simple", headers=AUTH, data={"simple": "off"}, follow_redirects=False)
     page = client.get("/browse/models", headers=AUTH).text
-    assert "Simple mode: OFF" in page and "Switch to Simple" in page
+    assert "Lean layers: OFF" in page and "Switch to Lean" in page
+
+
+
+def test_speaker_separation_runs_even_in_lean_mode(stt):
+    # Lean layers on, but speaker separation on: the clip is split by speaker.
+    class Splitter:
+        def split(self, audio):
+            return [(0.0, 1.0, 0), (1.0, 2.0, 1)]
+
+        def print_of(self, audio):
+            return [0.1] * 64
+
+    app = create_app(Config(token="secret-token", simple_mode=True, speakers=True), stt, FakeWriter(), voices=Splitter())
+    client = TestClient(app)
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2))).json()
+    assert len(body["segments"]) == 2        # two speakers, split despite lean mode
+
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Speaker separation: ON" in page
+    client.post("/browse/simple", headers=AUTH, data={"speakers": "off"}, follow_redirects=False)
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2) * 1.1)).json()
+    assert body["segments"] == []            # off: whole clip

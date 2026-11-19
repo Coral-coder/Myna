@@ -30,8 +30,8 @@ class Config:
     stt_model: str = "turbo"
     # Language model: a Hugging Face GGUF repo and file for llama.cpp. Gemma 4
     # 12B (about 7 GB) leaves room on a 12 GB card for Whisper beside it.
-    llm_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
-    llm_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
+    llm_repo: str = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
+    llm_file: str = "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
     # If the main model can't load, the server switches to this one instead.
     llm_fallback_repo: str = "google/gemma-4-12B-it-qat-q4_0-gguf"
     llm_fallback_file: str = "gemma-4-12b-it-qat-q4_0.gguf"
@@ -73,6 +73,10 @@ class Config:
     # loaded — no recognizer panel, no checker/helper/summary/embedder, no
     # per-clip speaker splitting, no auto-tuning. Keeps a 12 GB card breathing.
     simple_mode: bool = True
+    # Tell speakers apart on each clip (pyannote + WeSpeaker, on the processor).
+    # Independent of simple mode — the lean layers are the recognizer panel and
+    # the extra writing-model roles, not this.
+    speakers: bool = True
     blend: bool = False
     blend_partner: str = ""
     # How many recognizers hear each clip, counting the one in use (2 to 4).
@@ -138,9 +142,15 @@ class Config:
             config.simple_mode = True
             config.blend = False
             config.auto_tune = False
-            if config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf":
-                config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
             config.upgraded_to = "simple-mode"
+        if config.upgraded_to == "simple-mode":
+            # Keep the lean layers, but the big hybrid writer and speaker
+            # separation are wanted back — the overload was running everything
+            # at once, not these on their own.
+            config.speakers = True
+            if config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf":
+                config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
+            config.upgraded_to = "big-and-speakers"
         config.save(path)
         return config
 

@@ -325,8 +325,8 @@ def create_app(
         def work() -> tuple[str, list[dict]]:
             """The text, and (when the voice models are there) the clip split
             by speaker, each stretch with its speaker's voice print."""
-            if voices is None or config.simple_mode:
-                return hear(audio), []   # simple mode: no per-clip speaker split
+            if voices is None or not config.speakers:
+                return hear(audio), []   # speaker separation off: transcribe the whole clip
             try:
                 pieces = by_speaker(voices.split(audio))
             except Exception:
@@ -859,7 +859,10 @@ def create_app(
         from fastapi.responses import RedirectResponse
 
         form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
-        config.simple_mode = form.get("simple") != "off"
+        if "simple" in form:
+            config.simple_mode = form.get("simple") != "off"
+        if "speakers" in form:
+            config.speakers = form.get("speakers") != "off"
         if getattr(app.state, "save_config", True):
             config.save()
         # Free the extra models' memory the moment simple mode is turned on.

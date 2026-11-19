@@ -434,17 +434,23 @@ def _reset_buttons(state: dict, back: str) -> str:
 def _simple_banner(config) -> str:
     """The Simple-mode switch at the top of the Models page."""
     on = getattr(config, "simple_mode", True)
+    speakers = getattr(config, "speakers", True)
     other = "off" if on else "on"
-    label = "Full" if on else "Simple (Omi-style)"
+    label = "Full" if on else "Lean"
+    sp_other = "off" if speakers else "on"
     return (
         '<div style="border:1px solid #e9e9e6;border-radius:10px;padding:12px;margin-bottom:14px">'
-        f'<b>Simple mode: {"ON" if on else "OFF"}</b>'
-        '<div class="dim" style="margin:4px 0 8px">One recognizer and one writing model, nothing else — no '
-        'recognizer panel, no checker/helper/summary/search models, no per-clip speaker splitting, no auto-tuning. '
-        'This is the Omi-style setup and keeps a 12 GB card from being overwhelmed. Turn it off only if the machine '
-        'has room to spare.</div>'
-        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<b>Lean layers: {"ON" if on else "OFF"}</b>'
+        '<div class="dim" style="margin:4px 0 8px">One recognizer and one writing model — no recognizer panel and '
+        'no extra checker / helper / summary / search models, no auto-tuning. Your chosen writing model (including '
+        'the big hybrid one) and speaker separation still run; this only drops the redundant layers that were '
+        'overwhelming the card. Turn it off to add the cross-checking panel and the extra models.</div>'
+        f'<form method="post" action="/browse/simple" style="margin:0 0 8px">'
         f'<input type="hidden" name="simple" value="{other}"><button>Switch to {label}</button></form>'
+        f'<b>Speaker separation: {"ON" if speakers else "OFF"}</b>'
+        '<div class="dim" style="margin:4px 0 8px">Tell who is speaking apart on each clip (on the processor).</div>'
+        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<input type="hidden" name="speakers" value="{sp_other}"><button>Turn speaker separation {sp_other}</button></form>'
         "</div>"
     )
 
