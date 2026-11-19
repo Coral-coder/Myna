@@ -134,6 +134,18 @@ struct SettingsView: View {
                  : "Dusk — near-black console, the same quiet light.")
                 .font(.system(size: 12, design: .rounded))
                 .foregroundStyle(MynaTheme.faint)
+            Divider().opacity(0.3)
+            Text("LOOK")
+                .font(MynaTheme.mono(11))
+                .tracking(1.2)
+                .foregroundStyle(MynaTheme.muted)
+            Picker("Look", selection: $themeStore.look) {
+                ForEach(MynaLook.allCases) { look in Text(look.label).tag(look) }
+            }
+            .pickerStyle(.segmented)
+            Text("Amber VFD turns the whole screen into a dot-matrix display. Its colour and display settings are under Settings → Appearance there.")
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(MynaTheme.faint)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -20,7 +20,7 @@ struct MynaApp: App {
                 .environmentObject(services.beeCloud)
                 .environmentObject(services.whisper)
                 .environmentObject(services.neuralVoice)
-                .preferredColorScheme(themeStore.mood.scheme)
+                .preferredColorScheme(themeStore.look == .vfd ? .dark : themeStore.mood.scheme)
                 .onOpenURL { url in
                     // The pairing QR the home server shows opens Myna with this link.
                     if url.scheme == "myna", url.host == "pair" { HomeServer.shared.pair(link: url.absoluteString) }
