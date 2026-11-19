@@ -561,10 +561,15 @@ final class BeeManager: ObservableObject {
             bytes = [UInt8](real)
             source = "your captured envelope (only the key swapped)"
         } else {
+            // Token layout learned from real tokens: "SKV1" + device id(8) +
+            // key(16) + 80-byte signature. Build that shape with our own key.
             bytes = [UInt8](repeating: 0, count: 108)
+            bytes[0] = 0x53; bytes[1] = 0x4B; bytes[2] = 0x56; bytes[3] = 0x31   // "SKV1"
             let id = Self.hexBytes(deviceID)
-            for i in 0..<min(8, id.count) { bytes[i] = id[i] }   // device id up front, our best guess at the layout
-            source = "a synthetic envelope built from your device id — no Bee token"
+            for i in 0..<min(8, id.count) { bytes[4 + i] = id[i] }   // device id at offset 4
+            // bytes 28..108 left zero: we can't sign them. If the firmware checks
+            // the signature this is refused; if it doesn't, our key is accepted.
+            source = "a synthetic SKV1 token (header + your device id + our key, zero signature) — no Bee token"
         }
         for i in 0..<BeeProtocol.keyLength { bytes[12 + i] = ownKey[i] }
         let candidate = Data(bytes)
