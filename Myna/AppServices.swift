@@ -196,30 +196,41 @@ final class AppServices {
 /// Shows Myna's reminders as banners even while the app is open, and carries out
 /// the Cancel button on an action notification (from the iPhone or Apple Watch).
 private final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
+    // These are the completion-handler forms on purpose. With the `async`
+    // forms, Swift calls the system's completion handler from a background
+    // thread when the method returns, and UIKit requires it on the main thread:
+    // tapping a notification raised an exception there and ended the app
+    // (build 99, and the earlier "notification" crashes).
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        if Thread.isMainThread {
+            completionHandler([.banner, .list, .sound])
+        } else {
+            DispatchQueue.main.async { completionHandler([.banner, .list, .sound]) }
+        }
     }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.actionIdentifier == ActionNotifier.undoActionID,
-              let undo = ActionUndo(payload: response.notification.request.content.userInfo) else { return }
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let action = response.actionIdentifier
+        let userInfo = response.notification.request.content.userInfo
         let identifier = response.notification.request.identifier
-        await MainActor.run {
+        Task { @MainActor in
+            defer { completionHandler() }
+            guard action == ActionNotifier.undoActionID, let undo = ActionUndo(payload: userInfo) else { return }
             // Only act once services are fully initialised. Never force a
-            // first-time AppServices init from the notification-delivery path —
-            // that races app launch and is one way this handler crashed.
+            // first-time AppServices init from the notification-delivery path.
             guard let services = AppServices.sharedIfReady else { return }
             // EventKit / CoreData calls in `undo` can raise an Objective-C
-            // NSException, which Swift cannot catch and which aborted the whole
-            // app when a notification was acted on (confirmed in a crash report).
-            // Run the work inside an ObjC @try/@catch so a raised exception is
-            // logged, never fatal.
+            // NSException, which Swift cannot catch; run the work inside an
+            // ObjC @try/@catch so a raised exception is logged, never fatal.
             if let reason = MynaExceptionCatcher.catching({
                 services.brain.undo(undo)
                 services.brain.notifier.clearDelivered(identifier)
