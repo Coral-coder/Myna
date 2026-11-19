@@ -558,7 +558,7 @@ def test_conversations_are_split_kept_or_discarded_and_written_up_like_omi(stt):
     # Ask can use what was written up.
     writer.reply = '{"reply": "March.", "search": ""}'
     client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the launch?"})
-    assert "Launch moved" in writer.asked[-1][1] and "REMEMBERED FROM CONVERSATIONS" in writer.asked[-1][1]
+    assert "Launch moved" in writer.asked[-1][1] and "NOTICED IN CONVERSATIONS" in writer.asked[-1][1]
 
 
 def test_two_recognizers_are_combined_and_trust_is_learned(tmp_path):
@@ -1126,3 +1126,25 @@ def test_search_by_meaning(tmp_path):
     assert meaning.index_pending(store, embed) == 0  # nothing new
     found = meaning.related(store, embed, "when do I see someone about my teeth?")
     assert [row["id"] for row in found] == ["c1"]
+
+
+def test_confirming_learned_memories(tmp_path):
+    from myna_server import ask, facts
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "f.db")
+    store.sync(0, [{"kind": "conversation", "id": "c-1", "updated_at": 1, "data": {
+        "startedAt": 1, "title": "Lunch", "overview": "Talked about work",
+        "memories": [{"content": "Works as a nurse at the city hospital", "category": "system"},
+                     {"content": "Has a brother called Sam", "category": "system"}]}}])
+    assert len(facts.pending(store)) == 2
+    assert facts.decide(store, "c-1", 0, keep=True)
+    assert facts.decide(store, "c-1", 1, keep=False)
+    assert facts.pending(store) == []
+    saved = store.browse("memory")
+    assert len(saved) == 1 and saved[0]["pinned"] and "nurse" in saved[0]["content"]
+    material = ask.gather(store, "where do I work?")
+    assert "CONFIRMED BY THE USER" in material and "nurse" in material
+    assert "brother" not in material  # rejected: never used
+    assert facts.mark(store, saved[0]["id"], "forget")
+    assert store.browse("memory")[0]["archived"]

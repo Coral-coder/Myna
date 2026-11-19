@@ -94,6 +94,11 @@ def _frame(active: str, query: str, body: str, counts: dict[str, int]) -> str:
     )
 
 
+def _fact_button(hidden: str, action: str, label: str) -> str:
+    return (f'<form method="post" action="/browse/facts" style="margin:0">{hidden}'
+            f'<button name="action" value="{action}">{label}</button></form>')
+
+
 def list_page(store: Store, kind: str, query: str, before: float | None, daily_status: str = "") -> str:
     rows = store.browse(kind, query, before=before)
     names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
@@ -122,9 +127,13 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
         elif kind == "memory":
             if row.get("archived"):
                 continue
+            ok = ('<span class="t">CONFIRMED</span>' if row.get("pinned") else
+                  _fact_button(f'<input type="hidden" name="memory" value="{_e(row["id"])}">', "confirm", "Confirm"))
             parts.append(
-                f'<div class="row">{_e(row.get("content"))}'
-                f'<div class="dim">{_e(_when(row["at"], "%d %b %Y"))}</div></div>'
+                f'<div class="row pick"><div>{_e(row.get("content"))}'
+                f'<div class="dim">{_e(_when(row["at"], "%d %b %Y"))}</div></div><div style="display:flex;gap:6px">{ok}'
+                + _fact_button(f'<input type="hidden" name="memory" value="{_e(row["id"])}">', "forget", "Forget")
+                + "</div></div>"
             )
         elif kind == "item":
             mark = "☑" if row.get("isDone") else "☐"
@@ -175,6 +184,24 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
                 f'<div class="row">{_e(row.get("name") or "Unnamed voice")}'
                 f' <span class="dim">heard {_e(row.get("sampleCount", 0))} times</span></div>'
             )
+    if kind == "memory" and not query:
+        from .facts import pending
+
+        waiting = pending(store)
+        if waiting:
+            rows_html = []
+            for item in waiting:
+                hidden = (f'<input type="hidden" name="conversation" value="{_e(item["conversation"])}">'
+                          f'<input type="hidden" name="index" value="{item["index"]}">')
+                rows_html.append(
+                    f'<div class="row pick"><div>{_e(item["content"])}<div class="dim">from '
+                    f'<a href="/browse/conversation?id={quote(item["conversation"])}">{_e(item["title"])}</a>, '
+                    f'{_e(_when(item["at"], "%d %b %H:%M"))}</div></div><div style="display:flex;gap:6px">'
+                    + _fact_button(hidden, "keep", "Keep") + _fact_button(hidden, "reject", "Wrong") + "</div></div>"
+                )
+            parts.insert(0, "<h2>Is this right?</h2><div class=\"dim\">Things Myna noticed about you in conversations. "
+                            "Keep the true ones; they become memories it trusts. Wrong ones are never used again.</div>"
+                            + "".join(rows_html) + "<h2>Memories</h2>")
     if kind == "song" and parts:
         parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
     if kind == "conversation":

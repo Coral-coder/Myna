@@ -299,6 +299,8 @@ def retry_failed(store: Store, write: Generate, cheap: Generate | None, now: flo
     failed = [row for row in store.browse("conversation", limit=500) if row.get("failed")]
     names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
     known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
+    for earlier in store.browse("conversation", limit=200):
+        known += [m.get("content", "") for m in earlier.get("memories") or [] if isinstance(m, dict)]
     redone = 0
     for row in failed:
         start, end = float(row.get("startedAt") or row["at"]), float(row.get("endedAt") or row["at"])

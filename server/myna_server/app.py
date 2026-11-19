@@ -675,6 +675,27 @@ def create_app(
         threading.Thread(target=run_conversations, args=(20,), daemon=True).start()
         return RedirectResponse("/browse?kind=conversation", status_code=303)
 
+    @app.post("/browse/facts")
+    async def decide_fact(request: Request, _: None = Depends(paired)):
+        """Keep or reject a suggested memory; confirm or forget a saved one."""
+        from fastapi.responses import RedirectResponse
+
+        from urllib.parse import parse_qs
+
+        from . import facts
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        action = form.get("action", "")
+        if form.get("conversation") and action in ("keep", "reject"):
+            try:
+                index = int(form.get("index", "-1"))
+            except ValueError:
+                index = -1
+            await run_in_threadpool(facts.decide, store, form["conversation"], index, action == "keep")
+        elif form.get("memory"):
+            await run_in_threadpool(facts.mark, store, form["memory"], action)
+        return RedirectResponse("/browse?kind=memory", status_code=303)
+
     @app.get("/browse/conversation", response_class=HTMLResponse)
     def browse_conversation(id: str, _: None = Depends(paired)) -> str:
         return browse.conversation_page(store, id)

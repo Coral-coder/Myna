@@ -41,9 +41,13 @@ def gather(store: Store, question: str, wide: bool = False) -> str:
     words = [w for w in re.findall(r"[a-z0-9']{3,}", question.lower()) if w not in _STOP][:8]
     parts: list[str] = []
 
-    memories = [m.get("content", "") for m in store.browse("memory", limit=40) if not m.get("archived")]
-    if memories:
-        parts.append("WHAT YOU KNOW ABOUT THE USER:\n" + "\n".join(f"- {m}" for m in memories[:25] if m))
+    kept = [m for m in store.browse("memory", limit=200) if not m.get("archived") and m.get("content")]
+    confirmed = [m["content"] for m in kept if m.get("pinned")]
+    others = [m["content"] for m in kept if not m.get("pinned")]
+    if confirmed:
+        parts.append("CONFIRMED BY THE USER (trust these):\n" + "\n".join(f"- {m}" for m in confirmed[:40]))
+    if others:
+        parts.append("WHAT YOU KNOW ABOUT THE USER:\n" + "\n".join(f"- {m}" for m in others[:25]))
 
     seen: set[str] = set()
     matched: list[str] = []
@@ -70,10 +74,12 @@ def gather(store: Store, question: str, wide: bool = False) -> str:
                              + (f" To do: {todo}." if todo else ""))
     if talks:
         parts.append("CONVERSATIONS (matching the question):\n" + "\n".join(talks[: 10 * scale]))
+    # Suggested but not yet confirmed; kept ones are memories above, rejected ones are never used.
     learned = [m.get("content", "") for row in store.browse("conversation", limit=60)
-               for m in row.get("memories") or []]
+               for m in row.get("memories") or [] if isinstance(m, dict) and not m.get("status")]
     if learned:
-        parts.append("REMEMBERED FROM CONVERSATIONS:\n" + "\n".join(f"- {m}" for m in learned[:30] if m))
+        parts.append("NOTICED IN CONVERSATIONS, NOT YET CONFIRMED (may be wrong):\n"
+                     + "\n".join(f"- {m}" for m in learned[:30] if m))
 
     recent = store.browse("utterance", limit=25 * scale)
     if recent:
