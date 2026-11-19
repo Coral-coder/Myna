@@ -387,6 +387,7 @@ def create_app(
             "partner": ", ".join(blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models)),
             "trust": dict(learning.trust), "heard": dict(learning.heard),
             "reconciled": learning.reconciled, "rescued": learning.rescued,
+            "phantoms": dict(learning.phantoms),
             "words": list(known_words["list"]),
             "arbiter": checker.name if chosen(checker) else (helper.name if chosen(helper) else ""),
             "count": config.blend_count,

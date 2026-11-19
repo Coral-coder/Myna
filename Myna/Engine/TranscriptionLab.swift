@@ -698,6 +698,7 @@ final class TranscriptionLab: ObservableObject {
 
     private static let inventedFromSilence: Set<String> = [
         "thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "bye bye", "okay",
+        "yeah", "yes", "yep", "uh", "um", "mm", "mhm", "hmm", "oh",
     ]
 
     // MARK: - Audio held for the home server

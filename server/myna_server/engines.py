@@ -53,7 +53,8 @@ _ALWAYS_INVENTED = (
     "like and subscribe",
     "see you in the next video",
 )
-_INVENTED_WHEN_UNSURE = {"thank you", "thanks", "you", "bye", "bye bye", "okay", "so", "i", "the", "oh", "hmm", ""}
+_INVENTED_WHEN_UNSURE = {"thank you", "thanks", "you", "bye", "bye bye", "okay", "so", "i", "the", "oh", "hmm",
+                         "yeah", "yes", "uh", "um", "mm", "mhm", ""}
 
 
 def _bare(text: str) -> str:

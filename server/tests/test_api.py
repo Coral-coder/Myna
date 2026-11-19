@@ -1022,3 +1022,24 @@ def test_existing_setups_get_the_larger_context_once(tmp_path):
                               "llm_file": "phi-4-Q4_K_M.gguf"}))
     config = Config.load(path)
     assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "context-16k"
+
+
+def test_a_lone_yeah_from_one_recognizer_is_dropped():
+    from myna_server import blend
+
+    learning = blend.Learning(None)
+    assert blend.combine({"parakeet": "", "canary": "Yeah.", "whisper": ""}, learning, None, []) == ("", "filler")
+    assert learning.phantoms == {"canary": 1}
+    # Heard by two, or with other words, it stays.
+    assert blend.combine({"parakeet": "yeah", "canary": "Yeah.", "whisper": ""}, learning, None, [])[0] in ("yeah", "Yeah.")
+    assert blend.combine({"parakeet": "", "canary": "yeah I'll be there at six"}, learning, None, []) == \
+        ("yeah I'll be there at six", "rescued")
+
+
+def test_whisper_drops_an_unsure_lone_yeah():
+    from types import SimpleNamespace as S
+
+    from myna_server.engines import keep_segments
+
+    assert keep_segments([S(text=" Yeah.", no_speech_prob=0.4, avg_logprob=-0.9)]) == []
+    assert keep_segments([S(text=" Yeah.", no_speech_prob=0.02, avg_logprob=-0.1)]) == ["Yeah."]

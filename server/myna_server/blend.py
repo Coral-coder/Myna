@@ -36,6 +36,15 @@ RECONCILE = (
 
 # Stock phrases a recognizer makes up from noise; never taken from one model alone.
 _INVENTED = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "okay", "so", ""}
+# Fillers a recognizer often "hears" in background noise. Kept when another
+# recognizer hears them too, or when they come with other words, but never on
+# the word of one recognizer alone.
+_FILLERS = {"yeah", "yes", "yep", "yup", "yeah yeah", "uh", "um", "uh huh", "mm", "mhm", "mm hmm", "hmm", "oh", "ah",
+            "no", "okay", "ok", "right", "so", "and", "the", "i"}
+
+
+def _bare(text: str) -> str:
+    return re.sub(r"[^a-z' ]", "", text.lower()).strip()
 
 
 def default_partner(primary: str) -> str:
@@ -74,6 +83,7 @@ class Learning:
         self.heard: dict[str, int] = {}      # model -> clips it has been judged on
         self.reconciled = 0                  # clips where the models disagreed and were reconciled
         self.rescued = 0                     # clips where one model caught speech the other missed
+        self.phantoms: dict[str, int] = {}   # model -> lone fillers it "heard" in noise
         if path is not None and path.exists():
             try:
                 saved = json.loads(path.read_text(encoding="utf-8"))
@@ -81,8 +91,14 @@ class Learning:
                 self.heard = {k: int(v) for k, v in saved.get("heard", {}).items()}
                 self.reconciled = int(saved.get("reconciled", 0))
                 self.rescued = int(saved.get("rescued", 0))
+                self.phantoms = {k: int(v) for k, v in saved.get("phantoms", {}).items()}
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
+
+    def phantom(self, model: str) -> None:
+        """A recognizer heard words in what was most likely noise."""
+        with self._lock:
+            self.phantoms[model] = self.phantoms.get(model, 0) + 1
 
     def note(self, candidates: dict[str, str], final: str) -> None:
         """Move each model's trust a little toward how well it matched the final text."""
@@ -99,7 +115,8 @@ class Learning:
         if self._path is None:
             return
         with self._lock:
-            data = {"trust": self.trust, "heard": self.heard, "reconciled": self.reconciled, "rescued": self.rescued}
+            data = {"trust": self.trust, "heard": self.heard, "reconciled": self.reconciled, "rescued": self.rescued,
+                    "phantoms": self.phantoms}
         try:
             self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
@@ -150,6 +167,11 @@ def combine(candidates: dict[str, str], learning: Learning, reconcile: Generate 
     if not real:
         return "", "agreed"                       # nobody heard real speech
     if len(real) == 1:
+        if _bare(real[0]) in _FILLERS:
+            # Only one recognizer "heard" a lone filler like "Yeah": almost
+            # always noise. It also counts against that recognizer's trust.
+            learning.phantom(next(m for m in models if spoken[m] == real[0]))
+            return "", "filler"
         learning.rescued += 1                     # one caught what the others missed
         return real[0], "rescued"
     lowest = min(agreement(words(a), words(b)) for i, a in enumerate(real) for b in real[i + 1:])

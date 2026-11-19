@@ -567,9 +567,11 @@ def compare_page(store: Store, model: str, job: dict, hours: float, keep_days: i
             + "</form>"
         )
         if together.get("trust"):
-            parts.append("<table><tr><th>Recognizer</th><th>Trust, learned</th><th>Clips judged</th></tr>")
+            parts.append("<table><tr><th>Recognizer</th><th>Trust, learned</th><th>Clips judged</th>"
+                         "<th>Fillers heard in noise</th></tr>")
             for name, value in sorted(together["trust"].items(), key=lambda pair: -pair[1]):
-                parts.append(f'<tr><td>{_e(name)}</td><td>{value:.0%}</td><td>{together["heard"].get(name, 0)}</td></tr>')
+                parts.append(f'<tr><td>{_e(name)}</td><td>{value:.0%}</td><td>{together["heard"].get(name, 0)}</td>'
+                             f'<td>{together.get("phantoms", {}).get(name, 0)}</td></tr>')
             parts.append("</table>")
             parts.append(
                 f'<div class="dim">{together.get("rescued", 0)} clips where one caught speech the other missed · '
