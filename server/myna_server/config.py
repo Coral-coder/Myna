@@ -38,7 +38,7 @@ class Config:
     # Set once the faster default has been offered (so a model chosen by hand
     # is never changed again).
     upgraded_to: str = ""
-    llm_context: int = 8192
+    llm_context: int = 16384
     # Where each model runs: the writing model on "gpu", "shared" (split with
     # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
     llm_device: str = "shared"
@@ -98,11 +98,15 @@ class Config:
         else:
             config = cls()
         # One-time move to the faster default for anyone still on the old one.
-        if config.upgraded_to != "qwen3.6-mtp":
+        if config.upgraded_to == "":
             if config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf":
                 config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
                 config.llm_device = "shared"
             config.upgraded_to = "qwen3.6-mtp"
+        if config.upgraded_to == "qwen3.6-mtp":
+            # Long conversations didn't fit in 8192 and were refused (HTTP 400).
+            config.llm_context = max(config.llm_context, cls.llm_context)
+            config.upgraded_to = "context-16k"
         config.save(path)
         return config
 

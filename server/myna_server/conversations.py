@@ -277,9 +277,40 @@ def run_pending(store: Store, write: Generate, cheap: Generate | None, now: floa
         start, end = group[0]["at"], group[-1]["at"]
         progress(f"Writing up the conversation from {_clock(start)}…")
         songs = [song for song in store.browse("song", limit=300) if start - 60 <= song["at"] <= end + 60]
-        record = process(group, names, songs, known, owner, write, cheap, vocabulary(store))
+        try:
+            record = process(group, names, songs, known, owner, write, cheap, vocabulary(store))
+        except Exception as error:
+            # Keep it, marked, and move on to the next one; it can be retried.
+            spoken = " ".join(line.get("text", "") for line in group)
+            record = {"startedAt": start, "endedAt": end, "words": len(spoken.split()),
+                      "transcript": transcript_text(group, names)[:60000], "failed": str(error)[:300],
+                      "discarded": False, "title": "Couldn't write this up", "gist": "", "overview": "",
+                      "emoji": "", "category": "other", "sections": [], "actionItems": [], "events": [],
+                      "memories": [], "songs": []}
         store.sync(0, [{"kind": "conversation", "id": f"c-{int(start * 1000)}", "updated_at": now,
                         "deleted": False, "data": record}])
         known += [memory["content"] for memory in record["memories"]]
         handled += 1
     return handled
+
+
+def retry_failed(store: Store, write: Generate, cheap: Generate | None, now: float, owner: str = "") -> int:
+    """Write up again the conversations that failed before."""
+    failed = [row for row in store.browse("conversation", limit=500) if row.get("failed")]
+    names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
+    known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
+    redone = 0
+    for row in failed:
+        start, end = float(row.get("startedAt") or row["at"]), float(row.get("endedAt") or row["at"])
+        lines = [line for line in store.browse("utterance", limit=4000, before=end + 1) if line["at"] >= start - 1]
+        if not lines:
+            continue
+        lines.reverse()
+        songs = [song for song in store.browse("song", limit=300) if start - 60 <= song["at"] <= end + 60]
+        try:
+            record = process(lines, names, songs, known, owner, write, cheap, vocabulary(store))
+        except Exception:
+            continue
+        store.sync(0, [{"kind": "conversation", "id": row["id"], "updated_at": now, "deleted": False, "data": record}])
+        redone += 1
+    return redone

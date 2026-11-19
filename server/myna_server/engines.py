@@ -370,6 +370,16 @@ def cpu_threads(configured: int = 0) -> int:
     return max(2, min(8, (os.cpu_count() or 8) // 4))
 
 
+def fit_text(text: str, most: int) -> str:
+    """Shorten text to at most `most` characters, keeping its start and end
+    (where the question and the latest material usually are)."""
+    if len(text) <= most:
+        return text
+    head = most * 2 // 3
+    tail = most - head - 40
+    return text[:head] + "\n[… shortened to fit …]\n" + text[-max(tail, 0):]
+
+
 class Speeds:
     """How fast each writing model actually runs on this computer, measured
     from every real request (llama-server reports its own timings), and kept
@@ -709,6 +719,7 @@ class LlamaWriter:
 
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str:
         import json
+        import urllib.error
         import urllib.request
 
         if not self.chosen:
@@ -722,23 +733,40 @@ class LlamaWriter:
                 if not self._fall_back():
                     raise
             budget.touch(self._budget_key())
-            body = json.dumps(
-                {
-                    "messages": [
-                        {"role": "system", "content": instructions},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": 0.3,
-                }
-            ).encode()
-            request = urllib.request.Request(
-                f"http://127.0.0.1:{self._port}/v1/chat/completions",
-                data=body,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(request, timeout=600) as reply:
-                answer = json.loads(reply.read())
+            # Keep the request inside the model's context: roughly 3 characters
+            # per token, leaving room for the instructions and the answer.
+            context = int(self._config.llm_context)
+            max_tokens = max(64, min(max_tokens, context // 3))
+            room = max(2000, (context - max_tokens - 256) * 3 - len(instructions))
+            prompt = fit_text(prompt, room)
+            answer = None
+            for attempt in range(3):
+                body = json.dumps(
+                    {
+                        "messages": [
+                            {"role": "system", "content": instructions},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.3,
+                    }
+                ).encode()
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{self._port}/v1/chat/completions",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=600) as reply:
+                        answer = json.loads(reply.read())
+                    break
+                except urllib.error.HTTPError as error:
+                    detail = error.read().decode("utf-8", "replace")[:300]
+                    # Too long for the context after all: cut it further and try again.
+                    if error.code == 400 and attempt < 2 and re.search(r"context|exceed|too long|n_ctx", detail, re.I):
+                        prompt = fit_text(prompt, int(len(prompt) * 0.6))
+                        continue
+                    raise RuntimeError(f"the writing model refused the request ({error.code}): {detail}") from error
             speeds.record(self._file, self._device, answer.get("timings") or {})
             text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()

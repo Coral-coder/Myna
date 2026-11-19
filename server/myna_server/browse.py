@@ -133,7 +133,12 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
                 f'<div class="dim">{_e(row.get("detail"))}</div></div>'
             )
         elif kind == "conversation":
-            if row.get("discarded"):
+            if row.get("failed"):
+                parts.append(
+                    f'<div class="row"><span class="t">{clock}</span>Couldn\'t write this up ({row.get("words", 0)} words)'
+                    f'<div class="dim">{_e(row.get("failed"))} · <a href="/browse/conversation?id={quote(row["id"])}">see the transcript</a></div></div>'
+                )
+            elif row.get("discarded"):
                 parts.append(
                     f'<div class="row dim"><span class="t">{clock}</span>Discarded as not worth keeping '
                     f'({row.get("words", 0)} words) · <a href="/browse/conversation?id={quote(row["id"])}">see it</a></div>'
@@ -177,7 +182,7 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
             0,
             '<form method="post" action="/browse/conversations" style="margin:6px 0 4px">'
             '<button style="font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:7px 14px;'
-            'border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer">Write up what is waiting now</button></form>'
+            'border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer">Write up what is waiting, and retry failed ones</button></form>'
             f'<div class="dim">{_e(daily_status) or "A conversation is written up by itself two minutes after it ends."}</div>',
         )
     if kind == "daily":

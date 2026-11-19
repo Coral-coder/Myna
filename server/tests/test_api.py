@@ -941,3 +941,84 @@ def test_writing_speed_is_measured_from_real_requests(tmp_path, monkeypatch, stt
     assert Speeds().get("model.gguf")["requests"] == 2          # kept between runs
     measured.record("other.gguf", "gpu", {})                     # no timings: nothing recorded
     assert measured.get("other.gguf") == {}
+
+
+def test_long_requests_are_fitted_to_the_context_and_retried(monkeypatch):
+    import io
+    import json as js
+    import urllib.error
+    import urllib.request
+
+    from myna_server.engines import LlamaWriter, fit_text
+
+    assert fit_text("short", 100) == "short"
+    cut = fit_text("A" * 500 + "MIDDLE" + "Z" * 500, 300)
+    assert len(cut) <= 330 and cut.startswith("A") and cut.endswith("Z") and "MIDDLE" not in cut
+
+    writer = LlamaWriter(Config(token="x" * 20, llm_context=8192))
+    writer._ensure_running = lambda: None
+    sizes = []
+
+    def fake_urlopen(request, timeout=0):
+        prompt = js.loads(request.data)["messages"][1]["content"]
+        sizes.append(len(prompt))
+        if len(prompt) > 12000:
+            raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {},
+                                         io.BytesIO(b'{"error":"the request exceeds the available context size"}'))
+        return io.BytesIO(js.dumps({"choices": [{"message": {"content": "done"}}]}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert writer.generate("instructions", "x" * 100000, 1600) == "done"
+    assert sizes[0] < 100000 and sizes[-1] <= 12000          # shortened up front, then further on the refusal
+
+    def refuse(request, timeout=0):
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, io.BytesIO(b"invalid json in messages"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    try:
+        writer.generate("i", "p", 10)
+        raise AssertionError("expected a refusal")
+    except RuntimeError as error:
+        assert "invalid json in messages" in str(error)        # the reason is shown, not just "400"
+
+
+def test_a_conversation_that_fails_doesnt_hold_up_the_rest(stt):
+    import time as clock
+
+    base = float(int(clock.time()) - 9000)
+    calls = {"n": 0}
+
+    def model(instructions, prompt):
+        calls["n"] += 1
+        if "first one" in prompt and calls["n"] < 50:
+            raise RuntimeError("the writing model refused the request (400): too long")
+        return '{"title": "Second", "overview": "ok", "category": "work", "sections": [], "action_items": [], "events": []}'
+
+    writer = Recorder("big", model)
+    app = create_app(Config(token="secret-token"), stt, writer)
+    client = TestClient(app)
+    words = " ".join(["word"] * 120)
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "this is the first one " + words, "heardAt": base}, 1),
+        change("utterance", "u2", {"text": "and the second " + words, "heardAt": base + 1000}, 1),
+    ]})
+    assert app.state.run_conversations(10) == 2
+    page = client.get("/browse?kind=conversation", headers=AUTH).text
+    assert "t write this up (" in page and "too long" in page and "Second" in page
+    calls["n"] = 100                                          # the model works now: the button retries it
+    client.post("/browse/conversations", headers=AUTH, follow_redirects=False)
+    for _ in range(40):
+        if "t write this up (" not in client.get("/browse?kind=conversation", headers=AUTH).text:
+            break
+        clock.sleep(0.05)
+    assert "t write this up (" not in client.get("/browse?kind=conversation", headers=AUTH).text
+
+
+def test_existing_setups_get_the_larger_context_once(tmp_path):
+    import json as js
+
+    path = tmp_path / "config.json"
+    path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "qwen3.6-mtp", "llm_context": 8192,
+                              "llm_file": "phi-4-Q4_K_M.gguf"}))
+    config = Config.load(path)
+    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "context-16k"

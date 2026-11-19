@@ -604,6 +604,9 @@ def create_app(
             cheap = helper.generate if chosen(helper) else None
             handled = conversations.run_pending(store, writer.generate, cheap, time.time(), config.owner_name,
                                                 most, progress)
+            if most > 2:  # the button: also try again the ones that failed before
+                progress("Trying again the conversations that failed…")
+                handled += conversations.retry_failed(store, writer.generate, cheap, time.time(), config.owner_name)
             if handled:
                 talk_state["status"] = f"Wrote up {handled} conversation{'s' if handled != 1 else ''} at {time.strftime('%H:%M')}."
             return handled
