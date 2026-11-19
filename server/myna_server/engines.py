@@ -152,6 +152,8 @@ class WhisperTranscriber:
         self.hotwords = ""
         # The main recognizer is never unloaded to make room for another model.
         self.essential = False
+        self.placed_because = ""
+        self._move = False   # placed automatically again before the next clip
 
     def _budget_key(self) -> str:
         return f"{self.name}@{id(self)}"
@@ -246,6 +248,10 @@ class WhisperTranscriber:
         crashed_before = mark.exists()
         try:
             wants_cpu = self._config.stt_device == "cpu"
+            self.placed_because = ""
+            if self._config.stt_device == "auto" and not crashed_before:
+                choice, self.placed_because = choose_speech_device(self._model_name, size)
+                wants_cpu = choice == "cpu"
             try:
                 if wants_cpu:
                     raise RuntimeError("processor chosen")
@@ -260,7 +266,7 @@ class WhisperTranscriber:
                                                download_root=cache)
                 mark.unlink(missing_ok=True)
                 self.device = "cuda"
-                self.status = "Ready on the graphics card"
+                self.status = "Ready on the graphics card" + self._because()
             except Exception:
                 if not crashed_before:
                     mark.unlink(missing_ok=True)
@@ -269,7 +275,7 @@ class WhisperTranscriber:
                     self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8",
                                                download_root=cache)
                 self.device = "cpu"
-                why = "" if wants_cpu else (
+                why = self._because() if wants_cpu else (
                     " (loading on the graphics card crashed the server earlier; choose Graphics card again on the Models tab to retry)"
                     if crashed_before else " (the graphics card couldn't be used)"
                 )
@@ -281,11 +287,22 @@ class WhisperTranscriber:
                         self._unload_for_room, keep=self.essential)
         return self._model
 
+    def _because(self) -> str:
+        return f" (placed automatically: {self.placed_because})" if self.placed_because else ""
+
     def transcribe(self, samples: np.ndarray) -> str:
+        import time
+
         from .memory import budget
 
         with self._lock:
+            if self._move and self._model is not None and not self._model_name.startswith("sherpa:"):
+                # Measured enough to compare: load it again where it should run.
+                self._move = False
+                budget.forget(self._budget_key())
+                self._model = None
             model = self._load()
+            began = time.perf_counter()
             budget.touch(self._budget_key())
             if self._model_name.startswith("sherpa:"):
                 from .sidecar import helper
@@ -313,7 +330,16 @@ class WhisperTranscriber:
                 hallucination_silence_threshold=2.0,
                 hotwords=self.hotwords or None,
             )
-            return " ".join(keep_segments(segments)).strip()
+            text = " ".join(keep_segments(segments)).strip()
+            if samples.size >= 16000 * 2:
+                speeds.record_speech(self._model_name, "gpu" if self.device == "cuda" else "cpu",
+                                     samples.size / 16000, time.perf_counter() - began)
+                if self._config.stt_device == "auto":
+                    from .memory import WHISPER_GB
+
+                    best, _ = choose_speech_device(self._model_name, WHISPER_GB.get(self._model_name, 2.0) * 1024 ** 3)
+                    self._move = best != ("gpu" if self.device == "cuda" else "cpu")
+            return text
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -429,6 +455,10 @@ class Speeds:
                 row["accepted"] = row.get("accepted", accepted / drafted) * mix + (accepted / drafted) * (1 - mix)
             row["requests"] += 1
             row["device"] = device
+            mine = row.setdefault("by_device", {}).setdefault(device, {"writing": writing, "requests": 0})
+            mix = 0.7 if mine["requests"] else 0.0
+            mine["writing"] = mine["writing"] * mix + writing * (1 - mix)
+            mine["requests"] += 1
             try:
                 self._path().write_text(json.dumps(self.table, indent=1), encoding="utf-8")
             except OSError:
@@ -440,7 +470,109 @@ class Speeds:
             return dict(self.table.get(model_file) or {})
 
 
+    def record_speech(self, model: str, device: str, audio_seconds: float, took: float) -> None:
+        """How many seconds of audio a recognizer gets through per second."""
+        if took <= 0:
+            return
+        pace = audio_seconds / took
+        with self._lock:
+            self._load()
+            row = self.table.setdefault(f"speech:{model}", {})
+            mine = row.setdefault("by_device", {}).setdefault(device, {"writing": pace, "requests": 0})
+            mix = 0.8 if mine["requests"] else 0.0
+            mine["writing"] = mine["writing"] * mix + pace * (1 - mix)
+            mine["requests"] += 1
+            if mine["requests"] % 5 == 1:
+                try:
+                    self._path().write_text(json.dumps(self.table, indent=1), encoding="utf-8")
+                except OSError:
+                    pass
+
+    def settled(self, key: str, device: str | None = None) -> str:
+        """Where a model was placed for good once measured in both places
+        (kept, so it doesn't move back and forth); `device` sets it."""
+        with self._lock:
+            self._load()
+            row = self.table.setdefault(key, {})
+            if device is not None:
+                row["settled"] = device
+                try:
+                    self._path().write_text(json.dumps(self.table, indent=1), encoding="utf-8")
+                except OSError:
+                    pass
+            return str(row.get("settled") or "")
+
+    def on(self, model_file: str, device: str) -> tuple[float, int]:
+        """(words per second, requests measured) for a model on one device."""
+        mine = (self.get(model_file).get("by_device") or {}).get(device) or {}
+        return float(mine.get("writing") or 0.0), int(mine.get("requests") or 0)
+
+
 speeds = Speeds()
+
+# A job model this fast on the processor stays there, leaving the graphics
+# card to the main model. (Words per second; replies are short.)
+FAST_ENOUGH_ON_CPU = 25.0
+MEASURE_FIRST = 3   # requests measured on one device before trying the other
+
+
+# A recognizer this fast on the processor (seconds of audio per second) stays
+# there, leaving the graphics card to the writing models.
+FAST_ENOUGH_SPEECH_ON_CPU = 12.0
+MEASURE_SPEECH_FIRST = 5
+
+
+def choose_speech_device(model: str, size: float) -> tuple[str, str]:
+    """Where an automatically placed Whisper recognizer runs ("cpu" or "gpu"), and why."""
+    key = f"speech:{model}"
+    cpu, cpu_n = speeds.on(key, "cpu")
+    gpu, gpu_n = speeds.on(key, "gpu")
+    if cpu_n >= MEASURE_SPEECH_FIRST and gpu_n >= MEASURE_SPEECH_FIRST:
+        why = f"{cpu:.0f}x real time on the processor, {gpu:.0f}x on the graphics card"
+        best = speeds.settled(key) or speeds.settled(
+            key, "cpu" if cpu >= 0.6 * gpu or cpu >= FAST_ENOUGH_SPEECH_ON_CPU else "gpu")
+        return best, why
+    if size > 2.2 * 1024 ** 3:
+        return "gpu", "too big to run well on the processor"
+    if gpu_n >= MEASURE_SPEECH_FIRST:
+        return "cpu", f"{gpu:.0f}x real time on the graphics card; trying the processor to compare"
+    if cpu_n >= MEASURE_SPEECH_FIRST:
+        return "gpu", f"{cpu:.0f}x real time on the processor; trying the graphics card to compare"
+    return "gpu", "measuring its speed"
+
+
+def choose_device(role: str, model_file: str, size: float, moe: bool, card_total: float | None) -> tuple[str, str]:
+    """Where an automatically placed model runs: "cpu", "gpu" or "shared"
+    (bigger than the card), and why, in words.
+
+    Each model is measured where it first runs, then tried once on the other,
+    and kept on the processor when it is nearly as fast there (or fast enough
+    for a short job), else on the graphics card."""
+    GB = 1024 ** 3
+    fits_card = size <= (card_total or 12 * GB) - 1.5 * GB
+    card = "gpu" if fits_card else "shared"
+    # The processor is worth trying for small models, and for mixture-of-experts
+    # models (few parameters work per word), except as the main model.
+    cpu_worth = size <= 8 * GB or (moe and role != "llm")
+    cpu, cpu_n = speeds.on(model_file, "cpu")
+    gpu, gpu_n = speeds.on(model_file, card)
+    place = "graphics card" if card == "gpu" else "graphics card and processor together"
+    if cpu_n >= MEASURE_FIRST and gpu_n >= MEASURE_FIRST:
+        good_enough = cpu >= 0.75 * gpu or (role != "llm" and cpu >= FAST_ENOUGH_ON_CPU)
+        why = f"measured {cpu:.0f} words/s on the processor, {gpu:.0f} on the {place}"
+        key = f"{model_file}|{role}"
+        best = speeds.settled(key) or speeds.settled(key, "cpu" if good_enough else card)
+        return (card if best != "cpu" else "cpu"), why
+    if not cpu_worth:
+        return card, "too big to run well on the processor"
+    if cpu_n >= MEASURE_FIRST:
+        return card, f"{cpu:.0f} words/s on the processor; trying the {place} to compare"
+    if gpu_n >= MEASURE_FIRST:
+        return "cpu", f"{gpu:.0f} words/s on the {place}; trying the processor to compare"
+    # Not measured yet: small job models start on the processor.
+    if role != "llm" and size <= 3 * GB:
+        return "cpu", "small model; measuring its speed"
+    return card, "measuring its speed"
 
 
 # The writing-model jobs, in order: a job whose model is the same file as an
@@ -465,6 +597,10 @@ class LlamaWriter:
         self._process = None
         self._lock = threading.Lock()
         self.status = "Not loaded yet" if self._file else "Not chosen"
+        self.running_on = ""      # where the runner actually is
+        self.placed_because = ""  # why, when placed automatically
+        self._move = False        # place it again before the next request
+        self._loaded_bytes = 0.0
         _WRITERS[role] = self
 
     def _twin(self) -> "LlamaWriter | None":
@@ -564,7 +700,7 @@ class LlamaWriter:
         failed = f"{self._file} couldn't load ({self.status.removeprefix('Couldn' + chr(39) + 't load: ')[:200]})"
         setattr(self._config, f"{self._role}_repo", repo)
         setattr(self._config, f"{self._role}_file", file)
-        setattr(self._config, f"{self._role}_device", "gpu")
+        setattr(self._config, f"{self._role}_device", "auto")
         self.name = file.removesuffix(".gguf")
         try:
             self._config.save()
@@ -698,6 +834,11 @@ class LlamaWriter:
             device = self._device
             size = file_size(model) + 1.0 * GB * max(1.0, self._config.llm_context / 8192)
             key = self._budget_key()
+            self.placed_because = ""
+            if device == "auto":
+                card = budget.reading("gpu")
+                device, self.placed_because = choose_device(self._role, self._file, size, is_moe(self._file),
+                                                            card[1] if card else None)
             # Make room first, unloading idle models if needed. If the card
             # still can't take it, share it with the processor instead.
             if device == "gpu" and not budget.make_room(key, "gpu", size):
@@ -707,6 +848,8 @@ class LlamaWriter:
             if device == "shared":
                 # Free idle models off the card so the fitting can use more of it.
                 budget.make_room(key, "gpu", min(size, 9 * GB))
+            self.running_on = device
+            self._loaded_bytes = size
             arguments = runner_args(device, model, self._config.llm_context, self._port,
                                     cpu_threads(getattr(self._config, "cpu_threads", 0)),
                                     mtp="mtp" in self._repo.lower(), embedding=self._role == "embedder")
@@ -742,7 +885,8 @@ class LlamaWriter:
                                 where = {"gpu": "the graphics card", "cpu": "the processor"}.get(
                                     device, "the graphics card and processor together"
                                 )
-                                self.status = f"Ready on {where}"
+                                self.status = f"Ready on {where}" + (
+                                    f" (placed automatically: {self.placed_because})" if self.placed_because else "")
                                 budget.register(key, "gpu" if device == "gpu" else "ram", size,
                                                 self._unload_for_room, keep=self._role == "checker")
                                 return
@@ -789,6 +933,9 @@ class LlamaWriter:
         from .memory import budget
 
         with self._lock:
+            if self._move and self._process is not None:
+                self._move = False
+                self._stop()   # placed again (automatically) as it starts
             try:
                 self._ensure_running()
             except Exception:
@@ -829,7 +976,16 @@ class LlamaWriter:
                         prompt = fit_text(prompt, int(len(prompt) * 0.6))
                         continue
                     raise RuntimeError(f"the writing model refused the request ({error.code}): {detail}") from error
-            speeds.record(self._file, self._device, answer.get("timings") or {})
+            speeds.record(self._file, self.running_on or self._device, answer.get("timings") or {})
+            if self._device == "auto" and self._role != "embedder":
+                # Measured enough here to compare? Then place it again (on the
+                # other device to try it, or where it is best) before the next request.
+                from .memory import budget
+
+                card = budget.reading("gpu")
+                best, _ = choose_device(self._role, self._file, self._loaded_bytes, is_moe(self._file),
+                                        card[1] if card else None)
+                self._move = best != self.running_on
             text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()
 

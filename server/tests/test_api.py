@@ -441,7 +441,7 @@ def test_models_page_assigns_jobs_to_models(stt):
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
                 data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
     assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("Qwen3.6")
-    assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "shared"  # too big for the card
+    assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "auto"  # placed automatically
     page = client.get("/browse/models", headers=AUTH).text
     assert "HELPER" in page and "SUMMARY" in page and "Stop using" in page
     client.post("/browse/models", headers=AUTH, data={"clear": "helper"}, follow_redirects=False)
@@ -909,7 +909,7 @@ def test_old_default_moves_to_the_faster_model_once_and_falls_back_if_it_cannot_
     path.write_text(js.dumps({"token": "x" * 20, "llm_repo": "google/gemma-4-12B-it-qat-q4_0-gguf",
                               "llm_file": "gemma-4-12b-it-qat-q4_0.gguf", "llm_device": "gpu"}))
     config = Config.load(path)
-    assert config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" and config.llm_device == "shared"
+    assert config.llm_file == "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" and config.llm_device == "auto"
     # A model chosen by hand afterwards is never moved again.
     config.llm_file = "phi-4-Q4_K_M.gguf"
     config.save(path)
@@ -1026,7 +1026,7 @@ def test_existing_setups_get_the_larger_context_once(tmp_path):
     path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "qwen3.6-mtp", "llm_context": 8192,
                               "llm_file": "phi-4-Q4_K_M.gguf"}))
     config = Config.load(path)
-    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "context-16k"
+    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "auto-devices"
 
 
 def test_a_lone_yeah_from_one_recognizer_is_dropped():
@@ -1202,3 +1202,33 @@ def test_a_model_used_for_two_jobs_is_loaded_once():
     assert "loaded once" in helper.status
     config.helper_file = "something-else.gguf"
     assert helper._twin() is None
+
+
+
+def test_models_are_placed_by_measured_speed(tmp_path, monkeypatch):
+    from myna_server import engines
+
+    monkeypatch.setattr(engines, "data_dir", lambda: tmp_path)
+    table = engines.Speeds()
+    monkeypatch.setattr(engines, "speeds", table)
+    GB = 1024 ** 3
+    # Unmeasured: a small job model starts on the processor, the main model on the card.
+    assert engines.choose_device("checker", "small.gguf", 1.5 * GB, False, 12 * GB)[0] == "cpu"
+    assert engines.choose_device("llm", "mid.gguf", 7 * GB, False, 12 * GB)[0] == "gpu"
+    assert engines.choose_device("llm", "huge-A3B.gguf", 23 * GB, True, 12 * GB)[0] == "shared"
+    # Measured on the card: tried on the processor next, then kept where it is best.
+    for _ in range(3):
+        table.record("mid.gguf", "gpu", {"predicted_per_second": 60})
+    assert engines.choose_device("helper", "mid.gguf", 7 * GB, False, 12 * GB)[0] == "cpu"
+    for _ in range(3):
+        table.record("mid.gguf", "cpu", {"predicted_per_second": 30})
+    assert engines.choose_device("helper", "mid.gguf", 7 * GB, False, 12 * GB)[0] == "cpu"   # fast enough for a job
+    assert engines.choose_device("llm", "mid.gguf", 7 * GB, False, 12 * GB)[0] == "gpu"      # the main model wants speed
+    # Speech: Whisper measured in seconds of audio per second.
+    for _ in range(5):
+        table.record_speech("small.en", "gpu", 10, 0.2)
+    assert engines.choose_speech_device("small.en", 0.9 * GB)[0] == "cpu"   # try the processor
+    for _ in range(5):
+        table.record_speech("small.en", "cpu", 10, 0.5)
+    assert engines.choose_speech_device("small.en", 0.9 * GB)[0] == "cpu"   # 20x real time: fast enough
+    assert engines.choose_speech_device("large-v3", 3.6 * GB)[0] == "gpu"

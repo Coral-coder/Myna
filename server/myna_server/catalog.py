@@ -86,12 +86,16 @@ WRITING = (
 
 # Where a model runs.
 LLM_DEVICES = (
+    ("auto", "Automatic", "Measures this model on the processor and on the graphics card and keeps it on the "
+                          "processor when it is fast enough there, leaving the card to the others."),
     ("gpu", "Graphics card", "Fastest. The whole model must fit in the card's 12 GB."),
     ("shared", "Shared", "As much as fits on the graphics card, the rest on the processor. For models bigger than the card."),
     ("cpu", "Processor", "Leaves the graphics card alone. Any size that fits in memory; slower."),
 )
 STT_DEVICES = (
-    ("auto", "Graphics card", "Fastest."),
+    ("auto", "Automatic", "Measures each recognizer on the processor and on the graphics card and keeps it on the "
+                          "processor when it is fast enough there. (Whisper only; the others always run on the processor.)"),
+    ("gpu", "Graphics card", "Fastest for the big Whisper models."),
     ("cpu", "Processor", "Leaves the graphics card free for a bigger writing model."),
 )
 

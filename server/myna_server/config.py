@@ -41,7 +41,7 @@ class Config:
     llm_context: int = 16384
     # Where each model runs: the writing model on "gpu", "shared" (split with
     # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
-    llm_device: str = "shared"
+    llm_device: str = "auto"
     # Threads for model work on the processor. 0 = the fast cores (8 on an i9-14900K).
     cpu_threads: int = 0
     stt_device: str = "auto"
@@ -49,11 +49,11 @@ class Config:
     # matters, so the main model gets the relevant part. Empty = not used.
     helper_repo: str = ""
     helper_file: str = ""
-    helper_device: str = "cpu"
+    helper_device: str = "auto"
     # The model that writes the end-of-day summary. Empty = the main model.
     summary_repo: str = ""
     summary_file: str = ""
-    summary_device: str = "gpu"
+    summary_device: str = "auto"
     # Write the day's summary once nothing has been heard for this long.
     daily_summary: bool = True
     idle_minutes: int = 45
@@ -80,13 +80,13 @@ class Config:
     # as sentences and settles disagreements. Runs on the processor.
     checker_repo: str = "bartowski/Qwen_Qwen3-1.7B-GGUF"
     checker_file: str = "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
-    checker_device: str = "cpu"
+    checker_device: str = "auto"
     # A small model that turns text into meaning-vectors, so Ask can find a
     # conversation by what it was about, not only by matching words (as
     # Omi's search does). Runs on the processor.
     embedder_repo: str = "Qwen/Qwen3-Embedding-0.6B-GGUF"
     embedder_file: str = "Qwen3-Embedding-0.6B-Q8_0.gguf"
-    embedder_device: str = "cpu"
+    embedder_device: str = "auto"
     # Skip clips the speech detector finds no speech in (Omi gates its
     # recognizers the same way). The bar is low so far-away speech passes.
     speech_gate: bool = True
@@ -116,6 +116,13 @@ class Config:
             # Long conversations didn't fit in 8192 and were refused (HTTP 400).
             config.llm_context = max(config.llm_context, cls.llm_context)
             config.upgraded_to = "context-16k"
+        if config.upgraded_to == "context-16k":
+            # Every model is now placed automatically (processor or graphics
+            # card, by measured speed) unless chosen by hand afterwards.
+            for role in ("llm", "helper", "summary", "checker", "embedder"):
+                setattr(config, f"{role}_device", "auto")
+            config.stt_device = "auto"
+            config.upgraded_to = "auto-devices"
         config.save(path)
         return config
 
