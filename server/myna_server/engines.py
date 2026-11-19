@@ -329,30 +329,32 @@ def is_moe(model_file: str) -> bool:
     return bool(re.search(r"A\d+B|gpt-oss|moe|mixtral", model_file, re.IGNORECASE))
 
 
-def runner_args(device: str, model: str, context: int, port: int, threads: int) -> list[str]:
-    """llama-server's options for where a model runs.
+def runner_args(device: str, model: str, context: int, port: int, threads: int, mtp: bool = False) -> list[str]:
+    """llama-server's options for where a model runs. Only options this
+    llama.cpp build (b12400) accepts; an unknown one stops the model loading.
 
     gpu: everything on the card.
-    shared: as much as the card takes, the rest in the computer's memory. Only
-    small intermediate results cross between the two for each word; the slow
-    part is the processor working through its share, so the options here are
-    about that: the weights are read fully into memory and pinned there (no
-    reading back from disk or paging mid-answer), and the work runs on the
-    fast cores only. For a mixture-of-experts model the split is made by kind
-    instead of by layer: the parts every word uses stay on the card and only
-    the experts, few of which work on any one word, sit in memory. That is the
-    fastest way to run such a model bigger than the card.
-    cpu: everything on the processor, with the same memory options.
+    shared: llama.cpp's own fitting decides the split (it is on by default and
+    only works while the layers are left unset): as much as fits on the card,
+    and for a mixture-of-experts model the overflow is the expert weights,
+    which sit in memory while everything every word uses stays on the card.
+    The model is read fully into memory (no memory-mapping, so nothing is
+    paged back in from disk mid-answer) and the processor's share runs on the
+    fast cores only.
+    cpu: everything on the processor, read fully into memory.
     """
-    args = ["-m", model, "-c", str(context), "--host", "127.0.0.1", "--port", str(port)]
+    args = ["-m", model, "-c", str(context), "--host", "127.0.0.1", "--port", str(port),
+            # Notes and answers don't need the model's visible "thinking"; it only costs time.
+            "--reasoning", "off"]
+    if mtp:
+        # The model drafts the next words with its own built-in head and checks them in one pass.
+        args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
     if device == "gpu":
         return args + ["-ngl", "999"]
-    args += ["--no-mmap", "--mlock", "-t", str(threads)]
+    args += ["-lm", "none", "-t", str(threads)]
     if device == "cpu":
         return args + ["-ngl", "0"]
-    if is_moe(Path(model).name):
-        return args + ["-ngl", "999", "-ot", r"\.ffn_.*_exps\.=CPU"]
-    return args  # llama.cpp fits as many layers on the card as there is room for
+    return args
 
 
 def cpu_threads(configured: int = 0) -> int:
