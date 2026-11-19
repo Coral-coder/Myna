@@ -172,6 +172,11 @@ def download_speech(state: State, repo: str) -> None:
     state["note"] = f"Downloading the model ({total / 1e9:.2f} GB)…"
     threading.Thread(target=report, daemon=True).start()
     try:
+        try:
+            snapshot_download(repo, cache_dir=str(cache), allow_patterns=_WHISPER_FILES, local_files_only=True)
+            return   # already cached
+        except Exception:
+            pass
         snapshot_download(repo, cache_dir=str(cache), allow_patterns=_WHISPER_FILES)
     finally:
         done.set()

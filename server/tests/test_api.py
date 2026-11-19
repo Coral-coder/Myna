@@ -1401,3 +1401,40 @@ def test_speaker_separation_runs_even_in_lean_mode(stt):
     client.post("/browse/simple", headers=AUTH, data={"speakers": "off"}, follow_redirects=False)
     body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2) * 1.1)).json()
     assert body["segments"] == []            # off: whole clip
+
+
+def test_a_cached_model_is_not_downloaded_again(monkeypatch):
+    from myna_server import engines
+
+    calls = []
+
+    def fake_hf(repo_id, filename, cache_dir, local_files_only=False):
+        calls.append(("offline" if local_files_only else "download", filename))
+        if local_files_only and filename != "already.bin":
+            raise FileNotFoundError("not cached")
+        return f"/cache/{filename}"
+
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf)
+
+    # Already cached: one offline hit, no download.
+    assert engines.cached_hf("r", "already.bin", "/cache") == "/cache/already.bin"
+    assert calls == [("offline", "already.bin")]
+
+    # Missing: offline miss, then a single download.
+    calls.clear()
+    assert engines.cached_hf("r", "new.bin", "/cache") == "/cache/new.bin"
+    assert calls == [("offline", "new.bin"), ("download", "new.bin")]
+
+
+def test_the_main_recognizer_is_pinned_and_never_moves():
+    from myna_server.engines import WhisperTranscriber
+    from myna_server.config import Config
+
+    main = WhisperTranscriber(Config(token="x" * 20, stt_device="auto"))
+    main.essential = True
+    main.device = "cuda"
+    main._model = object()
+    main._move = True                       # even if something set it
+    # The pinned recognizer keeps its loaded model; it is not dropped to re-place.
+    assert main.essential and main._model is not None

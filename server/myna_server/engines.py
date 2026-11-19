@@ -106,8 +106,37 @@ def keep_segments(segments) -> list[str]:
     return kept
 
 
+def _whisper_cached(model_name: str, cache: str) -> bool:
+    """Whether a faster-whisper model is already downloaded, so it can load
+    from disk with no network call."""
+    from pathlib import Path
+
+    root = Path(cache)
+    if not root.exists():
+        return False
+    needle = model_name.replace("/", "--").lower()
+    for entry in root.glob("models--*"):
+        if needle in entry.name.lower() and any(entry.glob("snapshots/*/model.bin")):
+            return True
+    return False
+
+
 def _speech_name(model: str) -> str:
     return model.removeprefix("sherpa:") if model.startswith("sherpa:") else f"whisper-{model}"
+
+
+def cached_hf(repo: str, filename: str, cache: str, report=None) -> str:
+    """The local path to a model file, downloading it only if it isn't already
+    cached. Tries the cache first (no network), so a model is never downloaded
+    twice and loads instantly when it's already here."""
+    from huggingface_hub import hf_hub_download
+
+    try:
+        return hf_hub_download(repo_id=repo, filename=filename, cache_dir=cache, local_files_only=True)
+    except Exception:
+        if report:
+            report(f"Downloading {filename}…")
+        return hf_hub_download(repo_id=repo, filename=filename, cache_dir=cache)
 
 
 def fetch_sherpa(key: str, report=lambda text: None) -> None:
@@ -119,8 +148,8 @@ def fetch_sherpa(key: str, report=lambda text: None) -> None:
     _, repo, files, _ = SHERPA[key]
     cache = str(data_dir() / "models" / "sherpa")
     for index, name in enumerate(files):
-        report(f"Downloading {key} ({index + 1} of {len(files)})…")
-        hf_hub_download(repo_id=repo, filename=name, cache_dir=cache)
+        report(f"Model {key}: file {index + 1} of {len(files)}…")
+        cached_hf(repo, name, cache, report)
 
 
 def load_sherpa(key: str, report=lambda text: None):
@@ -134,8 +163,8 @@ def load_sherpa(key: str, report=lambda text: None):
     cache = str(data_dir() / "models" / "sherpa")
     paths = []
     for index, name in enumerate(files):
-        report(f"Downloading {key} ({index + 1} of {len(files)})…")
-        paths.append(hf_hub_download(repo_id=repo, filename=name, cache_dir=cache))
+        report(f"Model {key}: file {index + 1} of {len(files)}…")
+        paths.append(cached_hf(repo, name, cache, report))
     report("Loading…")
     threads = max(2, min(8, (os.cpu_count() or 4) // 2))
     make = sherpa_onnx.OfflineRecognizer
@@ -279,6 +308,8 @@ class WhisperTranscriber:
         self.status = "Downloading and loading…"
         size = WHISPER_GB.get(self._model_name, 2.0) * GB
         cache = str(data_dir() / "models" / "whisper")
+        # Already downloaded? Load it from disk only (no network, no re-download).
+        offline = _whisper_cached(self._model_name, cache)
         # If loading onto the graphics card killed the worker last time, the
         # mark below is still there: use the processor instead of crashing again.
         mark = data_dir() / "loading-whisper-on-gpu"
@@ -300,7 +331,7 @@ class WhisperTranscriber:
                 mark.write_text("1")
                 with budget.loading:
                     self._model = WhisperModel(self._model_name, device="cuda", compute_type="float16",
-                                               download_root=cache)
+                                               download_root=cache, local_files_only=offline)
                 mark.unlink(missing_ok=True)
                 self.device = "cuda"
                 self.status = "Ready on the graphics card" + self._because()
@@ -310,7 +341,7 @@ class WhisperTranscriber:
                 budget.make_room(self._budget_key(), "ram", size)
                 with budget.loading:
                     self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8",
-                                               download_root=cache)
+                                               download_root=cache, local_files_only=offline)
                 self.device = "cpu"
                 why = self._because() if wants_cpu else (
                     " (loading on the graphics card crashed the server earlier; choose Graphics card again on the Models tab to retry)"
@@ -333,8 +364,10 @@ class WhisperTranscriber:
         from .memory import budget
 
         with self._lock:
-            if self._move and self._model is not None and not self._model_name.startswith("sherpa:"):
+            if self._move and not self.essential and self._model is not None and not self._model_name.startswith("sherpa:"):
                 # Measured enough to compare: load it again where it should run.
+                # The main recognizer is pinned — it never moves, so it never
+                # unloads to re-place itself.
                 self._move = False
                 budget.forget(self._budget_key())
                 self._model = None
@@ -370,7 +403,7 @@ class WhisperTranscriber:
             if samples.size >= 16000 * 2:
                 speeds.record_speech(self._model_name, "gpu" if self.device == "cuda" else "cpu",
                                      samples.size / 16000, time.perf_counter() - began)
-                if self._config.stt_device == "auto":
+                if self._config.stt_device == "auto" and not self.essential:
                     from .memory import WHISPER_GB
 
                     best, _ = choose_speech_device(self._model_name, WHISPER_GB.get(self._model_name, 2.0) * 1024 ** 3)
@@ -819,6 +852,11 @@ class LlamaWriter:
 
         cache = data_dir() / "models" / "llm"
         repo, file = self._repo, self._file
+        # Already downloaded? Use it straight away — no network, no re-download.
+        try:
+            return hf_hub_download(repo_id=repo, filename=file, cache_dir=str(cache), local_files_only=True)
+        except Exception:
+            pass
         total = 0
         try:
             total = get_hf_file_metadata(hf_hub_url(repo, file)).size or 0
@@ -1112,10 +1150,11 @@ class VoicesLocal:
         self.status = "Downloading the voice models…"
         try:
             voice = self._voice_model()
-            segmentation = hf_hub_download(
-                repo_id="csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", filename="model.onnx",
-                cache_dir=str(data_dir() / "models" / "voices"),
-            )
+            seg_repo, seg_cache = "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", str(data_dir() / "models" / "voices")
+            try:
+                segmentation = hf_hub_download(repo_id=seg_repo, filename="model.onnx", cache_dir=seg_cache, local_files_only=True)
+            except Exception:
+                segmentation = hf_hub_download(repo_id=seg_repo, filename="model.onnx", cache_dir=seg_cache)
             threads = max(2, min(8, (os.cpu_count() or 4) // 2))
             embedding = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=voice, num_threads=threads)
             self._splitter = sherpa_onnx.OfflineSpeakerDiarization(
