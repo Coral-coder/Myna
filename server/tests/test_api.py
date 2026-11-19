@@ -1189,3 +1189,16 @@ def test_the_same_line_is_not_given_twice(client, stt):
     overlap = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000) * 2)).json()
     assert first["text"] and again["text"] == first["text"]     # a resend gets the same answer
     assert overlap["text"] == ""                                 # overlapping audio: not twice
+
+
+def test_a_model_used_for_two_jobs_is_loaded_once():
+    from myna_server.engines import LlamaWriter
+
+    config = Config(token="secret-token")
+    config.helper_repo, config.helper_file = config.llm_repo, config.llm_file
+    main, helper = LlamaWriter(config, "llm"), LlamaWriter(config, "helper")
+    main.generate = lambda instructions, prompt, most: "from the main runner"
+    assert helper.generate("i", "p", 5) == "from the main runner"
+    assert "loaded once" in helper.status
+    config.helper_file = "something-else.gguf"
+    assert helper._twin() is None

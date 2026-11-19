@@ -443,6 +443,13 @@ class Speeds:
 speeds = Speeds()
 
 
+# The writing-model jobs, in order: a job whose model is the same file as an
+# earlier job's uses that one's runner, so the model is loaded once.
+_SHARE_ORDER = ("llm", "helper", "summary", "checker")
+_WRITERS: dict[str, "LlamaWriter"] = {}
+_ROLE_NAMES = {"llm": "Main", "helper": "Helper", "summary": "Summary", "checker": "Checker"}
+
+
 class LlamaWriter:
     """A GGUF language model served by llama.cpp's `llama-server`, run beside
     this process and spoken to over localhost."""
@@ -458,6 +465,25 @@ class LlamaWriter:
         self._process = None
         self._lock = threading.Lock()
         self.status = "Not loaded yet" if self._file else "Not chosen"
+        _WRITERS[role] = self
+
+    def _twin(self) -> "LlamaWriter | None":
+        """An earlier job running the same model file, whose runner this job uses."""
+        if self._role not in _SHARE_ORDER or not self.chosen:
+            return None
+        for role in _SHARE_ORDER[: _SHARE_ORDER.index(self._role)]:
+            other = _WRITERS.get(role)
+            if other is not None and other._config is self._config and other.chosen \
+                    and (other._repo, other._file) == (self._repo, self._file):
+                return other
+        return None
+
+    def _shared(self, twin: "LlamaWriter") -> None:
+        """Using `twin`'s runner: free this job's own copy if one is loaded."""
+        if self._process is not None:
+            with self._lock:
+                self._stop()
+        self.status = f"Same model as {_ROLE_NAMES.get(twin._role, twin._role)}: loaded once, shared"
 
     @property
     def _repo(self) -> str:
@@ -517,6 +543,10 @@ class LlamaWriter:
     def warm(self) -> None:
         """Download and load the model now, so the first request doesn't wait."""
         if not self.chosen:
+            return
+        twin = self._twin()
+        if twin is not None:
+            self._shared(twin)
             return
         with self._lock:
             try:
@@ -746,6 +776,10 @@ class LlamaWriter:
         return [row["embedding"] for row in rows]
 
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str:
+        twin = self._twin()
+        if twin is not None:
+            self._shared(twin)
+            return twin.generate(instructions, prompt, max_tokens)
         import json
         import urllib.error
         import urllib.request
