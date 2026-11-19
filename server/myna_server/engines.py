@@ -324,6 +324,46 @@ LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794}
 _strays_cleared = False
 
 
+def is_moe(model_file: str) -> bool:
+    """A mixture-of-experts model: only a small part of it works on each word."""
+    return bool(re.search(r"A\d+B|gpt-oss|moe|mixtral", model_file, re.IGNORECASE))
+
+
+def runner_args(device: str, model: str, context: int, port: int, threads: int) -> list[str]:
+    """llama-server's options for where a model runs.
+
+    gpu: everything on the card.
+    shared: as much as the card takes, the rest in the computer's memory. Only
+    small intermediate results cross between the two for each word; the slow
+    part is the processor working through its share, so the options here are
+    about that: the weights are read fully into memory and pinned there (no
+    reading back from disk or paging mid-answer), and the work runs on the
+    fast cores only. For a mixture-of-experts model the split is made by kind
+    instead of by layer: the parts every word uses stay on the card and only
+    the experts, few of which work on any one word, sit in memory. That is the
+    fastest way to run such a model bigger than the card.
+    cpu: everything on the processor, with the same memory options.
+    """
+    args = ["-m", model, "-c", str(context), "--host", "127.0.0.1", "--port", str(port)]
+    if device == "gpu":
+        return args + ["-ngl", "999"]
+    args += ["--no-mmap", "--mlock", "-t", str(threads)]
+    if device == "cpu":
+        return args + ["-ngl", "0"]
+    if is_moe(Path(model).name):
+        return args + ["-ngl", "999", "-ot", r"\.ffn_.*_exps\.=CPU"]
+    return args  # llama.cpp fits as many layers on the card as there is room for
+
+
+def cpu_threads(configured: int = 0) -> int:
+    """Threads for work on the processor: the fast cores only. On a chip with
+    fast and efficient cores (like the i9-14900K's 8 + 16), spreading the work
+    onto the efficient ones makes it slower, not faster."""
+    if configured > 0:
+        return configured
+    return max(2, min(8, (os.cpu_count() or 8) // 4))
+
+
 class LlamaWriter:
     """A GGUF language model served by llama.cpp's `llama-server`, run beside
     this process and spoken to over localhost."""
@@ -532,15 +572,15 @@ class LlamaWriter:
                 device = "shared"
             if device in ("cpu", "shared"):
                 budget.make_room(key, "ram", size)
-            layers = {"gpu": ["-ngl", "999"], "cpu": ["-ngl", "0"]}.get(device, [])
+            arguments = runner_args(device, model, self._config.llm_context, self._port,
+                                    cpu_threads(getattr(self._config, "cpu_threads", 0)))
             import time
 
             budget.loading.acquire()   # one model loads at a time
             loading = True
             try:
                 self._process = subprocess.Popen(
-                    [str(exe), "-m", model, *layers, "-c", str(self._config.llm_context),
-                     "--host", "127.0.0.1", "--port", str(self._port)],
+                    [str(exe), *arguments],
                     stdout=log, stderr=subprocess.STDOUT, cwd=str(exe.parent), creationflags=flags,
                 )
             except Exception:

@@ -36,6 +36,8 @@ class Config:
     # Where each model runs: the writing model on "gpu", "shared" (split with
     # the processor) or "cpu"; speech on "auto" (graphics card) or "cpu".
     llm_device: str = "gpu"
+    # Threads for model work on the processor. 0 = the fast cores (8 on an i9-14900K).
+    cpu_threads: int = 0
     stt_device: str = "auto"
     # A second, smaller model that reads a lot of material and picks out what
     # matters, so the main model gets the relevant part. Empty = not used.

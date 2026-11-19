@@ -874,3 +874,20 @@ def test_memory_readout_is_on_the_live_and_models_tabs(stt):
     for page in ("/browse/live", "/browse/models"):
         html = client.get(page, headers=AUTH).text
         assert "<h2>Memory</h2>" in html and "Graphics card:" in html and "Models load one at a time" in html
+
+
+def test_how_a_model_is_split_between_the_card_and_memory():
+    from myna_server.engines import cpu_threads, is_moe, runner_args
+
+    on_card = runner_args("gpu", "/m/gemma.gguf", 8192, 8791, 8)
+    assert on_card[-2:] == ["-ngl", "999"] and "--no-mmap" not in on_card
+    shared = runner_args("shared", "/m/Qwen_Qwen3-32B-Q4_K_M.gguf", 8192, 8791, 8)
+    # Shared: weights read fully into memory and pinned, work on the fast cores; llama.cpp fills the card.
+    assert "--no-mmap" in shared and "--mlock" in shared and shared[shared.index("-t") + 1] == "8"
+    assert "-ngl" not in shared
+    # A mixture-of-experts model: everything on the card except the experts.
+    moe = runner_args("shared", "/m/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf", 8192, 8791, 8)
+    assert moe[-4:] == ["-ngl", "999", "-ot", r"\.ffn_.*_exps\.=CPU"]
+    assert is_moe("openai_gpt-oss-20b-Q4_K_M.gguf") and not is_moe("phi-4-Q4_K_M.gguf")
+    assert runner_args("cpu", "/m/x.gguf", 8192, 8791, 8)[-2:] == ["-ngl", "0"]
+    assert cpu_threads(12) == 12 and 2 <= cpu_threads() <= 8
