@@ -38,6 +38,7 @@ def main() -> None:
     transcriber.essential = True  # the main recognizer is never unloaded to make room
     helper, summarizer = LlamaWriter(config, "helper"), LlamaWriter(config, "summary")
     checker = LlamaWriter(config, "checker")
+    embedder = LlamaWriter(config, "embedder")
     audio_dir = data_dir() / "audio"
     def partner_for(model: str, device: str | None = None):
         """Another recognizer beside the one in use, with its own settings."""
@@ -47,7 +48,7 @@ def main() -> None:
 
     app = create_app(config, transcriber, writer, allow_lan=args.allow_lan, store=store, voices=voices,
                      helper=helper, summarizer=summarizer, audio_dir=audio_dir, partner_for=partner_for,
-                     learning_path=data_dir() / "learning.json", checker=checker)
+                     learning_path=data_dir() / "learning.json", checker=checker, embedder=embedder)
 
     def housekeeping() -> None:
         """Once a minute: write the day's summary when the day has gone quiet,
@@ -69,6 +70,7 @@ def main() -> None:
                 # Write up conversations that have ended.
                 if config.conversations:
                     app.state.run_conversations()
+                app.state.run_indexing()
                 # Tune the transcription model while things are quiet.
                 if (config.auto_tune and last > 0 and now - last >= 20 * 60
                         and now - config.tuned_at >= config.tune_every_hours * 3600):

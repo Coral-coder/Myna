@@ -332,6 +332,7 @@ def _reset_buttons(state: dict, back: str) -> str:
         ("recognition", "Speech recognition", f'{state.get("transcriber", "")} — {state.get("transcriber_status", "")}'),
         ("llm", "Writing (main)", f'{state.get("writer", "")} — {state.get("writer_status", "")}'),
         ("checker", "Checker", state.get("checker_status", "")),
+        ("embedder", "Search", state.get("embedder_status", "")),
         ("helper", "Helper", state.get("helper_status", "")),
         ("summary", "Summary", state.get("summary_status", "")),
     ]
@@ -396,6 +397,7 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
         "checker": (config.checker_repo, config.checker_file),
         "helper": (config.helper_repo, config.helper_file),
         "summary": (config.summary_repo, config.summary_file),
+        "embedder": (config.embedder_repo, config.embedder_file),
     }
     labels = (("llm", "Main"), ("helper", "Helper"), ("summary", "Summary"), ("checker", "Checker"))
     parts.append(
@@ -439,7 +441,8 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
         '<p class="dim">A chosen model starts downloading straight away; progress shows above.</p>'
     )
     for role, title, status_key in (("checker", "Checker model", "checker_status"), ("helper", "Helper model", "helper_status"),
-                                    ("summary", "Summary model", "summary_status")):
+                                    ("summary", "Summary model", "summary_status"),
+                                    ("embedder", "Search-by-meaning model", "embedder_status")):
         repo, file = in_use[role]
         shown = file.removesuffix(".gguf") if file else ("the main model" if role == "summary" else "not used")
         clear = (

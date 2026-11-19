@@ -322,7 +322,7 @@ LLAMA_BUILD = "b12400"
 LLAMA_ZIP = f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip"
 LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{LLAMA_ZIP}"
 LLAMA_SHA256 = "15eafe06f3ea80f78b80764e1994fd74b5ffa66b5cf0875a3bd9b3ee41a058ef"
-LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794}
+LLAMA_PORTS = {"llm": 8791, "helper": 8792, "summary": 8793, "checker": 8794, "embedder": 8795}
 _strays_cleared = False
 
 
@@ -331,7 +331,8 @@ def is_moe(model_file: str) -> bool:
     return bool(re.search(r"A\d+B|gpt-oss|moe|mixtral", model_file, re.IGNORECASE))
 
 
-def runner_args(device: str, model: str, context: int, port: int, threads: int, mtp: bool = False) -> list[str]:
+def runner_args(device: str, model: str, context: int, port: int, threads: int, mtp: bool = False,
+                embedding: bool = False) -> list[str]:
     """llama-server's options for where a model runs. Only options this
     llama.cpp build (b12400) accepts; an unknown one stops the model loading.
 
@@ -351,6 +352,9 @@ def runner_args(device: str, model: str, context: int, port: int, threads: int, 
             # One request at a time (the server sends them one by one), so all
             # the working memory goes to that one, and MTP requires it.
             "-np", "1"]
+    if embedding:
+        # Meaning-vectors instead of text; Qwen3-Embedding pools on the last token.
+        args += ["--embedding", "--pooling", "last"]
     if mtp:
         # The model drafts the next words with its own built-in head and checks them in one pass.
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
@@ -671,7 +675,7 @@ class LlamaWriter:
                 budget.make_room(key, "gpu", min(size, 9 * GB))
             arguments = runner_args(device, model, self._config.llm_context, self._port,
                                     cpu_threads(getattr(self._config, "cpu_threads", 0)),
-                                    mtp="mtp" in self._repo.lower())
+                                    mtp="mtp" in self._repo.lower(), embedding=self._role == "embedder")
             import time
 
             budget.loading.acquire()   # one model loads at a time
@@ -717,6 +721,25 @@ class LlamaWriter:
             self._stop()
             self.status = f"Couldn't load: {error}"
             raise
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Meaning-vectors for `texts` (the embedder role)."""
+        import urllib.request
+
+        if not self.chosen or not texts:
+            return []
+        from .memory import budget
+
+        with self._lock:
+            self._ensure_running()
+            budget.touch(self._budget_key())
+            body = json.dumps({"input": [fit_text(text, 6000) for text in texts]}).encode()
+            request = urllib.request.Request(f"http://127.0.0.1:{self._port}/v1/embeddings", data=body,
+                                             headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=300) as reply:
+                answer = json.loads(reply.read())
+        rows = sorted(answer.get("data") or [], key=lambda row: row.get("index", 0))
+        return [row["embedding"] for row in rows]
 
     def generate(self, instructions: str, prompt: str, max_tokens: int) -> str:
         import json

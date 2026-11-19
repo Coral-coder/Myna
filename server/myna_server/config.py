@@ -81,6 +81,12 @@ class Config:
     checker_repo: str = "bartowski/Qwen_Qwen3-1.7B-GGUF"
     checker_file: str = "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
     checker_device: str = "cpu"
+    # A small model that turns text into meaning-vectors, so Ask can find a
+    # conversation by what it was about, not only by matching words (as
+    # Omi's search does). Runs on the processor.
+    embedder_repo: str = "Qwen/Qwen3-Embedding-0.6B-GGUF"
+    embedder_file: str = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+    embedder_device: str = "cpu"
     # Skip clips the speech detector finds no speech in (Omi gates its
     # recognizers the same way). The bar is low so far-away speech passes.
     speech_gate: bool = True

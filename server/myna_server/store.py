@@ -85,6 +85,13 @@ class Store:
                 )"""
             )
             self._db.execute("CREATE INDEX IF NOT EXISTS clips_at ON clips (at)")
+            # Meaning-vectors for search by meaning (see meaning.py).
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS vectors (
+                    kind TEXT NOT NULL, id TEXT NOT NULL, made_at REAL NOT NULL, vec BLOB NOT NULL,
+                    PRIMARY KEY (kind, id)
+                )"""
+            )
 
     def _cursor(self) -> int:
         row = self._db.execute("SELECT COALESCE(MAX(seq), 0) AS top FROM records").fetchone()
@@ -263,3 +270,49 @@ class Store:
                 (since,),
             ).fetchall()
         return [int(row["id"]) for row in rows]
+
+    # -- meaning-vectors ----------------------------------------------------------
+
+    def unindexed(self, kinds: tuple[str, ...], most: int = 64) -> list[dict]:
+        """Records with no meaning-vector yet, or changed since theirs was made."""
+        marks = ",".join("?" for _ in kinds)
+        with self._lock:
+            rows = self._db.execute(
+                f"""SELECT r.kind, r.id, r.data FROM records r LEFT JOIN vectors v ON v.kind = r.kind AND v.id = r.id
+                    WHERE r.kind IN ({marks}) AND r.deleted = 0 AND (v.made_at IS NULL OR v.made_at < r.updated_at)
+                    ORDER BY r.sort_at DESC LIMIT ?""",
+                (*kinds, most),
+            ).fetchall()
+        return [{"kind": row["kind"], "id": row["id"], **json.loads(row["data"])} for row in rows]
+
+    def put_vector(self, kind: str, record_id: str, vector: list[float], made_at: float) -> None:
+        import array
+
+        blob = array.array("f", vector).tobytes()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO vectors (kind, id, made_at, vec) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (kind, id) DO UPDATE SET made_at = excluded.made_at, vec = excluded.vec",
+                (kind, record_id, made_at, blob),
+            )
+
+    def nearest(self, vector: list[float], kinds: tuple[str, ...], most: int = 8) -> list[tuple[float, str, str]]:
+        """(similarity, kind, id) of the records closest in meaning, best first."""
+        import numpy as np
+
+        marks = ",".join("?" for _ in kinds)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT v.kind, v.id, v.vec FROM vectors v JOIN records r ON r.kind = v.kind AND r.id = v.id "
+                f"WHERE v.kind IN ({marks}) AND r.deleted = 0",
+                kinds,
+            ).fetchall()
+        if not rows:
+            return []
+        query = np.asarray(vector, dtype=np.float32)
+        query /= max(float(np.linalg.norm(query)), 1e-9)
+        matrix = np.stack([np.frombuffer(row["vec"], dtype=np.float32) for row in rows])
+        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9)
+        scores = matrix @ query
+        best = np.argsort(-scores)[:most]
+        return [(float(scores[i]), rows[i]["kind"], rows[i]["id"]) for i in best]

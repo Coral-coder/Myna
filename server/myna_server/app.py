@@ -75,9 +75,10 @@ def create_app(
     partner_for=None,
     learning_path=None,
     checker=None,
+    embedder=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
-    roles = {"llm": writer, "helper": helper, "summary": summarizer, "checker": checker}
+    roles = {"llm": writer, "helper": helper, "summary": summarizer, "checker": checker, "embedder": embedder}
 
     def chosen(model) -> bool:
         return model is not None and getattr(model, "chosen", True)
@@ -353,6 +354,7 @@ def create_app(
             "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
             "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
             "checker_status": getattr(checker, "status", "") if checker is not None else "",
+            "embedder_status": getattr(embedder, "status", "") if embedder is not None else "",
             "reset_status": reset_state["status"],
             "memory": memory.budget.snapshot(),
             "reprocess": dict(reprocess),
@@ -653,6 +655,19 @@ def create_app(
 
     app.state.run_conversations = run_conversations
 
+    def run_indexing() -> int:
+        """Give new or changed conversations, notes and memories their meaning-vectors."""
+        if not chosen(embedder) or not hasattr(embedder, "embed"):
+            return 0
+        from . import meaning
+
+        try:
+            return meaning.index_pending(store, embedder.embed)
+        except Exception:
+            return 0
+
+    app.state.run_indexing = run_indexing
+
     @app.post("/browse/conversations")
     async def start_conversations(_: None = Depends(paired)):
         from fastapi.responses import RedirectResponse
@@ -730,8 +745,9 @@ def create_app(
         lookup = getattr(app.state, "web_lookup", web.lookup)
         try:
             pick = helper.generate if chosen(helper) else None
+            embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
             result = await run_in_threadpool(
-                ask.answer, store, writer.generate, lookup, payload.question, payload.history, pick
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, pick, embed
             )
         except Exception as error:
             note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
@@ -781,13 +797,13 @@ def create_app(
             role = "llm"
         target = roles[role]
         device_keys = {key for key, _, _ in catalog.LLM_DEVICES}
-        for other in ("helper", "summary", "checker"):
+        for other in ("helper", "summary", "checker", "embedder"):
             wanted = form.get(f"{other}_device", "")
             if wanted in device_keys and wanted != getattr(config, f"{other}_device"):
                 setattr(config, f"{other}_device", wanted)
                 if roles[other] is not None and hasattr(roles[other], "reload"):
                     await run_in_threadpool(roles[other].reload)
-        if form.get("clear") in ("helper", "summary", "checker") and roles[form["clear"]] is not None:
+        if form.get("clear") in ("helper", "summary", "checker", "embedder") and roles[form["clear"]] is not None:
             await run_in_threadpool(roles[form["clear"]].use, "", "")
         if repo and file.endswith(".gguf"):
             # A model too big for the card can't run wholly on it: share it.

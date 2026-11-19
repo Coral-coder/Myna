@@ -111,12 +111,25 @@ def answer(
     question: str,
     history: list[dict],
     pick: Callable[[str, str, int], str] | None = None,
+    embed: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> dict:
     """One turn: the reply, and the web search made for it (if any). When a
     helper model is given as `pick`, it reads a much larger slice of the saved
     material first and hands the main model only what bears on the question."""
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
     material = gather(store, question)
+    if embed is not None:
+        # Records close in meaning to the question, even without shared words.
+        try:
+            from .meaning import related, text_of
+
+            close = related(store, embed, question)
+            if close:
+                lines = [f"[{row['kind']}, {_when(row.get('startedAt') or row.get('createdAt') or 0)}] {text_of(row)[:500]}"
+                         for row in close]
+                material = "RELATED BY MEANING:\n" + "\n".join(lines) + "\n\n" + material
+        except Exception:
+            pass  # search by meaning is a bonus; the keyword material still goes
     if pick is not None:
         try:
             wide = gather(store, question, wide=True)

@@ -1105,3 +1105,24 @@ def test_clips_with_no_speech_are_not_transcribed(stt):
 
     app.state.speech_seconds = broken                               # the detector failing never loses speech
     assert client.post("/v1/transcribe", headers=AUTH, content=noise).json()["text"] == "words"
+
+
+def test_search_by_meaning(tmp_path):
+    from myna_server import meaning
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "m.db")
+    store.sync(0, [
+        {"kind": "conversation", "id": "c1", "updated_at": 1, "data": {"title": "Dentist appointment", "overview": "Booked a cleaning for Tuesday"}},
+        {"kind": "conversation", "id": "c2", "updated_at": 1, "data": {"title": "Car trouble", "overview": "The brakes squeal"}},
+        {"kind": "memory", "id": "m1", "updated_at": 1, "data": {"content": "Likes jazz"}},
+    ])
+
+    def embed(texts):
+        # Toy meaning: teeth-ish words point one way, everything else another.
+        return [[1.0, 0.0] if any(w in t.lower() for w in ("dentist", "teeth")) else [0.0, 1.0] for t in texts]
+
+    assert meaning.index_pending(store, embed) == 3
+    assert meaning.index_pending(store, embed) == 0  # nothing new
+    found = meaning.related(store, embed, "when do I see someone about my teeth?")
+    assert [row["id"] for row in found] == ["c1"]
