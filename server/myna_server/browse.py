@@ -810,11 +810,45 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
                 parts.append(f'<div class="dim">{_e(_when(row["at"], "%a %H:%M"))} · {row["took"]} s</div>'
                              f'<div class="pair"><div>{card(row["before"])}</div><div>{card(row["after"])}</div></div>')
 
-    # -- finding one --------------------------------------------------------------------------
+    # -- suggested: no searching needed ------------------------------------------------------
+    from .experiment import SUGGESTED_SPEECH, SUGGESTED_WRITING
+
+    outcome = {}
+    for row in tried:
+        outcome.setdefault(str(row.get("model")), str(row.get("outcome") or ""))
+    in_use = {current.get("speech")} | {v for k, v in current.items() if k != "speech"}
+
+    def mark(model_key: str, file: str = "") -> str:
+        if (file or model_key) in in_use:
+            return '<span class="t">IN USE</span>'
+        done = outcome.get(model_key)
+        return f'<span class="dim">tried: {_e(done)}</span>' if done else ""
+
     tabs = "".join(
         f'<a href="/browse/experiment?kind={k}" style="margin-right:14px{";font-weight:600" if k == kind else ""}">{t}</a>'
         for k, t in (("writing", "Writing models"), ("speech", "Speech models")))
-    parts.append(f"<h2>Find a model</h2><div>{tabs}</div>")
+    parts.append(f"<h2>Worth trying</h2><div>{tabs}</div>"
+                 '<div class="dim">Picked for this computer (12 GB graphics card, 128 GB memory). Press Try it; '
+                 "nothing changes until you keep one.</div>")
+    if kind == "speech":
+        for model, name, why in SUGGESTED_SPEECH:
+            busy = mark(model)
+            action = busy if "IN USE" in busy else try_form(f'<input type="hidden" name="model" value="{_e(model)}">')
+            parts.append(f'<div class="row pick"><div>{_e(name)} {busy if "tried" in busy else ""}'
+                         f'<div class="dim">{_e(why)}</div></div>{action}</div>')
+    else:
+        for job, models in SUGGESTED_WRITING:
+            parts.append(f'<div class="dim" style="margin-top:12px">{_e(job.upper())}</div>')
+            for repo_id, file, name, gb, why in models:
+                busy = mark(f"{repo_id}/{file}", file)
+                fields = (f'<input type="hidden" name="repo" value="{_e(repo_id)}">'
+                          f'<input type="hidden" name="file" value="{_e(file)}">')
+                action = busy if "IN USE" in busy else try_form(fields)
+                parts.append(f'<div class="row pick"><div>{_e(name)} <span class="dim">{gb:g} GB</span> '
+                             f'{busy if "tried" in busy else ""}<div class="dim">{_e(why)}</div></div>{action}</div>')
+
+    # -- or search ------------------------------------------------------------------------------
+    parts.append("<h2>Or search Hugging Face</h2>")
     hint = ("Writing models are GGUF files: try “qwen3”, “gemma”, “phi”, “deepseek”, “mistral”."
             if kind == "writing" else
             "Speech models here are Whisper models made for faster-whisper (CTranslate2): try “whisper”, "
@@ -845,20 +879,6 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
         parts.append(f'<div class="row pick"><div>{_e(row["repo"])}<div class="dim">{meta} · {link}</div></div>{action}</div>')
     if query and not found and not problem:
         parts.append('<p class="dim">Nothing found. Try a shorter search.</p>')
-    if kind == "speech":
-        parts.append("<h2>Built in</h2><div class=\"dim\">The other recognizers this server can run.</div>")
-        for key in SHERPA:
-            model = f"sherpa:{key}"
-            if model == current.get("speech"):
-                continue
-            parts.append(f'<div class="row pick"><div>{_e(key)}</div>'
-                         f'{try_form(chr(10) + f"<input type=hidden name=model value={_e(model)}>")}</div>')
-        for size in ("small.en", "medium.en", "distil-large-v3", "turbo", "large-v3"):
-            if size == current.get("speech"):
-                continue
-            parts.append(f'<div class="row pick"><div>Whisper {_e(size)}</div>'
-                         f'{try_form(f"<input type=hidden name=model value={_e(size)}>")}</div>')
-
     # -- tried before ---------------------------------------------------------------------------
     if tried:
         parts.append("<h2>Tried before</h2>")

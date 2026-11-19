@@ -22,6 +22,51 @@ def new_state() -> State:
             "note": "", "results": [], "summary": {}, "started": 0.0}
 
 
+# -- models worth trying, without searching -------------------------------------------------
+
+# (model, name, why). A model is a Whisper size, "sherpa:<key>" or a
+# Hugging Face faster-whisper repository.
+SUGGESTED_SPEECH = (
+    ("sherpa:parakeet-v2", "Parakeet v2", "Very accurate English and very fast, on the processor. What Omi uses."),
+    ("nyrahealth/faster_CrisperWhisper", "CrisperWhisper",
+     "Whisper retrained to write exactly what was said (ums, repeats) and to invent less from silence."),
+    ("turbo", "Whisper large-v3 turbo", "Near the most accurate Whisper, several times faster."),
+    ("distil-whisper/distil-large-v3.5-ct2", "Distil-Whisper large-v3.5", "English only; fast and close to large-v3."),
+    ("large-v3", "Whisper large-v3", "The most accurate Whisper; slowest."),
+    ("sherpa:canary", "Canary 180m flash", "Small and quick; English, Spanish, German, French."),
+    ("sherpa:parakeet-v3", "Parakeet v3", "Like v2, in 25 languages."),
+)
+
+# (job, [(repo, file, name, GB, why)])
+SUGGESTED_WRITING = (
+    ("For the Main model: writes notes and answers", (
+        ("unsloth/Qwen3.6-35B-A3B-MTP-GGUF", "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "Qwen 3.6 35B (A3B)", 22.9,
+         "Big but light to run: only 3B of it works on each word."),
+        ("bartowski/Qwen_Qwen3-30B-A3B-GGUF", "Qwen_Qwen3-30B-A3B-Q4_K_M.gguf", "Qwen 3 30B (A3B)", 18.6,
+         "The previous generation of the same idea."),
+        ("bartowski/google_gemma-3-27b-it-GGUF", "google_gemma-3-27b-it-Q4_K_M.gguf", "Gemma 3 27B", 16.5,
+         "Careful writer; bigger than the card, so slower."),
+        ("bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+         "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf", "Mistral Small 3.2 24B", 14.3,
+         "Good at following instructions exactly."),
+    )),
+    ("Fits the graphics card: fast and good", (
+        ("bartowski/Qwen_Qwen3-14B-GGUF", "Qwen_Qwen3-14B-Q4_K_M.gguf", "Qwen 3 14B", 9.0, "Strong all-rounder."),
+        ("bartowski/google_gemma-3-12b-it-GGUF", "google_gemma-3-12b-it-Q4_K_M.gguf", "Gemma 3 12B", 7.3,
+         "Natural-sounding summaries."),
+        ("bartowski/phi-4-GGUF", "phi-4-Q4_K_M.gguf", "Phi-4 14B", 9.1, "Precise and to the point."),
+    )),
+    ("Small and quick: for the Helper or Checker job", (
+        ("bartowski/Qwen_Qwen3-4B-GGUF", "Qwen_Qwen3-4B-Q4_K_M.gguf", "Qwen 3 4B", 2.5, "Fast anywhere; smart for its size."),
+        ("bartowski/google_gemma-3-4b-it-GGUF", "google_gemma-3-4b-it-Q4_K_M.gguf", "Gemma 3 4B", 2.5, "Fast anywhere."),
+        ("bartowski/microsoft_Phi-4-mini-instruct-GGUF", "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf", "Phi-4 mini", 2.5,
+         "Fast anywhere."),
+        ("bartowski/Qwen_Qwen3-1.7B-GGUF", "Qwen_Qwen3-1.7B-Q4_K_M.gguf", "Qwen 3 1.7B", 1.3,
+         "Tiny; instant on the processor."),
+    )),
+)
+
+
 # -- finding models ----------------------------------------------------------------
 
 
