@@ -31,11 +31,21 @@ def search(kind: str, query: str, most: int = 20) -> list[dict]:
 
     api = HfApi()
     if kind == "speech":
-        found = api.list_models(search=query or "whisper", filter="ctranslate2", sort="downloads", limit=most)
+        # CTranslate2 also runs translation and text models; keep speech ones only.
+        found = [m for m in api.list_models(search=query or "whisper", filter="ctranslate2", sort="downloads",
+                                            limit=most * 4)
+                 if is_speech_model(m.id, getattr(m, "tags", None) or [], getattr(m, "pipeline_tag", None))][:most]
     else:
         found = api.list_models(search=query, filter="gguf", sort="downloads", limit=most)
     return [{"repo": m.id, "downloads": getattr(m, "downloads", 0) or 0, "likes": getattr(m, "likes", 0) or 0,
              "updated": str(getattr(m, "last_modified", "") or "")[:10]} for m in found]
+
+
+def is_speech_model(repo: str, tags: list[str], pipeline: str | None) -> bool:
+    """A Whisper speech-recognition model (not a translation or text model)."""
+    if pipeline == "automatic-speech-recognition" or "automatic-speech-recognition" in tags:
+        return True
+    return "whisper" in repo.lower() or "whisper" in [t.lower() for t in tags]
 
 
 def gguf_files(repo: str) -> list[dict]:
@@ -95,6 +105,12 @@ def download_speech(state: State, repo: str) -> None:
     files = {s.rfilename: s.size or 0 for s in info.siblings or []}
     wanted = {name: size for name, size in files.items()
               if any(fnmatch.fnmatch(name, pattern) for pattern in _WHISPER_FILES)}
+    tags = list(getattr(info, "tags", None) or [])
+    if not is_speech_model(repo, tags, getattr(info, "pipeline_tag", None)):
+        raise RuntimeError("this isn't a speech-recognition model (it looks like a translation or text model); "
+                           "only Whisper models can be tried here")
+    if "preprocessor_config.json" not in files and "whisper" not in repo.lower():
+        raise RuntimeError("this model has no audio settings (preprocessor_config.json), so it can't take speech")
     if "model.bin" not in wanted:
         raise RuntimeError("this repository has no model.bin, so it isn't a faster-whisper (CTranslate2) model; "
                            "look for one with “ct2” or “faster-whisper” in its name")
