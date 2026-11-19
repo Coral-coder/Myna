@@ -215,7 +215,8 @@ def process(lines: list[dict], names: dict[str, str], songs: list[dict], known_m
     instructions = STRUCTURE.replace("CATEGORY_LIST", ", ".join(CATEGORIES)).replace("DENSITY", density(words))
     when = f"The conversation took place on {_clock(started, '%A %d %B %Y')} from {_clock(started)} to {_clock(ended)}."
     if known_words:
-        when += ("\nNames and terms this person uses (prefer these spellings when the transcript clearly means them): "
+        when += ("\nSpellings of names and terms this person uses, for spelling only: use one only where the "
+                 "transcript itself says it, and never bring up a name that isn't in the transcript: "
                  + ", ".join(known_words[:40]) + ".")
     note = _json(write(instructions, f"{when}\n\nTRANSCRIPT:\n{text[:28000]}\n\nJSON:", 1600))
     record["title"] = str(note.get("title") or "Untitled conversation")[:120]

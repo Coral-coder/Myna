@@ -138,13 +138,14 @@ def vocabulary(store: Store, most: int = 60) -> list[str]:
         texts += [str(m.get("content") or "") for m in row.get("memories") or []]
     for row in store.browse("note", limit=200):
         texts.append(f"{row.get('title', '')}. {row.get('overview', '')}")
-        texts += [str(name) for name in row.get("people") or []]
+        # Not the note's matched contacts: one stray first name pulled a contact
+        # in, and listening for that name made the recognizers hear it more.
     for text in texts:
         # A capitalised word that isn't just the start of a sentence.
         for match in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-zA-Z'\-]{2,})\b", text):
             counts[match.group(1)] += 1
     for word, count in counts.most_common(most * 2):
-        if count >= 2 and word not in out:
+        if count >= 3 and word not in out:
             out.append(word)
     return out[:most]
 

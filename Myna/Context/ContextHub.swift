@@ -78,7 +78,7 @@ final class ContextHub: ObservableObject {
     func noteContext(transcript: String, startedAt: Date, endedAt: Date, place: String) async -> NoteContext {
         var context = NoteContext(place: place)
         if isEnabled(.contacts) {
-            context.people = await contacts.index().mentions(in: transcript)
+            context.people = await contacts.index().mentions(in: MadeUpSpeech.clean(transcript), limit: 6, shortNameTimes: 2)
         }
         if isEnabled(.photos) {
             let assets = photos.photos(from: startedAt, to: endedAt)

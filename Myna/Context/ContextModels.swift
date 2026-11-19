@@ -96,8 +96,11 @@ struct PeopleIndex {
         name.count >= 3 && !ambiguousWords.contains(name)
     }
 
-    /// People mentioned in `text`, in order of first mention.
-    func mentions(in text: String, limit: Int = 12) -> [KnownPerson] {
+    /// People mentioned in `text`, in order of first mention. A full name
+    /// counts at once; a first name or nickname alone only when it comes up at
+    /// least `shortNameTimes` times (one stray word in a transcript, often
+    /// misheard or made up by the recognizer, shouldn't pull a contact in).
+    func mentions(in text: String, limit: Int = 12, shortNameTimes: Int = 1) -> [KnownPerson] {
         let words = Self.words(in: text)
         guard !words.isEmpty else { return [] }
         let lowered = words.map { $0.lowercased() }
@@ -116,8 +119,13 @@ struct PeopleIndex {
                 record(person, at: index)
             }
         }
+        var times: [String: Int] = [:]
+        for (index, word) in words.enumerated() where uniqueShortNames[lowered[index]] != nil && Self.looksLikeName(word) {
+            times[lowered[index], default: 0] += 1
+        }
         for (index, word) in words.enumerated() {
-            guard let person = uniqueShortNames[lowered[index]], Self.looksLikeName(word) else { continue }
+            guard let person = uniqueShortNames[lowered[index]], Self.looksLikeName(word),
+                  times[lowered[index], default: 0] >= shortNameTimes else { continue }
             record(person, at: index)
         }
         return found.sorted { $0.at < $1.at }.prefix(limit).map(\.person)
@@ -221,7 +229,11 @@ struct NoteContext {
         var lines = ["CONTEXT FROM THIS IPHONE (use it to spell names correctly and ground the notes; never invent beyond it):"]
         if !place.isEmpty { lines.append("PLACE: \(place)") }
         if !people.isEmpty {
-            lines.append("PEOPLE FROM THE USER'S CONTACTS WHO WERE MENTIONED: " + people.map(\.summary).joined(separator: "; "))
+            // Names only, for spelling: their jobs and companies made the notes
+            // talk about people who had nothing to do with the conversation.
+            lines.append("NAMES SAID IN THE TRANSCRIPT THAT MATCH THE USER'S CONTACTS (for spelling only; mention one "
+                         + "only where the transcript itself talks about that person, and add nothing about them): "
+                         + people.map(\.fullName).joined(separator: "; "))
         }
         if !photoText.isEmpty {
             lines.append("TEXT FROM PHOTOS THE USER TOOK DURING THE CONVERSATION:")

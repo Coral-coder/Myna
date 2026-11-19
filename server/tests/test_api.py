@@ -613,7 +613,7 @@ def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
     client = TestClient(app)
     client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
         change("person", "p1", {"name": "Saoirse", "createdAt": 1}, 1),
-        change("memory", "m1", {"content": "Lives near Kilkenny. Visits Kilkenny often.", "createdAt": 1}, 1),
+        change("memory", "m1", {"content": "Lives near Kilkenny. Visits Kilkenny often. Loves Kilkenny.", "createdAt": 1}, 1),
     ]})
     body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000, dtype=np.float32))).json()
     assert body["text"] == "Saoirse is coming on Friday"                 # the partner caught what the main one missed
