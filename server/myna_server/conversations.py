@@ -260,6 +260,18 @@ def process(lines: list[dict], names: dict[str, str], songs: list[dict], known_m
     return record
 
 
+def _real(lines) -> list[dict]:
+    """The lines with made-up recognizer output taken out and stuck repeats collapsed."""
+    from .cleanup import clean
+
+    out = []
+    for line in lines:
+        text = clean(str(line.get("text") or ""))
+        if text:
+            out.append({**line, "text": text})
+    return out
+
+
 def run_pending(store: Store, write: Generate, cheap: Generate | None, now: float, owner: str = "",
                 most: int = 2, progress=lambda text: None) -> int:
     """Process the conversations that have finished since the last one handled.
@@ -267,7 +279,7 @@ def run_pending(store: Store, write: Generate, cheap: Generate | None, now: floa
     done = store.browse("conversation", limit=1)
     after = float(done[0].get("endedAt") or done[0]["at"]) if done else 0.0
     recent = [row for row in store.browse("utterance", limit=4000) if row["at"] > after]
-    lines = list(reversed(recent))
+    lines = _real(reversed(recent))
     names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
     known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
     for earlier in store.browse("conversation", limit=200):
@@ -304,7 +316,7 @@ def retry_failed(store: Store, write: Generate, cheap: Generate | None, now: flo
     redone = 0
     for row in failed:
         start, end = float(row.get("startedAt") or row["at"]), float(row.get("endedAt") or row["at"])
-        lines = [line for line in store.browse("utterance", limit=4000, before=end + 1) if line["at"] >= start - 1]
+        lines = _real(line for line in store.browse("utterance", limit=4000, before=end + 1) if line["at"] >= start - 1)
         if not lines:
             continue
         lines.reverse()

@@ -133,20 +133,24 @@ def create_app(
     def hear(audio) -> str:
         """Transcribe one stretch with every recognizer on the panel, combined
         into one transcript; the checker settles disagreements."""
+        from .cleanup import clean
+
         words_known = vocabulary()
         panel_now = others()
         if not panel_now:
-            return transcriber.transcribe(audio)
+            return clean(transcriber.transcribe(audio))
         # Every recognizer works on the clip at the same time (the graphics
         # card and the processor in parallel) rather than one after another.
         jobs = {transcriber.name: pool.submit(transcriber.transcribe, audio)}
         for engine in panel_now:
             jobs[engine.name] = pool.submit(engine.transcribe, audio)
-        first = jobs.pop(transcriber.name).result()   # the main one failing is an error, as before
+        first = clean(jobs.pop(transcriber.name).result())   # the main one failing is an error, as before
         candidates = {transcriber.name: first}
         for name, job in jobs.items():
             try:
-                candidates[name] = job.result(timeout=120)
+                # Stuck repeats and stock made-up lines are taken out of each
+                # version first, so one recognizer's phantom can't be "rescued".
+                candidates[name] = clean(job.result(timeout=120))
             except Exception:
                 pass  # one recognizer failing (or stuck) never stops the others
         if len(candidates) < 2:
@@ -154,6 +158,7 @@ def create_app(
         reconcile = checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None)
         text, how = blend.combine(candidates, learning, reconcile, words_known)
         learning.note(candidates, text)
+        text = clean(text)
         blend_stats["last"] = how
         if sum(learning.heard.values()) % 20 == 0:
             learning.save()
@@ -203,11 +208,46 @@ def create_app(
             **stats,
         }
 
+    # The same audio sent twice (a retry, or held audio sent again) gets the
+    # same answer; a line that repeats one heard moments ago from overlapping
+    # audio is not given twice.
+    answered: dict[str, tuple[float, dict]] = {}
+    said_recently: deque[tuple[float, str]] = deque(maxlen=60)
+
+    def drop_repeats(text: str, segments: list[dict]) -> tuple[str, list[dict]]:
+        from .cleanup import bare, similar
+
+        now = time.time()
+        while said_recently and now - said_recently[0][0] > 90:
+            said_recently.popleft()
+
+        def fresh(line: str) -> bool:
+            if len(bare(line).split()) < 4:
+                return True  # short lines ("Hello?") are often really said twice
+            return not any(similar(line, earlier) >= 0.85 for _, earlier in said_recently)
+
+        if segments:
+            segments = [piece for piece in segments if fresh(piece["text"])]
+            text = " ".join(piece["text"] for piece in segments)
+        elif not fresh(text):
+            text = ""
+        for line in [piece["text"] for piece in segments] or ([text] if text else []):
+            said_recently.append((now, line))
+        return text, segments
+
     @app.post("/v1/transcribe")
     async def transcribe(request: Request, _: None = Depends(paired)) -> dict:
+        import hashlib
+
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="No audio received.")
+        setup = f"{transcriber.name}|{config.blend}|{config.blend_count}|{getattr(config, 'blend_models', '')}|{config.speech_gate}"
+        fingerprint = hashlib.sha256(body + setup.encode()).hexdigest()
+        for key in [key for key, (at, _) in answered.items() if time.time() - at > 900]:
+            answered.pop(key, None)
+        if fingerprint in answered:
+            return answered[fingerprint][1]
         if len(body) > MAX_AUDIO_BYTES:
             raise HTTPException(status_code=413, detail="That clip is too long; send it in shorter pieces.")
         try:
@@ -294,6 +334,7 @@ def create_app(
         except Exception as error:
             note("transcribe", transcriber.name, time.perf_counter() - began, str(error), seconds, failed=True)
             raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
+        text, segments = drop_repeats(text, segments)
         stats["transcribed"] += 1
         note("transcribe", transcriber.name, time.perf_counter() - began, text, seconds)
         # Keep the audio for a few days, with what this model heard in it, so
@@ -313,13 +354,15 @@ def create_app(
                 store.add_transcript(clip, transcriber.name, text, time.perf_counter() - began)
             except Exception:
                 pass  # keeping the audio is a convenience; never fail the transcription over it
-        return {
+        reply = {
             "text": text,
             "audio_seconds": round(seconds, 3),
             "took_seconds": round(time.perf_counter() - began, 3),
             "engine": transcriber.name,
             "segments": segments,
         }
+        answered[fingerprint] = (time.time(), reply)
+        return reply
 
     @app.post("/v1/generate")
     async def generate(payload: GenerateRequest, _: None = Depends(paired)) -> dict:

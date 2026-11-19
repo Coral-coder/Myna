@@ -307,6 +307,10 @@ class WhisperTranscriber:
                 vad_filter=True,
                 vad_parameters={"threshold": 0.15, "min_silence_duration_ms": 600, "speech_pad_ms": 400},
                 condition_on_previous_text=False,
+                # Skip stretches of silence over two seconds that Whisper
+                # would otherwise fill with made-up words.
+                word_timestamps=True,
+                hallucination_silence_threshold=2.0,
                 hotwords=self.hotwords or None,
             )
             return " ".join(keep_segments(segments)).strip()

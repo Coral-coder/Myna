@@ -103,6 +103,9 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
     rows = store.browse(kind, query, before=before)
     names = {person["id"]: person.get("name", "") for person in store.browse("person", limit=1000)}
     parts: list[str] = []
+    hidden = 0
+    if kind == "utterance":
+        from .cleanup import clean
     day = None
     for row in rows:
         stamp = _when(row["at"], "%A %d %B %Y")
@@ -111,6 +114,11 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
             parts.append(f'<div class="day">{_e(stamp)}</div>')
         clock = _when(row["at"], "%H:%M")
         if kind == "utterance":
+            shown = clean(str(row.get("text") or ""))
+            if not shown:
+                hidden += 1  # kept, but not shown: made up by a recognizer
+                continue
+            row = {**row, "text": shown}
             who = row.get("speakerName") or names.get(row.get("speaker", ""), "")
             label = f'<span class="who">{_e(who)}:</span>' if who else ""
             heard = row.get("context") or ""
@@ -220,6 +228,9 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
                 )
             parts.insert(0, "<h2>Add to your list?</h2><div class=\"dim\">To-dos picked out of your conversations. "
                             "Added ones go on your list on the phone too.</div>" + "".join(rows_html) + "<h2>Your lists</h2>")
+    if hidden:
+        parts.insert(0, f'<div class="dim">{hidden} lines a recognizer made up from noise (like "Thanks for watching") '
+                        "are kept but not shown.</div>")
     if kind == "song" and parts:
         parts.insert(0, '<p><a href="/browse/playlist">Export playlist</a></p>')
     if kind == "conversation":

@@ -672,20 +672,23 @@ final class TranscriptionLab: ObservableObject {
             }
             let took = Date().timeIntervalSince(started)
             self.liveStatus = String(format: "%@ · %.1f s of audio in %.1f s", usedName, seconds, took)
-            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = MadeUpSpeech.clean(text)
             guard !cleaned.isEmpty else { return }
+            let turns = MadeUpSpeech.clean(bySpeaker)
+            // Every speaker turn was made up: nothing was really said.
+            if !bySpeaker.isEmpty, turns.isEmpty { return }
             // Whisper-family engines make up stock phrases ("Thank you.") from
             // near-silence. Leave those out when the clip had almost no sound.
             if voicedSeconds < 0.5, Self.inventedFromSilence.contains(
                 cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))) {
                 return
             }
-            if bySpeaker.isEmpty {
+            if turns.isEmpty {
                 self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
             } else {
                 // One transcript line per speaker's turn, each with that
                 // speaker's voice print, at the time it was said.
-                for piece in bySpeaker {
+                for piece in turns {
                     self.record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,
                                 engine: usedName, voicePrint: piece.voice.count >= 64 ? piece.voice : nil)
                 }
@@ -774,10 +777,10 @@ final class TranscriptionLab: ObservableObject {
             guard let text = try? await HomeServer.shared.transcribe(wav: wav, audioSeconds: seconds) else {
                 break  // the server went away again; keep the rest for next time
             }
-            let bySpeaker = HomeServer.shared.lastSegments
+            let bySpeaker = MadeUpSpeech.clean(HomeServer.shared.lastSegments)
             try? FileManager.default.removeItem(at: file)
             heldCount = max(0, heldCount - 1)
-            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = MadeUpSpeech.clean(text)
             if !bySpeaker.isEmpty {
                 for piece in bySpeaker {
                     record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,

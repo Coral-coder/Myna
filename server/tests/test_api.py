@@ -343,8 +343,8 @@ def test_audio_is_kept_and_another_model_can_be_run_over_it(tmp_path):
     app = create_app(Config(token="secret-token"), stt, FakeWriter(), audio_dir=tmp_path)
     app.state.save_config = False
     client = TestClient(app)
-    for _ in range(2):
-        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2, dtype=np.float32)))
+    for turn in range(2):  # two different clips (the same clip twice is answered from memory)
+        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000 * 2, dtype=np.float32) * (1 + turn)))
     assert len(list(tmp_path.rglob("*.wav"))) == 2
 
     stt.use("model-b")
@@ -498,8 +498,8 @@ def test_tuning_switches_to_the_best_model_and_reports(tmp_path):
     client = TestClient(app)
     tone = (np.sin(np.linspace(0, 900, 16000 * 4)) * 0.02).astype(np.float32)
     assert app.state.run_tune() == ""                         # nothing recorded yet
-    for _ in range(6):
-        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(tone))
+    for turn in range(6):
+        client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(tone * (1 + turn / 10)))
     winner = app.state.run_tune()
     assert winner in ("careful", "careful-too") and config.stt_model == winner and stt.name == winner
     page = client.get("/browse/compare", headers=AUTH).text
@@ -1166,3 +1166,26 @@ def test_suggested_todos_are_added_or_dismissed(tmp_path):
     items = store.browse("item")
     assert len(items) == 1 and items[0]["text"] == "Email the venue" and items[0]["source"] == "conversation"
     assert items[0]["dueDate"] > 0
+
+
+
+def test_made_up_lines_and_repeats_are_taken_out():
+    from myna_server.cleanup import clean
+
+    assert clean("I'm going to go to the next video.") == ""
+    assert clean("Bye-bye, Bye-bye, Bye-bye,") == ""
+    assert clean("The, The, The, The, The") == ""
+    assert clean("Thank you very much.") == ""
+    assert clean("Am, I Am, I Am, I Am, I Am, I Am") .count("I Am") == 1
+    assert clean("I said no no no to him") == "I said no no no to him"
+    real = "There was a sandbag distribution place on Singleton, but I don't know if they're open."
+    assert clean(real) == real
+
+
+def test_the_same_line_is_not_given_twice(client, stt):
+    stt.transcribe = lambda samples: "I think that was just my initial connection"
+    first = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000))).json()
+    again = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000))).json()
+    overlap = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000) * 2)).json()
+    assert first["text"] and again["text"] == first["text"]     # a resend gets the same answer
+    assert overlap["text"] == ""                                 # overlapping audio: not twice
