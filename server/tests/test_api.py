@@ -72,8 +72,8 @@ def test_transcribe_round_trip(client, stt):
     assert body["text"] == "heard 16000 samples"
     assert body["audio_seconds"] == 1.0
     assert body["engine"] == "fake-stt"
-    # The samples reach the model at the right scale.
-    assert abs(float(np.abs(stt.seen).max()) - 0.5) < 0.01
+    # The samples reach the model brought up to a working level (peak 0.8), not clipped.
+    assert abs(float(np.abs(stt.seen).max()) - 0.8) < 0.02
 
 
 def test_transcribe_resamples_and_downmixes(client, stt):
@@ -453,7 +453,7 @@ def test_quiet_audio_is_brought_up_before_transcribing():
 
     quiet = (np.sin(np.linspace(0, 200, 16000)) * 0.03).astype(np.float32)
     louder = level(quiet)
-    assert 0.45 < float(np.abs(louder).max()) <= 0.55            # far-field speech reaches a working level
+    assert 0.2 < float(np.abs(louder).max()) <= 0.8              # far-field speech brought up, gain capped at 8x
     assert float(np.abs(level(quiet * 0.0001)).max()) < 0.01     # near-silence is not blown up into noise
     loud = (np.sin(np.linspace(0, 200, 16000)) * 0.8).astype(np.float32)
     assert np.array_equal(level(loud), loud)                     # already loud: untouched
@@ -1078,3 +1078,30 @@ def test_the_panel_works_in_parallel_and_silence_is_skipped(stt):
     assert clock.time() - began < 0.55                          # not 3 × 0.2 s one after another
     silent = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(np.zeros(16000, dtype=np.float32))).json()
     assert silent["text"] == "" and silent["took_seconds"] == 0.0
+
+
+def test_clips_with_no_speech_are_not_transcribed(stt):
+    class Counting(NamedStt):
+        calls = 0
+
+        def transcribe(self, samples):
+            Counting.calls += 1
+            return "words"
+
+    app = create_app(Config(token="secret-token"), Counting("whisper-turbo"), FakeWriter(),
+                     partner_for=lambda model: Counting(model))
+    found = {"seconds": 0.0}
+    app.state.speech_seconds = lambda samples: found["seconds"]
+    client = TestClient(app)
+    noise = wav_bytes(quiet(16000 * 3))
+    assert client.post("/v1/transcribe", headers=AUTH, content=noise).json()["text"] == ""
+    assert Counting.calls == 0                                      # no recognizer ran
+    found["seconds"] = 1.4
+    assert client.post("/v1/transcribe", headers=AUTH, content=noise).json()["text"] == "words"
+    assert Counting.calls == 3
+
+    def broken(samples):
+        raise RuntimeError("no detector")
+
+    app.state.speech_seconds = broken                               # the detector failing never loses speech
+    assert client.post("/v1/transcribe", headers=AUTH, content=noise).json()["text"] == "words"

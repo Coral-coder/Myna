@@ -917,3 +917,53 @@ def by_speaker(pieces: list[tuple[float, float, int]], gap: float = 1.0, shortes
         else:
             joined.append([start, end, speaker])
     return [(start, end, speaker) for start, end, speaker in joined if end - start >= shortest]
+
+
+VAD_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+VAD_SHA256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+
+
+class SpeechDetector:
+    """Silero voice activity detection (as Omi gates audio before its
+    recognizers), with a low bar so faint, far-away speech still counts.
+    Runs in whichever process calls it (the helper process, in practice)."""
+
+    def __init__(self) -> None:
+        self._config = None
+
+    def _model(self) -> str:
+        import hashlib
+        import urllib.request
+
+        path = data_dir() / "models" / "vad" / "silero_vad.onnx"
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(VAD_URL, timeout=60) as reply:
+                data = reply.read()
+            if hashlib.sha256(data).hexdigest() != VAD_SHA256:
+                raise RuntimeError("The speech detector download didn't match its expected checksum.")
+            path.write_bytes(data)
+        return str(path)
+
+    def speech_seconds(self, samples: np.ndarray) -> float:
+        """How many seconds of `samples` (16 kHz mono) hold speech."""
+        import sherpa_onnx
+
+        if self._config is None:
+            config = sherpa_onnx.VadModelConfig()
+            config.silero_vad.model = self._model()
+            config.silero_vad.threshold = 0.3
+            config.silero_vad.min_silence_duration = 0.3
+            config.silero_vad.min_speech_duration = 0.15
+            config.sample_rate = 16000
+            self._config = config
+        detector = sherpa_onnx.VoiceActivityDetector(self._config, buffer_size_in_seconds=max(30, len(samples) // 16000 + 5))
+        step = self._config.silero_vad.window_size
+        for start in range(0, len(samples) - step + 1, step):
+            detector.accept_waveform(samples[start : start + step])
+        detector.flush()
+        total = 0
+        while not detector.empty():
+            total += len(detector.front.samples)
+            detector.pop()
+        return total / 16000

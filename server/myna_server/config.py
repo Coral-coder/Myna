@@ -81,6 +81,9 @@ class Config:
     checker_repo: str = "bartowski/Qwen_Qwen3-1.7B-GGUF"
     checker_file: str = "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
     checker_device: str = "cpu"
+    # Skip clips the speech detector finds no speech in (Omi gates its
+    # recognizers the same way). The bar is low so far-away speech passes.
+    speech_gate: bool = True
     auto_tune: bool = True
     tune_every_hours: int = 24
     tuned_at: float = 0.0

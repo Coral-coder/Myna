@@ -40,13 +40,15 @@ def resample_to_16k(samples: np.ndarray, rate: int) -> np.ndarray:
     return np.interp(source_positions, np.arange(samples.size), samples).astype(np.float32)
 
 
-def level(samples: np.ndarray, target: float = 0.5, most: float = 30.0) -> np.ndarray:
+def level(samples: np.ndarray, target: float = 0.8, most: float = 8.0) -> np.ndarray:
     """Bring quiet audio up to a working loudness before it is transcribed.
 
     Speech from across a room arrives very quiet, and the models do much better
     when it isn't. The gain is set from the loud end of the clip (so a single
     click doesn't decide it) and capped, so near-silence isn't blown up into
-    noise.
+    noise. Omi uses the same bounded peak gain (0.8 of full scale; it caps at
+    4x, this allows 8x for far-field speech). The earlier 30x cap blew room
+    noise up far enough for recognizers to "hear" words in it.
     """
     if samples.size == 0:
         return samples

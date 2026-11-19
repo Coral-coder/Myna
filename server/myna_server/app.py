@@ -222,6 +222,24 @@ def create_app(
             note("transcribe", transcriber.name, 0.0, "", seconds)
             return {"text": "", "audio_seconds": round(seconds, 3), "took_seconds": 0.0,
                     "engine": transcriber.name, "segments": []}
+        # No speech in it at all (room noise, music-free quiet): don't run the
+        # recognizers. Fails open: if the detector can't run, transcribe anyway.
+        if config.speech_gate and partner_for is not None:
+            try:
+                detect = getattr(app.state, "speech_seconds", None)
+                if detect is None:
+                    from .sidecar import helper as side
+
+                    def detect(samples):
+                        return side.call("vad", samples, timeout=60)
+                if detect(raw_audio) < 0.2:
+                    stats["no_speech"] = stats.get("no_speech", 0) + 1
+                    note("transcribe", "speech detector", time.perf_counter() - began, "", seconds)
+                    return {"text": "", "audio_seconds": round(seconds, 3),
+                            "took_seconds": round(time.perf_counter() - began, 3),
+                            "engine": transcriber.name, "segments": []}
+            except Exception:
+                pass
         # Quiet (far-away) speech is brought up to a working level first.
         audio = level(raw_audio)
 

@@ -19,6 +19,7 @@ def serve(connection) -> None:
 
     recognizers: dict = {}
     voices = engines.VoicesLocal()
+    detector = engines.SpeechDetector()
 
     def status(text: str) -> None:
         try:
@@ -46,6 +47,8 @@ def serve(connection) -> None:
                         recognizers.pop(next(iter(recognizers)))
                     recognizers[key] = engines.load_sherpa(key, status)
                 result = engines.decode_sherpa(recognizers[key], key, samples)
+            elif op == "vad":
+                result = detector.speech_seconds(args[0])
             elif op == "voices_load":
                 voices.load(status)
                 result = None

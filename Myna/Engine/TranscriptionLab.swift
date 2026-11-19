@@ -805,6 +805,13 @@ final class TranscriptionLab: ObservableObject {
     private static let newVoice: Float = 0.40
     /// Shortest stretch whose voice print is trusted at all.
     private static let shortestPrint: Double = 1.5
+    /// The best match must beat the next-best by this much, or the line is
+    /// left unassigned: two voices that both fit nearly as well are a coin
+    /// toss (Omi uses the same 0.10 margin).
+    private static let matchMargin: Float = 0.10
+    /// A new person is only started from at least this much speech (Omi
+    /// requires five seconds of evidence before trusting a voice print).
+    private static let newPersonSeconds: Double = 5
 
     /// Saves one utterance, attributing it to a known voice or starting a new
     /// "Speaker N" when the voice isn't one Myna has heard.
@@ -818,17 +825,24 @@ final class TranscriptionLab: ObservableObject {
             let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
             var best: VoicePerson?
             var bestScore: Float = -1
+            var runnerUp: Float = -1
             for person in people where !person.centroid.isEmpty {
                 let score = VoicePrint.similarity(VoicePrint.vector(person.centroid), voicePrint)
-                if score > bestScore { bestScore = score; best = person }
+                if score > bestScore {
+                    runnerUp = bestScore
+                    bestScore = score
+                    best = person
+                } else if score > runnerUp {
+                    runnerUp = score
+                }
             }
-            if let best, bestScore >= Self.sameVoice {
+            if let best, bestScore >= Self.sameVoice, bestScore - runnerUp >= Self.matchMargin {
                 if bestScore >= Self.learnVoice {
                     best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
                     best.sampleCount += 1
                 }
                 speakerKey = best.key
-            } else if bestScore < Self.newVoice, duration >= 3 {
+            } else if bestScore < Self.newVoice, duration >= Self.newPersonSeconds {
                 let person = VoicePerson(name: "Speaker \(people.count + 1)", centroid: VoicePrint.data(voicePrint))
                 context.insert(person)
                 speakerKey = person.key
