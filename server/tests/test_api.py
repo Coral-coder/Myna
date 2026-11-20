@@ -1997,3 +1997,22 @@ def test_repair_fixes_bee_year_54000_timestamps():
     assert 1_000_000_000 < convo["startedAt"] < 10_000_000_000
     assert store.get("utterance", "p1")["heardAt"] == good      # on-device line untouched
     assert bee_cloud.repair_bee_times(store) == 0               # idempotent
+
+
+def test_calendar_and_contact_tools_queue_commands_for_the_phone():
+    """add_event / add_contact create 'command' records that the phone executes
+    against its Calendar and Contacts on the next sync."""
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    out = recall.execute(store, {"action": "add_event", "title": "Dentist",
+                                 "start": "2026-12-01T15:00", "duration_minutes": 30})
+    assert "calendar" in out.lower()
+    cmd = store.browse("command", limit=5)[0]
+    assert cmd["do"] == "calendar" and cmd["title"] == "Dentist" and cmd["durationMinutes"] == 30
+    assert 1_000_000_000 < cmd["start"] < 10_000_000_000      # an absolute second timestamp
+
+    recall.execute(store, {"action": "add_contact", "name": "Alex Rivera", "phone": "415-555-0142"})
+    contact = [c for c in store.browse("command", limit=5) if c["do"] == "contact"][0]
+    assert contact["name"] == "Alex Rivera" and contact["phone"] == "415-555-0142"

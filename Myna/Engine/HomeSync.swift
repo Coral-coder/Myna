@@ -74,6 +74,9 @@ struct HomeSyncState: Codable {
     /// Ids of receptionist messages already shown as a notification, so a
     /// re-pull (e.g. after the server's db id changes) doesn't notify twice.
     var notified: Set<String> = []
+    /// Ids of device commands (calendar, contacts) already carried out, so a
+    /// re-pull doesn't run them again.
+    var ranCommands: Set<String> = []
 
     private static var file: URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -405,6 +408,7 @@ enum HomeSyncRun {
                 // messages were already shown so a re-pull doesn't notify twice.
                 var fresh = HomeSyncState()
                 fresh.notified = state.notified
+                fresh.ranCommands = state.ranCommands
                 state = fresh
             }
             state.dbId = serverDb
@@ -445,6 +449,8 @@ enum HomeSyncRun {
         // Messages Myna decided to send the user, gathered as they arrive and
         // shown as notifications once the sync is done.
         var nudges: [(id: String, text: String)] = []
+        // Device commands (calendar, contacts) to carry out after the sync.
+        var commands: [(id: String, data: [String: Any])] = []
         while (index < outgoing.count || more) && rounds < 2_000 {
             rounds += 1
             let batch = Array(outgoing[index..<min(index + 150, outgoing.count)])
@@ -481,6 +487,15 @@ enum HomeSyncRun {
                     }
                     continue
                 }
+                // A thing Lumi asked the phone to do on the device — run it once.
+                if kind == "command" {
+                    if change["deleted"] as? Bool != true, !state.ranCommands.contains(id),
+                       let data = change["data"] as? [String: Any] {
+                        commands.append((id, data))
+                        state.ranCommands.insert(id)
+                    }
+                    continue
+                }
                 guard let shelf = shelves[kind] else { continue }
                 if change["deleted"] as? Bool == true {
                     shelf.remove(id)
@@ -496,6 +511,7 @@ enum HomeSyncRun {
         }
         state.save()
         for nudge in nudges { await notify(id: nudge.id, text: nudge.text) }
+        for command in commands { await CommandCenter.run(command.data) }
         return state.total
     }
 

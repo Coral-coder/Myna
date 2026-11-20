@@ -39,6 +39,8 @@ Do things for them (only when they ask you to):
 {"action": "remember", "fact": "..."}                                 save a lasting fact they told you to keep
 {"action": "forget", "fact": "which one"}                             drop a saved fact
 {"action": "document", "title": "...", "body": "..."}                 save a written document/note for them
+{"action": "add_event", "title": "...", "start": "YYYY-MM-DDTHH:MM", "duration_minutes": 60, "location": "", "notes": ""}  put something on their calendar
+{"action": "add_contact", "name": "...", "phone": "", "email": ""}     save a contact on their phone
 
 Do things on their computer (only when shell access is on and they asked):
 {"action": "shell", "command": "..."}            run a command and read the output
@@ -87,7 +89,7 @@ How to answer:
 
 # The actions that change something (as opposed to read-only lookups).
 _ACTIONS = {"add_task", "remind", "complete_task", "remember", "forget", "document",
-            "write_file", "make_dir"}
+            "write_file", "make_dir", "add_event", "add_contact"}
 
 _PATTERNS = {
     "phone": r"(?:\+?\d[\d().\-\s]{6,}\d)",
@@ -313,7 +315,55 @@ def execute(store: Store, action: dict, lookup: Generate | None = None, embed=No
                 store.sync(0, [{"kind": "memory", "id": mem["id"], "updated_at": time.time(), "deleted": False, "data": data}])
                 return f'Forgotten: {mem.get("content")}.'
         return "I don't have that saved."
+    # -- things the phone does on the device (calendar, contacts) ----------------------
+    if name == "add_event":
+        title = str(action.get("title") or "").strip()
+        if not title:
+            return "Nothing to put on the calendar."
+        when = _parse_when(action.get("start") or action.get("at") or "")
+        _command(store, "calendar", {
+            "title": title, "start": when, "durationMinutes": int(action.get("duration_minutes") or 60),
+            "location": str(action.get("location") or ""), "notes": str(action.get("notes") or ""),
+        })
+        nice = datetime.fromtimestamp(when).strftime("%a %d %b at %H:%M") if when else "no time set"
+        return f'Putting "{title}" on your calendar ({nice}). It\'ll appear on your phone.'
+    if name == "add_contact":
+        cname = str(action.get("name") or "").strip()
+        if not cname:
+            return "No name for the contact."
+        _command(store, "contact", {
+            "name": cname, "phone": str(action.get("phone") or ""), "email": str(action.get("email") or ""),
+        })
+        return f'Saving {cname} to your contacts — it\'ll sync to your phone.'
     return "Unknown action."
+
+
+def _command(store: Store, kind: str, args: dict) -> str:
+    """Queue an instruction for the phone to carry out on the device."""
+    cid = str(uuid.uuid4()).upper()
+    store.sync(0, [{"kind": "command", "id": cid, "updated_at": time.time(), "deleted": False, "data": {
+        "createdAt": time.time(), "do": kind, **args,
+    }}])
+    return cid
+
+
+def _parse_when(raw) -> float:
+    """A date-time the model gives (ISO 8601, or 'today'/'tomorrow') → timestamp."""
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    low = text.lower()
+    base = datetime.now().replace(second=0, microsecond=0)
+    if low.startswith("today"):
+        return base.replace(hour=9, minute=0).timestamp()
+    if low.startswith("tomorrow"):
+        return base.replace(hour=9, minute=0).timestamp() + 86400
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:len("2026-01-01T00:00:00")], fmt).timestamp()
+        except ValueError:
+            continue
+    return _parse_due(text)
 
 
 def _norm(text) -> str:
@@ -439,5 +489,9 @@ def _step_label(act: dict, result: str) -> str:
     if name in ("list_dir", "read_file", "write_file", "make_dir"):
         verb = {"list_dir": "Listed", "read_file": "Read", "write_file": "Wrote", "make_dir": "Made folder"}[name]
         return f"{verb} {act.get('path', '')}"
+    if name == "add_event":
+        return f"Added to your calendar: {act.get('title', '')}"
+    if name == "add_contact":
+        return f"Saved a contact: {act.get('name', '')}"
     # The action tools already return a plain confirmation ("Added … to your list").
     return result.split("\n")[0][:140]

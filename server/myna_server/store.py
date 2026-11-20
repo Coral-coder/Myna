@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily", "conversation", "message")
+KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily", "conversation", "message", "command")
 
 # Which field of a record places it in time, per kind.
 _TIME_FIELDS = {
@@ -29,6 +29,9 @@ _TIME_FIELDS = {
     # A note Myna decides to send the user on its own — surfaced as a
     # notification on the phone when it syncs.
     "message": ("createdAt",),
+    # An instruction the phone carries out on the device — add a calendar
+    # event, a reminder, a contact — since those live on the phone.
+    "command": ("createdAt",),
 }
 
 
