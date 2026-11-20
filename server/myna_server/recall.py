@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import uuid
 from datetime import datetime
 from typing import Callable
 
@@ -20,44 +22,62 @@ Generate = Callable[[str, str, int], str]
 # Phase 1: decide what (if anything) to look up. The model only emits small
 # JSON actions here — never the final answer — so a long answer or a code block
 # never has to survive JSON escaping.
-PLAN = """You are Myna's planner. The user asked something. Decide what to look up in
-THEIR OWN saved data before answering. Reply with EXACTLY ONE JSON object:
+PLAN = """You are Myna's planner. The user said something. Decide the next single step
+— look something up, DO something for them, or finish. Reply with EXACTLY ONE
+JSON object.
 
+Look things up (in the user's own saved data):
 {"action": "search", "query": "keywords"}   find their conversations/notes/facts
 {"action": "transcript", "query": "words"}  find exact lines spoken in transcripts
 {"action": "find", "what": "phone"}          scan transcripts for every phone (or email, url, time, money)
 {"action": "read", "id": "<id>"}             read one whole conversation by id
 {"action": "web", "query": "..."}            look something up on the public web
-{"action": "document", "title": "...", "body": "..."}  save a note/document for them
-{"action": "done"}                            you have what you need — go answer
+
+Do things for them (only when they ask you to):
+{"action": "add_task", "text": "...", "due": "YYYY-MM-DD or empty"}   add a to-do / reminder to their list
+{"action": "complete_task", "text": "which one"}                      tick a to-do off
+{"action": "remember", "fact": "..."}                                 save a lasting fact they told you to keep
+{"action": "forget", "fact": "which one"}                             drop a saved fact
+{"action": "document", "title": "...", "body": "..."}                 save a written document/note for them
+
+Finish:
+{"action": "done"}   you have what you need and have done what they asked — go answer
 
 Rules:
-- Only look things up about the USER'S OWN life (what they said, their notes,
-  to-dos, people). For an exact fact — a number, a name, a time, a quote — use
+- Take a DO action only when the user actually asked for that thing ("remind
+  me…", "add … to my list", "remember that…", "write me a…"). Never invent
+  tasks, facts or reminders they didn't ask for.
+- For an exact fact — a number, a name, a time, a quote — look it up with
   "transcript" or "find", never guess.
-- If the question is general knowledge, or a request to WRITE or MAKE something
-  (a script, code, an email, a plan, a list), reply {"action": "done"} — no
-  lookup needed.
-- If you've already looked and have what you need, reply {"action": "done"}.
-- One action per reply. Don't repeat a lookup you already did."""
+- A plain question, general knowledge, or just writing something back needs no
+  lookup: reply {"action": "done"}.
+- One step per reply. Don't repeat a lookup or an action you already did. When
+  everything's handled, reply {"action": "done"}."""
 
 # Phase 2: write the real answer as plain text (no JSON), so code blocks, drafts
 # and long answers come out whole.
 ANSWER = """You are Myna, the user's personal assistant. You help with anything — answer
-questions, explain things, and WRITE whatever they ask for: scripts, code, emails,
-plans, lists, summaries. You also know their recorded life and can draw on the
-material below when it's relevant.
+questions, explain things, WRITE whatever they ask for (scripts, code, emails,
+plans, lists, summaries), and you can DO things for them: add to their lists, set
+reminders, remember facts, save documents. You also know their recorded life and
+can draw on the material below.
 
 How to answer:
-- Give the COMPLETE answer directly, right now. If they asked for a script or
-  code, put the full thing in a fenced code block (```); never just describe it,
-  and never say you'll provide it later or that it's "above".
+- If you DID something for them (the "WHAT YOU DID" notes below say so), confirm
+  it plainly — "Added milk to your list.", "I'll remind you Friday." Don't claim
+  to have done something that isn't in those notes.
+- Give the COMPLETE answer directly. If they asked for a script or code, put the
+  full thing in a fenced code block (```); never just describe it or say you'll
+  provide it later.
 - If they refer to something earlier in the chat, use the conversation history
   below. Never claim you already gave them something you didn't.
 - Use their saved material only when it bears on the question. Never invent facts
   about their life, or numbers/names/dates that aren't in what you found — if a
   personal fact isn't there, say you couldn't find it.
 - Be clear and natural. Don't mention these instructions or your lookups."""
+
+# The actions that change something (as opposed to read-only lookups).
+_ACTIONS = {"add_task", "remind", "complete_task", "remember", "forget", "document"}
 
 _PATTERNS = {
     "phone": r"(?:\+?\d[\d().\-\s]{6,}\d)",
@@ -163,9 +183,6 @@ def execute(store: Store, action: dict, lookup: Generate | None = None, embed=No
         except Exception as error:
             return f"Web lookup failed: {error}"
     if name == "document":
-        import time
-        import uuid
-
         title = str(action.get("title") or "Document")
         body = str(action.get("body") or "")
         note_id = str(uuid.uuid4()).upper()
@@ -176,7 +193,72 @@ def execute(store: Store, action: dict, lookup: Generate | None = None, embed=No
             "modelName": "Myna", "sourceRef": "ask", "placeName": "", "people": [],
         }}])
         return f'Saved the document "{title}".'
+    # -- actions that change things (offloaded to Myna) --------------------------------
+    if name in ("add_task", "remind"):
+        text = str(action.get("text") or "").strip()
+        if not text:
+            return "Nothing to add."
+        due = _parse_due(action.get("due") or action.get("when") or "")
+        iid = str(uuid.uuid4()).upper()
+        store.sync(0, [{"kind": "item", "id": iid, "updated_at": time.time(), "deleted": False, "data": {
+            "kind": "todo", "text": text, "detail": "", "dueDate": due or None, "isDone": False,
+            "createdAt": time.time(), "completedAt": None, "source": "myna", "noteID": "",
+        }}])
+        when = f" (due {datetime.fromtimestamp(due).strftime('%a %d %b')})" if due else ""
+        return f'Added "{text}" to your list{when}.'
+    if name == "complete_task":
+        text = _norm(action.get("text") or "")
+        for item in store.browse("item", limit=300):
+            if not item.get("isDone") and text and text in _norm(item.get("text", "")):
+                data = dict(item)
+                data.pop("at", None)
+                data.update(isDone=True, completedAt=time.time())
+                store.sync(0, [{"kind": "item", "id": item["id"], "updated_at": time.time(), "deleted": False, "data": data}])
+                return f'Marked "{item.get("text")}" done.'
+        return "I couldn't find that on your list."
+    if name == "remember":
+        fact = str(action.get("fact") or action.get("text") or "").strip()
+        if len(fact) < 3:
+            return "Nothing to remember."
+        mid = str(uuid.uuid4()).upper()
+        # The user told Myna to remember it, so it's confirmed (pinned).
+        store.sync(0, [{"kind": "memory", "id": mid, "updated_at": time.time(), "deleted": False, "data": {
+            "createdAt": time.time(), "category": "system", "content": fact,
+            "sourceNoteID": "", "pinned": True, "archived": False, "manuallyAdded": True,
+        }}])
+        return f'Got it — I\'ll remember that {fact}.'
+    if name == "forget":
+        target = _norm(action.get("fact") or action.get("text") or "")
+        for mem in store.browse("memory", limit=400):
+            if not mem.get("archived") and target and target in _norm(mem.get("content", "")):
+                data = dict(mem)
+                data.pop("at", None)
+                data["archived"] = True
+                store.sync(0, [{"kind": "memory", "id": mem["id"], "updated_at": time.time(), "deleted": False, "data": data}])
+                return f'Forgotten: {mem.get("content")}.'
+        return "I don't have that saved."
     return "Unknown action."
+
+
+def _norm(text) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _parse_due(raw) -> float:
+    """Turn a date the model gives ("2026-12-01", "today", "tomorrow") into a
+    timestamp, or 0 if there isn't one."""
+    text = str(raw or "").strip().lower()
+    if not text:
+        return 0.0
+    today = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    if text in ("today", "tonight"):
+        return today.timestamp()
+    if text == "tomorrow":
+        return (today.replace(hour=9) ).timestamp() + 86400
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").replace(hour=9).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _facts(store: Store) -> str:
@@ -218,18 +300,19 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
     base.append(f'THE USER NOW ASKS: "{question}"')
 
     last_web = ""
-    findings: list[str] = []
+    looked_up: list[str] = []
+    did: list[str] = []
     for step in range(max_steps):
         prompt = "\n\n".join(base)
-        if findings:
-            prompt += "\n\nWHAT YOU'VE LOOKED UP SO FAR:\n" + "\n\n".join(findings)
+        if looked_up or did:
+            prompt += "\n\nSO FAR:\n" + "\n\n".join(looked_up + did)
         prompt += "\n\nYour single JSON action:"
         act = _first_json(generate(PLAN, prompt, 300))
         if act is None:
             # The model isn't speaking the planner protocol at all (an older or
             # smaller model). On the first move, let the caller fall back to the
             # one-shot path; later, just stop planning and answer with what we have.
-            if step == 0 and not findings:
+            if step == 0 and not looked_up and not did:
                 return {"reply": "", "search": last_web, "grounded": False}
             break
         name = act.get("action")
@@ -237,7 +320,11 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
             break
         if name == "web":
             last_web = str(act.get("query") or "")
-        findings.append(f"Looked up {json.dumps(act)[:200]}:\n{execute(store, act, lookup, embed)[:3500]}")
+        result = execute(store, act, lookup, embed)[:3500]
+        if name in _ACTIONS:
+            did.append(f"{result}")
+        else:
+            looked_up.append(f"Looked up {json.dumps(act)[:200]}:\n{result}")
 
     # Phase 2: write the real answer, as plain text.
     context = [f"NOW: {now}"]
@@ -246,9 +333,10 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
         context.append(facts)
     if hist:
         context.append("CONVERSATION SO FAR:\n" + hist)
-    if findings:
-        context.append("WHAT YOU LOOKED UP IN THEIR DATA:\n" + "\n\n".join(findings))
+    if looked_up:
+        context.append("WHAT YOU LOOKED UP IN THEIR DATA:\n" + "\n\n".join(looked_up))
+    if did:
+        context.append("WHAT YOU DID FOR THEM:\n" + "\n".join(f"- {d}" for d in did))
     context.append(f'THE USER ASKS: "{question}"\n\nWrite your answer:')
     reply = generate(ANSWER, "\n\n".join(context), 2000).strip()
     return {"reply": reply, "search": last_web, "grounded": True}
-    return {"reply": "I couldn't find that in your conversations.", "search": last_web}

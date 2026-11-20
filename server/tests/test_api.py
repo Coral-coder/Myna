@@ -1834,3 +1834,36 @@ def test_model_picker_does_not_warn_for_a_big_moe_model(stt):
     reply = client.post("/browse/models", headers=AUTH, data={"role": "llm", "repo": repo, "file": file},
                         follow_redirects=False)
     assert reply.status_code == 303 and Switchable.used == (repo, file)   # applied, no warning
+
+
+def test_ask_can_do_things_add_remember_complete_forget():
+    """The agent acts on what you offload: adds a to-do, remembers a fact, ticks
+    things off, forgets — and the answer confirms what it did."""
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+
+    assert "list" in recall.execute(store, {"action": "add_task", "text": "buy milk", "due": ""}).lower()
+    assert store.browse("item", limit=5)[0]["text"] == "buy milk"
+
+    recall.execute(store, {"action": "remember", "fact": "the user's sister is Mia"})
+    mem = store.browse("memory", limit=5)[0]
+    assert mem["content"] == "the user's sister is Mia" and mem["pinned"] is True   # confirmed: they asked
+
+    recall.execute(store, {"action": "complete_task", "text": "milk"})
+    assert store.browse("item", limit=5)[0]["isDone"] is True
+
+    recall.execute(store, {"action": "forget", "fact": "sister is Mia"})
+    assert store.browse("memory", limit=5)[0]["archived"] is True
+
+    # Full loop: the planner adds a reminder, then the answer confirms it.
+    def gen(instructions, prompt, max_tokens):
+        if instructions == recall.PLAN:
+            return ('{"action": "add_task", "text": "call the bank", "due": "2026-12-01"}'
+                    if "WHAT YOU DID" not in prompt and "Added" not in prompt else '{"action": "done"}')
+        assert "WHAT YOU DID FOR THEM" in prompt and "call the bank" in prompt   # the answer sees what was done
+        return "Done — I'll remind you to call the bank on Dec 1."
+    out = recall.answer(store, gen, "remind me to call the bank on December 1", [])
+    assert "call the bank" in out["reply"]
+    assert any(i["text"] == "call the bank" and i.get("dueDate") for i in store.browse("item", limit=10))
