@@ -1571,3 +1571,28 @@ def test_bee_connect_button_starts_pairing(tmp_path, monkeypatch):
             break
         clock.sleep(0.05)
     assert config.bee_token == "tok_from_pairing"
+
+
+def test_connect_renders_the_qr_immediately(tmp_path, monkeypatch):
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    def fake_start(self):
+        self.request_id = "abc"
+        self.expires_at = "2030-01-01T00:00:00Z"
+        self.url = "https://bee.computer/connect#abc"
+        return self.url
+
+    monkeypatch.setattr(bee_cloud.Pairing, "start", fake_start)
+    monkeypatch.setattr(bee_cloud.Pairing, "poll_once", lambda self: False)
+
+    app = create_app(Config(token="secret-token", transcribe_source="bee"), FakeTranscriber(), FakeWriter(),
+                     store=Store(tmp_path / "q.db"))
+    app.state.save_config = False
+    client = TestClient(app)
+
+    client.post("/browse/bee/connect", headers=AUTH, follow_redirects=False)
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "<svg" in page and "bee.computer/connect#abc" in page   # QR is on the page right away
+    client.post("/browse/bee/cancel", headers=AUTH, follow_redirects=False)
+    assert "<svg" not in client.get("/browse/models", headers=AUTH).text

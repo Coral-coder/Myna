@@ -1063,43 +1063,67 @@ def create_app(
     bee_state = {"status": "", "last_sync": 0.0, "new": 0, "account": "", "running": False}
     bee_pair = {"active": False, "url": "", "svg": "", "status": "", "expires": ""}
 
-    def run_pairing() -> None:
-        import time
+    pairing_holder = {"obj": None}
 
+    def start_pairing() -> str:
+        """Begin pairing now (one quick network call) and render the QR. Returns
+        an error message, or "" on success. The polling then runs in the
+        background."""
         try:
             pair = bee_cloud.Pairing()
             url = pair.start()
-            if url is None:   # Bee completed immediately
-                config.bee_token = pair.token
-            else:
-                bee_pair.update(active=True, url=url, svg=bee_cloud.qr_svg(url), expires=pair.expires_at,
-                                status="Scan this with the Bee app (Developer Mode on), then approve.")
-                while bee_pair["active"]:
-                    time.sleep(2)
-                    if pair.poll_once():
-                        config.bee_token = pair.token
-                        break
-                if not pair.token:
-                    return   # cancelled
-            if getattr(app.state, "save_config", True):
-                config.save()
-            bee_state["account"] = ""
-            bee_pair.update(active=False, status="Connected to Bee. Syncing…")
-            config.transcribe_source = "bee"
-            if getattr(app.state, "save_config", True):
-                config.save()
-            threading.Thread(target=run_bee_sync, daemon=True).start()
         except bee_cloud.BeeError as error:
             bee_pair.update(active=False, status=str(error))
+            return str(error)
         except Exception as error:
-            bee_pair.update(active=False, status=f"Pairing failed: {error}")
+            bee_pair.update(active=False, status=f"Couldn't start pairing: {error}")
+            return str(error)
+        if url is None:   # Bee completed immediately
+            _finish_pairing(pair.token)
+            return ""
+        try:
+            svg = bee_cloud.qr_svg(url)
+        except Exception as error:
+            bee_pair.update(active=False, status=f"Couldn't draw the QR: {error}")
+            return str(error)
+        pairing_holder["obj"] = pair
+        bee_pair.update(active=True, url=url, svg=svg, expires=pair.expires_at,
+                        status="Scan this with the Bee app (Developer Mode on), then approve.")
+        threading.Thread(target=poll_pairing, daemon=True).start()
+        return ""
+
+    def poll_pairing() -> None:
+        import time
+
+        pair = pairing_holder.get("obj")
+        if pair is None:
+            return
+        try:
+            while bee_pair["active"] and not pair.token:
+                time.sleep(2)
+                if pair.poll_once():
+                    _finish_pairing(pair.token)
+                    return
+        except bee_cloud.BeeError as error:
+            bee_pair.update(active=False, status=str(error))
+
+    def _finish_pairing(token: str) -> None:
+        config.bee_token = token
+        config.transcribe_source = "bee"
+        bee_state["account"] = ""
+        bee_pair.update(active=False, status="Connected to Bee. Syncing\u2026")
+        if getattr(app.state, "save_config", True):
+            config.save()
+        free_all_models()
+        threading.Thread(target=run_bee_sync, daemon=True).start()
 
     def bee_client():
         return bee_cloud.BeeCloud(config.bee_token)
 
     def run_bee_sync() -> int:
-        """Pull new Bee conversations, save a local copy, and (local AI on) write
-        each up Myna-style alongside Bee's own summary."""
+        """Pull new Bee conversations, save a local copy, and write each up
+        Myna-style alongside Bee's own summary. In Bee mode the writing/search
+        models are unloaded afterwards so nothing stays resident between syncs."""
         client = bee_client()
         if not client.configured or bee_state["running"]:
             return 0
@@ -1113,11 +1137,9 @@ def create_app(
                 except bee_cloud.BeeError:
                     pass
             added = bee_cloud.import_conversations(store, client, owner=config.owner_name)
-            # Myna's own write-up of each new Bee transcript (both views are kept).
-            if not config.simple_mode or True:   # local AI for conversations stays on
-                known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
-                for cid in bee_cloud.needs_writeup(store):
-                    bee_cloud.myna_writeup(store, cid, writer.generate, config.owner_name, known)
+            known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
+            for cid in bee_cloud.needs_writeup(store):
+                bee_cloud.myna_writeup(store, cid, writer.generate, config.owner_name, known)
             app.state.run_indexing()
             bee_state.update(status=f"Synced. {added} new.", last_sync=time.time(), new=added)
             return added
@@ -1130,16 +1152,42 @@ def create_app(
         finally:
             job.__exit__()
             bee_state["running"] = False
+            # Bee mode: keep nothing resident between syncs — load the writing
+            # and search models only while actively writing up.
+            if config.transcribe_source == "bee":
+                for model in (writer, helper, summarizer, checker, embedder):
+                    if model is not None and hasattr(model, "stop"):
+                        try:
+                            model.stop()
+                        except Exception:
+                            pass
 
     app.state.run_bee_sync = run_bee_sync
+    def free_all_models() -> None:
+        """Bee mode: unload the recognizer, voice models and writing models so
+        nothing sits on the card until it's actually used."""
+        for model in (writer, helper, summarizer, checker, embedder):
+            if model is not None and hasattr(model, "stop"):
+                try:
+                    model.stop()
+                except Exception:
+                    pass
+        for model in (transcriber, voices):
+            if model is not None and hasattr(model, "_unload_for_room"):
+                try:
+                    model._unload_for_room()
+                except Exception:
+                    pass
+
+    app.state.free_all_models = free_all_models
+
 
     @app.post("/browse/bee/connect")
     async def bee_connect(_: None = Depends(paired)):
         from fastapi.responses import RedirectResponse
 
         if not bee_pair["active"]:
-            bee_pair.update(active=True, url="", svg="", status="Starting…")
-            threading.Thread(target=run_pairing, daemon=True).start()
+            await run_in_threadpool(start_pairing)
         return RedirectResponse("/browse/models", status_code=303)
 
     @app.post("/browse/bee/cancel")
@@ -1158,6 +1206,8 @@ def create_app(
         form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
         if "source" in form:
             config.transcribe_source = "bee" if form.get("source") == "bee" else "local"
+            if config.transcribe_source == "bee":
+                free_all_models()
         if "bee_token" in form:
             config.bee_token = form.get("bee_token", "").strip()
             bee_state["account"] = ""   # re-check the account with the new token
