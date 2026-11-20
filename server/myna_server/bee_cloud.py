@@ -322,3 +322,61 @@ def qr_svg(url: str) -> str:
     img.save(buf)
     svg = buf.getvalue().decode("utf-8")
     return svg[svg.index("<svg"):]
+
+
+# -- mirror a Bee conversation into a phone-syncable note -------------------------------
+#
+# The phone's HomeSync pulls "note" records (ConversationNote) and "utterance"
+# records, but not "conversation" records. So each Bee conversation is also
+# written as a "note" (carrying Myna's write-up, or Bee's summary), which syncs
+# down so the phone's Today and Notes show the latest server-side info.
+
+import uuid as _uuid
+
+_NOTE_NS = _uuid.UUID("b5e0a7d2-0000-4000-8000-beed00000000")
+
+
+def _note_id(bee_id) -> str:
+    return str(_uuid.uuid5(_NOTE_NS, f"bee-{bee_id}")).upper()
+
+
+def mirror_note(store, conversation_id: str) -> bool:
+    """Write (or refresh) the ConversationNote-shaped 'note' record for a Bee
+    conversation so it syncs to the phone. Returns True if written."""
+    record = store.get("conversation", conversation_id)
+    if record is None or record.get("source") != "bee":
+        return False
+    bee_id = record.get("beeId")
+    myna = record.get("myna") or {}
+    start = float(record.get("startedAt") or record.get("at") or 0.0)
+    end = float(record.get("endedAt") or start)
+    transcript = "\n".join(
+        f'{u.get("speakerName") + ": " if u.get("speakerName") else ""}{u.get("text", "")}'
+        for u in sorted((u for u in store.browse("utterance", limit=4000) if u.get("beeId") == bee_id),
+                        key=lambda u: u.get("at", 0.0)))
+    actions = []
+    for item in (myna.get("actionItems") or record.get("actionItems") or []):
+        if isinstance(item, dict) and (item.get("description") or item.get("task")):
+            actions.append({"id": str(_uuid.uuid4()).upper(),
+                            "task": item.get("description") or item.get("task"),
+                            "owner": item.get("owner") or None,
+                            "due": item.get("due_at") or item.get("due") or None,
+                            "isDone": bool(item.get("isDone"))})
+    key_points = [b for section in (myna.get("sections") or []) for b in (section.get("bullets") or [])]
+    data = {
+        "createdAt": start, "startedAt": start, "endedAt": end,
+        "title": myna.get("title") or record.get("title") or "Conversation",
+        "overview": myna.get("overview") or record.get("overview") or "",
+        "detailedNotes": record.get("overview") or "",   # Bee's summary kept here
+        "keyPoints": key_points, "decisions": [],
+        "actionItems": actions, "detectedEvents": [], "followUps": [],
+        "transcript": transcript, "modelName": "Bee + Myna",
+        "sourceRef": f"bee-{bee_id}", "placeName": "",
+        "people": [s for s in (record.get("speakers") or []) if s],
+    }
+    note_id = _note_id(bee_id)
+    _save(store, "note", note_id, data, start)
+    if record.get("mirroredNote") != note_id:
+        record["mirroredNote"] = note_id
+        _save(store, "conversation", conversation_id, record, start)
+    return True

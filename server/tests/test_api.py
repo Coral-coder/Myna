@@ -1596,3 +1596,31 @@ def test_connect_renders_the_qr_immediately(tmp_path, monkeypatch):
     assert "<svg" in page and "bee.computer/connect#abc" in page   # QR is on the page right away
     client.post("/browse/bee/cancel", headers=AUTH, follow_redirects=False)
     assert "<svg" not in client.get("/browse/models", headers=AUTH).text
+
+
+def test_bee_conversations_mirror_to_phone_notes(tmp_path):
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "m.db")
+    store.sync(0, [
+        {"kind": "utterance", "id": "bee-9-0", "updated_at": 1,
+         "data": {"text": "Move the launch to March.", "heardAt": 10, "beeId": 9, "speakerName": "Sam"}},
+        {"kind": "conversation", "id": "bee-9", "updated_at": 1,
+         "data": {"startedAt": 10, "endedAt": 60, "title": "Launch", "overview": "Bee summary here",
+                  "source": "bee", "beeId": 9, "speakers": ["Sam"],
+                  "myna": {"title": "Launch moved", "overview": "They agreed to move it.",
+                           "actionItems": [{"description": "Tell the team", "due_at": "2026-12-01"}],
+                           "sections": [{"bullets": ["March date agreed"]}]}}},
+    ])
+    assert bee_cloud.mirror_note(store, "bee-9")
+    notes = store.browse("note")
+    assert len(notes) == 1
+    note = notes[0]
+    assert note["title"] == "Launch moved" and note["overview"] == "They agreed to move it."
+    assert note["detailedNotes"] == "Bee summary here"           # Bee's summary kept
+    assert note["actionItems"][0]["task"] == "Tell the team" and note["keyPoints"] == ["March date agreed"]
+    assert "Sam: Move the launch to March." in note["transcript"]
+    # Deterministic id; re-mirroring updates in place, no duplicate.
+    assert bee_cloud.mirror_note(store, "bee-9")
+    assert len(store.browse("note")) == 1

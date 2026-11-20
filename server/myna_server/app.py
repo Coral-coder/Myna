@@ -1140,6 +1140,11 @@ def create_app(
             known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
             for cid in bee_cloud.needs_writeup(store):
                 bee_cloud.myna_writeup(store, cid, writer.generate, config.owner_name, known)
+            # Mirror every Bee conversation to a phone-syncable note so the
+            # phone's Today / Notes always show the latest server-side info.
+            for row in store.browse("conversation", limit=400):
+                if row.get("source") == "bee":
+                    bee_cloud.mirror_note(store, row["id"])
             app.state.run_indexing()
             bee_state.update(status=f"Synced. {added} new.", last_sync=time.time(), new=added)
             return added

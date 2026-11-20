@@ -181,6 +181,10 @@ final class AppServices {
             if self.whisper.isEnabled { self.whisper.load() }
             self.beeCloud.importIfEnabled()
             self.pilot.drainQueue()
+            // Pull the latest from the home server now, so Today reflects the
+            // server-side conversations and transcript as soon as Myna opens
+            // (otherwise it waits up to the 60-second sync timer).
+            await HomeSync.shared.syncNow()
         }
     }
 
