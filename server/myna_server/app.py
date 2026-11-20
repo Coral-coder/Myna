@@ -1160,7 +1160,9 @@ def create_app(
             # Bee mode: keep nothing resident between syncs — load the writing
             # and search models only while actively writing up.
             if config.transcribe_source == "bee":
-                for model in (writer, helper, summarizer, checker, embedder):
+                # Keep the main writing model resident (it answers Ask quickly);
+                # only the extra roles are unloaded.
+                for model in (helper, summarizer, checker, embedder):
                     if model is not None and hasattr(model, "stop"):
                         try:
                             model.stop()
@@ -1169,9 +1171,9 @@ def create_app(
 
     app.state.run_bee_sync = run_bee_sync
     def free_all_models() -> None:
-        """Bee mode: unload the recognizer, voice models and writing models so
-        nothing sits on the card until it's actually used."""
-        for model in (writer, helper, summarizer, checker, embedder):
+        """Bee mode: unload the recognizer, voice models and the extra writing
+        roles, but keep the main writing model (it answers Ask) warm."""
+        for model in (helper, summarizer, checker, embedder):
             if model is not None and hasattr(model, "stop"):
                 try:
                     model.stop()
@@ -1183,6 +1185,8 @@ def create_app(
                     model._unload_for_room()
                 except Exception:
                     pass
+        if writer is not None and hasattr(writer, "warm"):
+            threading.Thread(target=writer.warm, daemon=True).start()
 
     app.state.free_all_models = free_all_models
 

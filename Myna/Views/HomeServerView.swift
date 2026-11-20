@@ -71,9 +71,13 @@ struct HomeServerView: View {
 
             HStack(spacing: 10) {
                 pill("Check now") { Task { await server.check(); await sync.syncNow() } }
+                pill("Re-sync everything") { Task { sync.reset(); await server.check(); await sync.syncNow() } }
                 pill("Unpair") { server.unpair() }
                 Spacer()
             }
+            Text("Re-sync everything pulls the whole server database again from scratch — use it if Today or Notes are missing things the server has (e.g. after the server was updated or reinstalled).")
+                .font(.system(size: 11, weight: .light))
+                .foregroundStyle(MynaTheme.muted)
         }
     }
 

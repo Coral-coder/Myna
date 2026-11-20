@@ -1624,3 +1624,14 @@ def test_bee_conversations_mirror_to_phone_notes(tmp_path):
     # Deterministic id; re-mirroring updates in place, no duplicate.
     assert bee_cloud.mirror_note(store, "bee-9")
     assert len(store.browse("note")) == 1
+
+
+def test_sync_reports_a_stable_db_id(tmp_path):
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "db1.db")
+    first = store.sync(0, [])
+    assert first.get("db_id") and store.sync(0, [])["db_id"] == first["db_id"]   # stable
+
+    other = Store(tmp_path / "db2.db")
+    assert other.sync(0, [])["db_id"] != first["db_id"]                          # a new DB → new id

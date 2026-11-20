@@ -66,6 +66,10 @@ final class HomeSync: ObservableObject {
 struct HomeSyncState: Codable {
     var cursor = 0
     var sent: [String: [String: String]] = [:]
+    /// The server database this cursor belongs to. If the server's database is
+    /// recreated (a reinstall, a wiped data folder) its id changes and its
+    /// sequence numbers restart, so we must pull everything again from 0.
+    var dbId: String = ""
 
     private static var file: URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -384,6 +388,20 @@ enum HomeSyncRun {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         var state = HomeSyncState.load()
+
+        // If the server's database was recreated (its id changed), its sequence
+        // numbers restarted, so our cursor is stale and would skip everything.
+        // Detect that up front and re-pull the whole database from scratch.
+        if let probe = try? await HomeServer.shared.syncExchange(
+                JSONSerialization.data(withJSONObject: ["since": state.cursor, "changes": []])),
+           let json = try? JSONSerialization.jsonObject(with: probe) as? [String: Any],
+           let serverDb = json["db_id"] as? String {
+            if !state.dbId.isEmpty, serverDb != state.dbId {
+                state = HomeSyncState()   // cursor 0, nothing sent — pull it all again
+            }
+            state.dbId = serverDb
+            state.save()
+        }
 
         var shelves: [String: Shelf] = [:]
         let all = try [makeShelf(Utterance.self, in: context), makeShelf(ConversationNote.self, in: context),

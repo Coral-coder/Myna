@@ -64,6 +64,13 @@ class Store:
             )
             self._db.execute("CREATE INDEX IF NOT EXISTS records_seq ON records (seq)")
             self._db.execute("CREATE INDEX IF NOT EXISTS records_time ON records (kind, deleted, sort_at)")
+            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'db_id'").fetchone()
+            if row is None:
+                import uuid as _uuid
+                self._db.execute("INSERT INTO meta (key, value) VALUES ('db_id', ?)", (str(_uuid.uuid4()),))
+                row = self._db.execute("SELECT value FROM meta WHERE key = 'db_id'").fetchone()
+            self.db_id = row["value"]
             # Received audio (kept a few days) and what each transcription
             # model made of it, for comparing models on the same recordings.
             self._db.execute(
@@ -160,7 +167,7 @@ class Store:
             for row in rows
             if (row["kind"], row["id"]) not in accepted
         ]
-        return {"changes": out, "cursor": top, "more": more}
+        return {"changes": out, "cursor": top, "more": more, "db_id": self.db_id}
 
     def browse(self, kind: str, query: str = "", limit: int = 300, before: float | None = None) -> list[dict]:
         """Records of one kind, newest first, optionally only those containing `query`."""
