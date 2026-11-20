@@ -17,35 +17,47 @@ from .store import Store
 
 Generate = Callable[[str, str, int], str]
 
-TOOLS = """You are Myna. You answer the user's questions about their own life from
-their recorded conversations, notes and lists. You can look things up before
-answering. Reply with EXACTLY ONE JSON object and nothing else — one of:
+# Phase 1: decide what (if anything) to look up. The model only emits small
+# JSON actions here — never the final answer — so a long answer or a code block
+# never has to survive JSON escaping.
+PLAN = """You are Myna's planner. The user asked something. Decide what to look up in
+THEIR OWN saved data before answering. Reply with EXACTLY ONE JSON object:
 
-{"action": "search", "query": "keywords"}
-    Find conversations and notes about something. Returns their ids and gists.
-{"action": "transcript", "query": "keywords"}
-    Find the exact spoken lines in the transcripts. Use this for quotes, names,
-    numbers, decisions — anything said word for word.
-{"action": "find", "what": "phone"}
-    Scan the transcripts for every phone number (or "email", "url", "time",
-    "money"), each with the line it was said in.
-{"action": "read", "id": "<id>"}
-    Read one whole conversation (its summary and full transcript) by id.
-{"action": "web", "query": "..."}
-    Look something up on the public web (weather, facts) — NOT personal info.
-{"action": "document", "title": "...", "body": "..."}
-    Save a document/note for the user (e.g. a summary they asked you to write).
-{"action": "answer", "text": "your answer to the user", "search": ""}
-    Give the final answer. Put a web query in "search" only if you used the web.
+{"action": "search", "query": "keywords"}   find their conversations/notes/facts
+{"action": "transcript", "query": "words"}  find exact lines spoken in transcripts
+{"action": "find", "what": "phone"}          scan transcripts for every phone (or email, url, time, money)
+{"action": "read", "id": "<id>"}             read one whole conversation by id
+{"action": "web", "query": "..."}            look something up on the public web
+{"action": "document", "title": "...", "body": "..."}  save a note/document for them
+{"action": "done"}                            you have what you need — go answer
 
 Rules:
-- For exact facts (a number, a name, a time, a quote) use "transcript" or
-  "find" — never answer such a thing from memory or a gist.
-- Keep looking until you have the fact or are sure it isn't there. Try a few
-  different searches before giving up.
-- NEVER invent a number, name, date or fact. If it isn't in the user's data,
-  say you couldn't find it and what you searched.
-- Answer in plain language, concise, in the user's own terms."""
+- Only look things up about the USER'S OWN life (what they said, their notes,
+  to-dos, people). For an exact fact — a number, a name, a time, a quote — use
+  "transcript" or "find", never guess.
+- If the question is general knowledge, or a request to WRITE or MAKE something
+  (a script, code, an email, a plan, a list), reply {"action": "done"} — no
+  lookup needed.
+- If you've already looked and have what you need, reply {"action": "done"}.
+- One action per reply. Don't repeat a lookup you already did."""
+
+# Phase 2: write the real answer as plain text (no JSON), so code blocks, drafts
+# and long answers come out whole.
+ANSWER = """You are Myna, the user's personal assistant. You help with anything — answer
+questions, explain things, and WRITE whatever they ask for: scripts, code, emails,
+plans, lists, summaries. You also know their recorded life and can draw on the
+material below when it's relevant.
+
+How to answer:
+- Give the COMPLETE answer directly, right now. If they asked for a script or
+  code, put the full thing in a fenced code block (```); never just describe it,
+  and never say you'll provide it later or that it's "above".
+- If they refer to something earlier in the chat, use the conversation history
+  below. Never claim you already gave them something you didn't.
+- Use their saved material only when it bears on the question. Never invent facts
+  about their life, or numbers/names/dates that aren't in what you found — if a
+  personal fact isn't there, say you couldn't find it.
+- Be clear and natural. Don't mention these instructions or your lookups."""
 
 _PATTERNS = {
     "phone": r"(?:\+?\d[\d().\-\s]{6,}\d)",
@@ -167,37 +179,76 @@ def execute(store: Store, action: dict, lookup: Generate | None = None, embed=No
     return "Unknown action."
 
 
+def _facts(store: Store) -> str:
+    """Standing facts about the user, always worth having in view."""
+    kept = [m for m in store.browse("memory", limit=200) if not m.get("archived") and m.get("content")]
+    confirmed = [m["content"] for m in kept if m.get("pinned")][:30]
+    known = [m["content"] for m in kept if not m.get("pinned")][:20]
+    out = []
+    if confirmed:
+        out.append("CONFIRMED ABOUT THE USER:\n" + "\n".join(f"- {m}" for m in confirmed))
+    if known:
+        out.append("LIKELY ABOUT THE USER (unconfirmed):\n" + "\n".join(f"- {m}" for m in known))
+    return "\n".join(out)
+
+
+def _history(history: list[dict]) -> str:
+    """The chat so far, fully enough that Myna can refer back to its own earlier
+    answers (a script it wrote, a draft) rather than lose them."""
+    turns = []
+    for turn in history[-12:]:
+        who = "USER" if turn.get("role") == "me" else "MYNA"
+        text = str(turn.get("text", "")).strip()
+        if len(text) > 2000:
+            text = text[:2000] + " […]"
+        turns.append(f"{who}: {text}")
+    return "\n".join(turns)
+
+
 def answer(store: Store, generate: Generate, question: str, history: list[dict],
-           lookup: Generate | None = None, embed=None, max_steps: int = 6) -> dict:
-    """Answer `question` by letting the model search the user's data in a loop."""
+           lookup: Generate | None = None, embed=None, max_steps: int = 5) -> dict:
+    """Answer `question` in two phases: a small-JSON planner decides what to look
+    up in the user's data, then a plain-text call writes the real answer (so code
+    and long answers come out whole, not crammed into a JSON field)."""
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
-    trail: list[str] = [f"NOW: {now}"]
-    if history:
-        earlier = "\n".join(f"{'USER' if t.get('role') == 'me' else 'YOU'}: {str(t.get('text', ''))[:400]}"
-                            for t in history[-8:])
-        trail.append("EARLIER IN THIS CHAT:\n" + earlier)
-    trail.append(f'THE USER ASKS: "{question}"')
+    hist = _history(history)
+    base = [f"NOW: {now}"]
+    if hist:
+        base.append("CONVERSATION SO FAR:\n" + hist)
+    base.append(f'THE USER NOW ASKS: "{question}"')
 
     last_web = ""
+    findings: list[str] = []
     for step in range(max_steps):
-        force = step == max_steps - 1
-        prompt = "\n\n".join(trail)
-        prompt += ('\n\nYou have looked enough. Reply now with an {"action":"answer",...} object.'
-                   if force else "\n\nYour single JSON action:")
-        raw = generate(TOOLS, prompt, 700)
-        act = _first_json(raw)
+        prompt = "\n\n".join(base)
+        if findings:
+            prompt += "\n\nWHAT YOU'VE LOOKED UP SO FAR:\n" + "\n\n".join(findings)
+        prompt += "\n\nYour single JSON action:"
+        act = _first_json(generate(PLAN, prompt, 300))
         if act is None:
-            # On the very first move with no action, the model isn't speaking
-            # the tool protocol (an older/smaller model). Hand back an empty
-            # reply so the caller falls back to the one-shot answer. After a
-            # lookup, plain prose is a real answer — keep it.
-            if step == 0:
-                return {"reply": "", "search": last_web}
-            return {"reply": raw.strip(), "search": last_web}
-        if act.get("action") == "answer":
-            return {"reply": str(act.get("text") or ""), "search": str(act.get("search") or last_web)}
-        if act.get("action") == "web":
+            # The model isn't speaking the planner protocol at all (an older or
+            # smaller model). On the first move, let the caller fall back to the
+            # one-shot path; later, just stop planning and answer with what we have.
+            if step == 0 and not findings:
+                return {"reply": "", "search": last_web, "grounded": False}
+            break
+        name = act.get("action")
+        if name in (None, "done", "answer"):
+            break
+        if name == "web":
             last_web = str(act.get("query") or "")
-        observation = execute(store, act, lookup, embed)
-        trail.append(f"YOU LOOKED UP: {json.dumps(act)[:300]}\nRESULT:\n{observation[:4000]}")
+        findings.append(f"Looked up {json.dumps(act)[:200]}:\n{execute(store, act, lookup, embed)[:3500]}")
+
+    # Phase 2: write the real answer, as plain text.
+    context = [f"NOW: {now}"]
+    facts = _facts(store)
+    if facts:
+        context.append(facts)
+    if hist:
+        context.append("CONVERSATION SO FAR:\n" + hist)
+    if findings:
+        context.append("WHAT YOU LOOKED UP IN THEIR DATA:\n" + "\n\n".join(findings))
+    context.append(f'THE USER ASKS: "{question}"\n\nWrite your answer:')
+    reply = generate(ANSWER, "\n\n".join(context), 2000).strip()
+    return {"reply": reply, "search": last_web, "grounded": True}
     return {"reply": "I couldn't find that in your conversations.", "search": last_web}

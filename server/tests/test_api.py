@@ -263,15 +263,20 @@ def test_ask_looks_things_up_in_transcripts_and_the_web(stt):
         name = "scripted"
 
         def generate(self, instructions, prompt, max_tokens):
+            from myna_server import recall
             calls.append(prompt)
-            # The model works in a loop of JSON actions (see recall.py).
-            if "415-555-0142" in prompt:                       # the number came back from a search
-                return '{"action": "answer", "text": "Your dentist is on 415-555-0142.", "search": ""}'
-            if "31 metres" in prompt:                          # the web result came back
-                return '{"action": "answer", "text": "It is 31 metres tall.", "search": "height of the lighthouse"}'
-            if "lighthouse" in prompt:                         # nothing saved — go to the web
-                return '{"action": "web", "query": "height of the lighthouse"}'
-            return '{"action": "find", "what": "phone"}'       # first: scan the transcript for the number
+            if instructions == recall.PLAN:                     # phase 1: decide what to look up
+                if "lighthouse" in prompt and "31 metres" not in prompt:
+                    return '{"action": "web", "query": "height of the lighthouse"}'
+                if "dentist" in prompt and "415-555-0142" not in prompt:
+                    return '{"action": "find", "what": "phone"}'
+                return '{"action": "done"}'
+            # phase 2: plain-text answer from what was found
+            if "31 metres" in prompt:
+                return "It is 31 metres tall."
+            if "415-555-0142" in prompt:
+                return "Your dentist is on 415-555-0142."
+            return "I couldn't find that."
 
     app = create_app(Config(token="secret-token"), stt, ScriptedWriter())
     app.state.web_lookup = lambda query: f"1. Lighthouse — 31 metres ({query})"
@@ -286,7 +291,7 @@ def test_ask_looks_things_up_in_transcripts_and_the_web(stt):
     second = client.post("/browse/ask.json", headers=AUTH, json={
         "question": "how tall is the lighthouse?", "history": [{"role": "me", "text": "what about the dentist?"}]}).json()
     assert second == {"reply": "It is 31 metres tall.", "searched": "height of the lighthouse"}
-    assert "EARLIER IN THIS CHAT" in calls[-1] and "31 metres" in calls[-1]
+    assert "CONVERSATION SO FAR" in calls[-1] and "31 metres" in calls[-1]
     assert "Ask Myna" in client.get("/browse/ask", headers=AUTH).text
 
     page = '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;x=1">A <b>title</b></a>' \
@@ -1667,11 +1672,45 @@ def test_recall_finds_exact_facts_in_the_transcript():
     assert "alex@acme.com" in recall.execute(store, {"action": "find", "what": "email"})
     assert "415-555-0142" in recall.execute(store, {"action": "transcript", "query": "call"})
 
-    # The agentic loop: scan, then answer from what was found.
-    script = iter(['{"action": "find", "what": "phone"}',
-                   '{"action": "answer", "text": "It is 415-555-0142.", "search": ""}'])
-    out = recall.answer(store, lambda a, b, c: next(script), "what's the number?", [])
-    assert out["reply"] == "It is 415-555-0142."
+    # The two-phase loop: plan a lookup, then write the answer from what was found.
+    def gen(instructions, prompt, max_tokens):
+        if instructions == recall.PLAN:
+            return '{"action": "done"}' if "415-555-0142" in prompt else '{"action": "find", "what": "phone"}'
+        return "It is 415-555-0142."   # the plain-text answer sees the finding
+    out = recall.answer(store, gen, "what's the number?", [])
+    assert "415-555-0142" in out["reply"]
+
+
+def test_recall_writes_a_script_as_a_real_code_block_not_a_description():
+    """Asked to write something, Myna produces it — the answer is plain text, so
+    a code block comes out whole instead of being crammed into a JSON field."""
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    calls = {"plan": 0, "answer": 0}
+
+    def gen(instructions, prompt, max_tokens):
+        if instructions == recall.PLAN:
+            calls["plan"] += 1
+            return '{"action": "done"}'        # writing a script needs no lookup
+        calls["answer"] += 1
+        return "Here you go:\n```bash\n#!/bin/bash\nsubscription-manager attach --auto\n```"
+
+    out = recall.answer(store, gen, "write me a bash script to attach a subscription", [])
+    assert "```bash" in out["reply"] and "subscription-manager attach --auto" in out["reply"]
+    assert calls["answer"] == 1
+
+    # And it can refer back to that script on the next turn (history carries it).
+    history = [{"role": "me", "text": "write me a bash script"}, {"role": "myna", "text": out["reply"]}]
+    seen = {}
+    def gen2(instructions, prompt, max_tokens):
+        if instructions == recall.PLAN:
+            return '{"action": "done"}'
+        seen["prompt"] = prompt
+        return "It's the script in my last message."
+    recall.answer(store, gen2, "where is the script?", history)
+    assert "subscription-manager attach --auto" in seen["prompt"]   # the prior answer is in view
 
 
 def test_recall_can_write_a_document_the_user_can_see():
