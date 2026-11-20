@@ -213,6 +213,46 @@ def import_conversations(store, client: "BeeCloud", most: int = 30, owner: str =
     return added
 
 
+def repair_bee_times(store) -> int:
+    """Fix Bee records already saved with millisecond (or offset) timestamps —
+    the ones showing as the year 54000 (ms read as seconds) or 1970. Divides
+    out-of-range times back to seconds and re-saves, so the correction syncs to
+    the phone. Idempotent: it only touches times that are clearly wrong."""
+    fixed = 0
+
+    def ok(t) -> bool:
+        return isinstance(t, (int, float)) and 1_000_000_000 < t < 10_000_000_000  # ~2001–2286
+
+    def seconds(t):
+        return t / 1000.0 if isinstance(t, (int, float)) and t > 1e11 else t
+
+    for row in store.browse("utterance", limit=100_000):
+        if row.get("engine") != "bee":
+            continue
+        heard = row.get("heardAt")
+        if ok(heard):
+            continue
+        data = {k: v for k, v in row.items() if k != "at"}
+        data["heardAt"] = seconds(heard)
+        _save(store, "utterance", row["id"], data, data["heardAt"])
+        fixed += 1
+
+    for row in store.browse("conversation", limit=100_000):
+        if row.get("source") != "bee":
+            continue
+        changed = False
+        data = {k: v for k, v in row.items() if k != "at"}
+        for field in ("startedAt", "endedAt", "at"):
+            value = data.get(field)
+            if value is not None and not ok(value):
+                data[field] = seconds(value)
+                changed = True
+        if changed:
+            _save(store, "conversation", row["id"], data, data.get("startedAt") or 0.0)
+            fixed += 1
+    return fixed
+
+
 def _title(summary: str) -> str:
     line = (summary or "").strip().splitlines()[0] if summary.strip() else "Conversation"
     line = line.lstrip("# ").strip()

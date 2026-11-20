@@ -1146,6 +1146,11 @@ def create_app(
                     bee_state["account"] = client.account_name() or ""
                 except bee_cloud.BeeError:
                     pass
+            # One-time repair of Bee records saved with millisecond/offset times
+            # (the "year 54000" dates) so the correction syncs to the phone.
+            if store.get_meta("bee_times_repaired") != "2":
+                bee_cloud.repair_bee_times(store)
+                store.set_meta("bee_times_repaired", "2")
             added = bee_cloud.import_conversations(store, client, owner=config.owner_name)
             known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
             for cid in bee_cloud.needs_writeup(store):

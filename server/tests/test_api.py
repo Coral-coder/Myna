@@ -1969,3 +1969,31 @@ def test_bee_time_helpers_normalise_offsets_and_milliseconds():
     assert bee_cloud._at(1_700_000_000_000, base) == 1_700_000_000.0  # milliseconds → seconds
     assert bee_cloud._epoch(1_700_000_000_000) == 1_700_000_000.0
     assert bee_cloud._epoch(None) is None
+
+
+def test_repair_fixes_bee_year_54000_timestamps():
+    """Already-imported Bee records with millisecond times (shown as year 54000)
+    are divided back to seconds and re-saved, so the phone gets the correction."""
+    import time as _time
+
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    ms = _time.time() * 1000.0   # a millisecond timestamp (the bug)
+    store.sync(0, [{"kind": "utterance", "id": "bee-1-0", "updated_at": 1, "deleted": False,
+                    "data": {"text": "hi", "heardAt": ms, "engine": "bee", "beeId": 1}}])
+    store.sync(0, [{"kind": "conversation", "id": "bee-1", "updated_at": 1, "deleted": False,
+                    "data": {"title": "C", "source": "bee", "beeId": 1, "startedAt": ms, "endedAt": ms, "at": ms}}])
+    # A normal on-device utterance (seconds) must be left alone.
+    good = _time.time()
+    store.sync(0, [{"kind": "utterance", "id": "p1", "updated_at": 1, "deleted": False,
+                    "data": {"text": "ok", "heardAt": good, "engine": "whisper"}}])
+
+    assert bee_cloud.repair_bee_times(store) == 2
+    utt = store.get("utterance", "bee-1-0")
+    assert 1_000_000_000 < utt["heardAt"] < 10_000_000_000      # back to seconds (this century)
+    convo = store.get("conversation", "bee-1")
+    assert 1_000_000_000 < convo["startedAt"] < 10_000_000_000
+    assert store.get("utterance", "p1")["heardAt"] == good      # on-device line untouched
+    assert bee_cloud.repair_bee_times(store) == 0               # idempotent
