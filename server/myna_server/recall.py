@@ -41,7 +41,11 @@ Do things for them (only when they ask you to):
 {"action": "document", "title": "...", "body": "..."}                 save a written document/note for them
 
 Do things on their computer (only when shell access is on and they asked):
-{"action": "shell", "command": "..."}   run a command on their computer and read the output
+{"action": "shell", "command": "..."}            run a command and read the output
+{"action": "list_dir", "path": "..."}            list what's in a folder
+{"action": "read_file", "path": "..."}           read a file
+{"action": "write_file", "path": "...", "content": "..."}   write a file
+{"action": "make_dir", "path": "..."}            make a folder
 
 Finish:
 {"action": "done"}   you have what you need and have done what they asked — go answer
@@ -82,7 +86,8 @@ How to answer:
 - Be clear and natural. Don't mention these instructions or your lookups."""
 
 # The actions that change something (as opposed to read-only lookups).
-_ACTIONS = {"add_task", "remind", "complete_task", "remember", "forget", "document"}
+_ACTIONS = {"add_task", "remind", "complete_task", "remember", "forget", "document",
+            "write_file", "make_dir"}
 
 _PATTERNS = {
     "phone": r"(?:\+?\d[\d().\-\s]{6,}\d)",
@@ -120,6 +125,40 @@ def _first_json(text: str) -> dict | None:
     return None
 
 
+def _filesystem(name: str, action: dict) -> str:
+    """Read and write files on this computer. Behind the same opt-in as shell."""
+    import os
+
+    path = os.path.expanduser(os.path.expandvars(str(action.get("path") or "").strip()))
+    if not path:
+        return "No path given."
+    try:
+        if name == "list_dir":
+            entries = sorted(os.listdir(path))
+            lines = []
+            for entry in entries[:200]:
+                full = os.path.join(path, entry)
+                lines.append(f"{'dir ' if os.path.isdir(full) else 'file'}  {entry}")
+            more = f"\n… and {len(entries) - 200} more" if len(entries) > 200 else ""
+            return (f"{path}:\n" + "\n".join(lines) + more) if lines else f"{path} is empty."
+        if name == "read_file":
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                data = handle.read(100_000)
+            return f"{path}:\n{data}" + ("\n… (truncated)" if len(data) >= 100_000 else "")
+        if name == "write_file":
+            content = str(action.get("content") or "")
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            return f"Wrote {len(content)} characters to {path}."
+        if name == "make_dir":
+            os.makedirs(path, exist_ok=True)
+            return f"Made the folder {path}."
+    except Exception as error:
+        return f"Couldn't {name.replace('_', ' ')}: {error}"
+    return "Unknown file action."
+
+
 def run_shell(command: str, timeout: float = 60.0) -> str:
     """Run a command on this computer and return what it printed. Used only when
     the user has turned shell access on. Runs on the user's own machine, at their
@@ -149,6 +188,11 @@ def execute(store: Store, action: dict, lookup: Generate | None = None, embed=No
         if shell is None:
             return "Shell access is off. Turn it on in the server's Models page to let me run commands here."
         return shell(str(action.get("command") or ""))
+    # Filesystem tools share the shell toggle — both are "act on my computer".
+    if name in ("list_dir", "read_file", "write_file", "make_dir"):
+        if shell is None:
+            return "Access to this computer is off. Turn on command access in the server's Models page."
+        return _filesystem(name, action)
     if name == "search":
         query = str(action.get("query") or "")
         out: list[str] = []
@@ -334,6 +378,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
     last_web = ""
     looked_up: list[str] = []
     did: list[str] = []
+    steps: list[str] = []   # a human-readable trace of what Lumi is doing
     for step in range(max_steps):
         prompt = "\n\n".join(base)
         if looked_up or did:
@@ -345,7 +390,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
             # smaller model). On the first move, let the caller fall back to the
             # one-shot path; later, just stop planning and answer with what we have.
             if step == 0 and not looked_up and not did:
-                return {"reply": "", "search": last_web, "grounded": False}
+                return {"reply": "", "search": last_web, "grounded": False, "steps": steps}
             break
         name = act.get("action")
         if name in (None, "done", "answer"):
@@ -353,6 +398,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
         if name == "web":
             last_web = str(act.get("query") or "")
         result = execute(store, act, lookup, embed, shell)[:3500]
+        steps.append(_step_label(act, result))
         if name in _ACTIONS:
             did.append(f"{result}")
         else:
@@ -371,4 +417,27 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
         context.append("WHAT YOU DID FOR THEM:\n" + "\n".join(f"- {d}" for d in did))
     context.append(f'THE USER ASKS: "{question}"\n\nWrite your answer:')
     reply = generate(ANSWER, "\n\n".join(context), 2000).strip()
-    return {"reply": reply, "search": last_web, "grounded": True}
+    return {"reply": reply, "search": last_web, "grounded": True, "steps": steps}
+
+
+def _step_label(act: dict, result: str) -> str:
+    """A short, human line describing one thing Lumi did — shown when 'thinking'
+    is turned on."""
+    name = act.get("action")
+    if name == "search":
+        return f"Searched your notes and conversations for “{act.get('query', '')}”"
+    if name == "transcript":
+        return f"Searched your transcripts for “{act.get('query', '')}”"
+    if name == "find":
+        return f"Scanned your transcripts for any {act.get('what', 'phone')}"
+    if name == "read":
+        return "Read through a whole conversation"
+    if name == "web":
+        return f"Searched the web for “{act.get('query', '')}”"
+    if name == "shell":
+        return f"Ran on your computer: {str(act.get('command', ''))[:120]}"
+    if name in ("list_dir", "read_file", "write_file", "make_dir"):
+        verb = {"list_dir": "Listed", "read_file": "Read", "write_file": "Wrote", "make_dir": "Made folder"}[name]
+        return f"{verb} {act.get('path', '')}"
+    # The action tools already return a plain confirmation ("Added … to your list").
+    return result.split("\n")[0][:140]

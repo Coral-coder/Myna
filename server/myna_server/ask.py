@@ -124,7 +124,7 @@ def answer(
         found = recall.answer(store, generate, question, history, lookup=lookup, embed=embed, shell=shell)
         reply = (found.get("reply") or "").strip()
         if reply:
-            return {"reply": reply, "searched": str(found.get("search") or "")}
+            return {"reply": reply, "searched": str(found.get("search") or ""), "steps": found.get("steps") or []}
     except Exception:
         pass  # fall through to the older single-shot path
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
@@ -154,4 +154,4 @@ def answer(
         found = lookup(search) or "Nothing useful was found."
         prompt = base + f'WEB RESULTS for "{search}":\n{found}\n\nTHE USER ASKS: "{question}"\n\nAnswer now from these results. JSON:'
         reply, _ = _parse(generate(INSTRUCTIONS, prompt, 700))
-    return {"reply": reply or "I don't have an answer for that.", "searched": searched}
+    return {"reply": reply or "I don't have an answer for that.", "searched": searched, "steps": []}

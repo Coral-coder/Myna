@@ -286,11 +286,12 @@ def test_ask_looks_things_up_in_transcripts_and_the_web(stt):
     ]})
     assert client.post("/browse/ask.json", json={"question": "hi"}).status_code == 401
     first = client.post("/browse/ask.json", headers=AUTH, json={"question": "what's the dentist's number?"}).json()
-    assert first == {"reply": "Your dentist is on 415-555-0142.", "searched": ""}
+    assert first["reply"] == "Your dentist is on 415-555-0142." and first["searched"] == ""
+    assert first["steps"]   # the trace shows it scanned the transcripts
     assert any("415-555-0142" in c for c in calls)   # the number was found in the transcript and fed back
     second = client.post("/browse/ask.json", headers=AUTH, json={
         "question": "how tall is the lighthouse?", "history": [{"role": "me", "text": "what about the dentist?"}]}).json()
-    assert second == {"reply": "It is 31 metres tall.", "searched": "height of the lighthouse"}
+    assert second["reply"] == "It is 31 metres tall." and second["searched"] == "height of the lighthouse"
     assert "CONVERSATION SO FAR" in calls[-1] and "31 metres" in calls[-1]
     assert "Ask Lumi" in client.get("/browse/ask", headers=AUTH).text
 
@@ -1896,3 +1897,35 @@ def test_shell_toggle_flips_config(stt):
     assert "Run commands on this computer: ON" in client.get("/browse/models", headers=AUTH).text
     client.post("/browse/simple", headers=AUTH, data={"shell": "off"}, follow_redirects=False)
     assert config.shell_enabled is False
+
+
+def test_filesystem_tools_gated_like_shell(tmp_path):
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    target = tmp_path / "note.txt"
+    # Off without the computer-access toggle.
+    assert "off" in recall.execute(store, {"action": "read_file", "path": str(target)}, shell=None).lower()
+    # On: write, read back, list.
+    assert "Wrote" in recall.execute(store, {"action": "write_file", "path": str(target), "content": "hi"}, shell=recall.run_shell)
+    assert "hi" in recall.execute(store, {"action": "read_file", "path": str(target)}, shell=recall.run_shell)
+    assert "note.txt" in recall.execute(store, {"action": "list_dir", "path": str(tmp_path)}, shell=recall.run_shell)
+
+
+def test_ask_returns_a_thinking_trace():
+    """Verbose 'thinking' is the trace of what Lumi did — one line per step."""
+    import time
+
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    store.sync(0, [change("utterance", "u1", {"text": "my number is 415-555-0142", "heardAt": time.time()}, time.time())])
+
+    def gen(instructions, prompt, max_tokens):
+        if instructions == recall.PLAN:
+            return '{"action": "find", "what": "phone"}' if "415-555-0142" not in prompt else '{"action": "done"}'
+        return "It's 415-555-0142."
+    out = recall.answer(store, gen, "what's my number?", [])
+    assert out["steps"] and "transcript" in out["steps"][0].lower()

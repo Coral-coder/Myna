@@ -660,23 +660,70 @@ def ask_page(store: Store) -> str:
 <style>
 #chat{min-height:120px}
 .me{margin:10px 0 4px auto;max-width:80%;padding:8px 12px;border:1px solid #ffffff22;border-radius:12px;width:fit-content}
-.her{margin:4px auto 10px 0;max-width:88%;padding:8px 12px;background:#ffffff0d;border-radius:12px;width:fit-content;white-space:pre-wrap}
+.her{margin:4px auto 10px 0;max-width:92%;padding:8px 13px;background:#ffffff0d;border-radius:12px}
+.her p{margin:6px 0}.her h1,.her h2,.her h3{margin:8px 0 4px}.her ul,.her ol{margin:6px 0;padding-left:22px}
+.her code{background:#ffffff14;padding:1px 5px;border-radius:5px;font:12px ui-monospace,monospace}
+.her pre{background:#00000055;border:1px solid #ffffff1a;border-radius:10px;padding:10px;overflow-x:auto;margin:8px 0}
+.her pre code{background:none;padding:0}
+.her table{border-collapse:collapse;margin:8px 0}.her td,.her th{border:1px solid #ffffff22;padding:4px 9px;font-size:13px}
+.steps{margin:2px auto 10px 0;max-width:92%;font:12px ui-monospace,monospace;color:#8a8c8e;padding:0 4px}
+.steps div{padding:2px 0 2px 16px;border-left:2px solid #ffffff22;margin-left:4px}
 #bar{display:flex;gap:8px;margin-top:14px}
 #bar button,#new{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;
 border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}
+#top{display:flex;justify-content:flex-end;margin-bottom:6px;font:12px ui-monospace,monospace;color:#9b9d9e}
+#top label{cursor:pointer}
 </style>
-<div id="chat"><p class="dim">Ask about anything Myna has heard or saved, or anything it can look up on the web.</p></div>
+<div id="top"><label><input type="checkbox" id="verbose"> Show thinking</label></div>
+<div id="chat"><p class="dim">Ask Lumi about anything it has heard or saved, to write something, to do something, or to look it up.</p></div>
 <form id="bar"><input id="q" placeholder="Ask Lumi" autocomplete="off" autofocus><button>Ask</button></form>
 <p><button id="new" type="button">New chat</button></p>
 <script>
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+// A small Markdown renderer: fenced code, inline code/bold/italic, headings, lists.
+function md(src) {
+  const parts = String(src ?? '').replace(/\\r\\n/g, '\\n').split('```');
+  let html = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {            // inside a fenced code block
+      let c = parts[i]; const nl = c.indexOf('\\n');
+      if (nl >= 0) c = c.slice(nl + 1);   // drop the language label line
+      html += '<pre><code>' + esc(c.replace(/\\n$/, '')) + '</code></pre>';
+    } else {
+      html += inline(parts[i]);
+    }
+  }
+  return html;
+}
+function inline(text) {
+  const lines = String(text).split('\\n'); let out = '', list = null;
+  const fmt = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>').replace(/\\*([^*]+)\\*/g, '<i>$1</i>');
+  for (let ln of lines) {
+    const h = ln.match(/^(#{1,3})\\s+(.*)/);
+    if (h) { if(list){out+='</'+list+'>';list=null;} out += '<h'+h[1].length+'>'+fmt(h[2])+'</h'+h[1].length+'>'; continue; }
+    if (/^\\s*[-*+]\\s+/.test(ln)) { if(list!=='ul'){if(list)out+='</'+list+'>';out+='<ul>';list='ul';} out += '<li>'+fmt(ln.replace(/^\\s*[-*+]\\s+/,''))+'</li>'; continue; }
+    if (/^\\s*\\d+[.)]\\s+/.test(ln)) { if(list!=='ol'){if(list)out+='</'+list+'>';out+='<ol>';list='ol';} out += '<li>'+fmt(ln.replace(/^\\s*\\d+[.)]\\s+/,''))+'</li>'; continue; }
+    if (!ln.trim()) { if(list){out+='</'+list+'>';list=null;} continue; }
+    if(list){out+='</'+list+'>';list=null;} out += '<p>'+fmt(ln)+'</p>';
+  }
+  if(list)out+='</'+list+'>';
+  return out;
+}
 let history = [];
 try { history = JSON.parse(localStorage.getItem('myna-ask') || '[]'); } catch (e) {}
+const verbose = document.getElementById('verbose');
+verbose.checked = localStorage.getItem('myna-ask-verbose') === '1';
+verbose.onchange = () => { localStorage.setItem('myna-ask-verbose', verbose.checked ? '1' : '0'); draw(false); };
 const chat = document.getElementById('chat');
+function stepsHtml(t){ return (verbose.checked && t.steps && t.steps.length)
+  ? '<div class="steps">' + t.steps.map(s => '<div>' + esc(s) + '</div>').join('') + '</div>' : ''; }
 function draw(waiting) {
   if (!history.length && !waiting) return;
-  chat.innerHTML = history.map(t => '<div class="' + (t.role === 'me' ? 'me' : 'her') + '">' + esc(t.text) +
-    (t.searched ? '<div class="dim">looked up: ' + esc(t.searched) + '</div>' : '') + '</div>').join('') +
+  chat.innerHTML = history.map(t => t.role === 'me'
+    ? '<div class="me">' + esc(t.text) + '</div>'
+    : stepsHtml(t) + '<div class="her">' + md(t.text) +
+      (t.searched ? '<div class="dim">looked up: ' + esc(t.searched) + '</div>' : '') + '</div>').join('') +
     (waiting ? '<div class="her dim">Thinking…</div>' : '');
   window.scrollTo(0, document.body.scrollHeight);
 }
@@ -688,7 +735,7 @@ document.getElementById('bar').onsubmit = async (event) => {
   const question = box.value.trim();
   if (!question) return;
   box.value = '';
-  const before = history.slice(-10);
+  const before = history.slice(-10).map(t => ({role: t.role === 'me' ? 'me' : 'myna', text: t.text}));
   history.push({role: 'me', text: question});
   draw(true);
   let turn;
@@ -697,7 +744,7 @@ document.getElementById('bar').onsubmit = async (event) => {
       body: JSON.stringify({question, history: before})});
     if (reply.status === 401) { location.reload(); return; }
     const data = await reply.json();
-    turn = {role: 'myna', text: data.reply || data.detail || 'Something went wrong.', searched: data.searched || ''};
+    turn = {role: 'myna', text: data.reply || data.detail || 'Something went wrong.', searched: data.searched || '', steps: data.steps || []};
   } catch (e) {
     turn = {role: 'myna', text: 'The server did not answer.'};
   }
