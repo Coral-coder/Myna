@@ -701,6 +701,10 @@ def ask_page(store: Store) -> str:
 .her table{border-collapse:collapse;margin:8px 0}.her td,.her th{border:1px solid #ffffff22;padding:4px 9px;font-size:13px}
 .steps{margin:2px auto 10px 0;max-width:92%;font:12px ui-monospace,monospace;color:#8a8c8e;padding:0 4px}
 .steps div{padding:2px 0 2px 16px;border-left:2px solid #ffffff22;margin-left:4px}
+.think{margin:2px auto 6px 0;max-width:92%;white-space:pre-wrap;word-break:break-word;font:12px ui-monospace,monospace;
+color:#7f8183;background:#ffffff08;border-left:2px solid #4a9db033;border-radius:6px;padding:8px 10px;max-height:320px;overflow-y:auto}
+.cursor{opacity:.6;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
 #bar{display:flex;gap:8px;margin-top:14px}
 #bar button,#new{font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;
 border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}
@@ -749,19 +753,55 @@ const verbose = document.getElementById('verbose');
 verbose.checked = localStorage.getItem('myna-ask-verbose') === '1';
 verbose.onchange = () => { localStorage.setItem('myna-ask-verbose', verbose.checked ? '1' : '0'); draw(false); };
 const chat = document.getElementById('chat');
-function stepsHtml(t){ return (verbose.checked && t.steps && t.steps.length)
-  ? '<div class="steps">' + t.steps.map(s => '<div>' + esc(s) + '</div>').join('') + '</div>' : ''; }
+function thinkHtml(t){
+  if (!verbose.checked) return '';
+  let html = '';
+  if (t.think) html += '<pre class="think">' + esc(t.think) + (t.streaming ? '<span class="cursor">▋</span>' : '') + '</pre>';
+  if (t.steps && t.steps.length) html += '<div class="steps">' + t.steps.map(s => '<div>' + esc(s) + '</div>').join('') + '</div>';
+  return html;
+}
 function draw(waiting) {
   if (!history.length && !waiting) return;
   chat.innerHTML = history.map(t => t.role === 'me'
     ? '<div class="me">' + esc(t.text) + '</div>'
-    : stepsHtml(t) + '<div class="her">' + md(t.text) +
+    : thinkHtml(t) + '<div class="her">' + (t.text ? md(t.text) : (t.streaming ? '<span class="dim">…</span>' : '')) +
       (t.searched ? '<div class="dim">looked up: ' + esc(t.searched) + '</div>' : '') + '</div>').join('') +
     (waiting ? '<div class="her dim">Thinking…</div>' : '');
   window.scrollTo(0, document.body.scrollHeight);
 }
 draw(false);
 document.getElementById('new').onclick = () => { history = []; localStorage.removeItem('myna-ask'); location.reload(); };
+function save(){
+  const clean = history.map(t => ({role: t.role, text: t.text, steps: t.steps || [], searched: t.searched || ''}));
+  localStorage.setItem('myna-ask', JSON.stringify(clean.slice(-200)));
+}
+async function streamAsk(question, before, turn){
+  const resp = await fetch('/browse/ask.stream', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({question, history: before})});
+  if (resp.status === 401) { location.reload(); return; }
+  const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+  while (true) {
+    const {value, done} = await reader.read(); if (done) break;
+    buf += dec.decode(value, {stream:true});
+    let nl;
+    while ((nl = buf.indexOf('\\n\\n')) >= 0) {
+      const chunk = buf.slice(0, nl); buf = buf.slice(nl + 2);
+      const line = chunk.split('\\n').find(l => l.startsWith('data:'));
+      if (!line) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') return;
+      let ev; try { ev = JSON.parse(payload); } catch (e) { continue; }
+      if (ev.t === 'thinking' || ev.t === 'plan') turn.think += ev.d;
+      else if (ev.t === 'phase') turn.think += '\\n\\u2500\\u2500 ' + ev.d + ' \\u2500\\u2500\\n';
+      else if (ev.t === 'step') { turn.steps.push(ev.d); turn.think += '\\n\\u2192 ' + ev.d + '\\n'; }
+      else if (ev.t === 'observation') turn.think += '    ' + String(ev.d || '').slice(0, 500) + '\\n';
+      else if (ev.t === 'answer') turn.text += ev.d;
+      else if (ev.t === 'done') { if (ev.reply) turn.text = ev.reply; turn.steps = ev.steps || turn.steps; turn.searched = ev.searched || ''; }
+      else if (ev.t === 'error') turn.text += '\\n(error: ' + ev.d + ')';
+      draw(false);
+    }
+  }
+}
 document.getElementById('bar').onsubmit = async (event) => {
   event.preventDefault();
   const box = document.getElementById('q');
@@ -770,20 +810,25 @@ document.getElementById('bar').onsubmit = async (event) => {
   box.value = '';
   const before = history.slice(-10).map(t => ({role: t.role === 'me' ? 'me' : 'myna', text: t.text}));
   history.push({role: 'me', text: question});
-  draw(true);
-  let turn;
-  try {
-    const reply = await fetch('/browse/ask.json', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({question, history: before})});
-    if (reply.status === 401) { location.reload(); return; }
-    const data = await reply.json();
-    turn = {role: 'myna', text: data.reply || data.detail || 'Something went wrong.', searched: data.searched || '', steps: data.steps || []};
-  } catch (e) {
-    turn = {role: 'myna', text: 'The server did not answer.'};
-  }
+  const turn = {role: 'myna', text: '', steps: [], think: '', searched: '', streaming: true};
   history.push(turn);
-  history = history.slice(-200);
-  localStorage.setItem('myna-ask', JSON.stringify(history));
+  draw(false);
+  try {
+    if (verbose.checked) {
+      await streamAsk(question, before, turn);
+    } else {
+      const reply = await fetch('/browse/ask.json', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question, history: before})});
+      if (reply.status === 401) { location.reload(); return; }
+      const data = await reply.json();
+      turn.text = data.reply || data.detail || 'Something went wrong.';
+      turn.steps = data.steps || []; turn.searched = data.searched || '';
+    }
+  } catch (e) {
+    if (!turn.text) turn.text = 'The server did not answer.';
+  }
+  turn.streaming = false;
+  save();
   draw(false);
 };
 </script>"""

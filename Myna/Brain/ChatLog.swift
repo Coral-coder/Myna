@@ -15,6 +15,12 @@ final class ChatLog: ObservableObject {
         var at = Date()
         /// What Lumi did to answer (shown when "thinking" is on). Myna messages only.
         var steps: [String] = []
+        /// Live reasoning streamed in while answering — not persisted.
+        var think: String = ""
+        var streaming: Bool = false
+
+        // Persist only the lasting fields; the live reasoning is transient.
+        enum CodingKeys: String, CodingKey { case id, role, text, at, steps }
     }
 
     @Published private(set) var messages: [Message] = []
@@ -35,6 +41,27 @@ final class ChatLog: ObservableObject {
     func add(_ role: Message.Role, _ text: String, steps: [String] = []) {
         messages.append(Message(role: role, text: text, steps: steps))
         if messages.count > 400 { messages.removeFirst(messages.count - 400) }
+        save()
+    }
+
+    /// Append an empty assistant message to stream into, and return its id.
+    @discardableResult
+    func beginAssistant() -> UUID {
+        let message = Message(role: .myna, text: "", streaming: true)
+        messages.append(message)
+        if messages.count > 400 { messages.removeFirst(messages.count - 400) }
+        return message.id
+    }
+
+    /// Update a streaming message in place (no disk write until it finishes).
+    func update(_ id: UUID, _ change: (inout Message) -> Void) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        change(&messages[index])
+    }
+
+    /// Mark a streaming message done and persist.
+    func finish(_ id: UUID) {
+        update(id) { $0.streaming = false }
         save()
     }
 

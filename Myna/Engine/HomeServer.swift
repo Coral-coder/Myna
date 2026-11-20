@@ -260,6 +260,68 @@ final class HomeServer: ObservableObject {
 
     struct AskResult { let reply: String; let searched: String; let steps: [String] }
 
+    /// One live event from the streaming Ask.
+    enum AskEvent {
+        case thinking(String)   // the model's private reasoning / planning
+        case phase(String)      // "Deciding what to do", "Answering"
+        case step(String)       // a tool it used
+        case observation(String)
+        case answer(String)     // answer tokens
+        case done(reply: String, steps: [String], searched: String)
+        case failed(String)
+    }
+
+    /// Stream Lumi's reasoning, tool use and answer as Server-Sent Events, so the
+    /// phone can show everything as it happens. Used when "thinking" is on.
+    func askStream(question: String, history: [[String: String]]) -> AsyncStream<AskEvent> {
+        AsyncStream { continuation in
+            let work = Task {
+                guard let baseURL else { continuation.finish(); return }
+                var request = URLRequest(url: baseURL.appendingPathComponent("browse/ask.stream"))
+                request.httpMethod = "POST"
+                request.timeoutInterval = 600
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try? JSONSerialization.data(withJSONObject: ["question": question, "history": history])
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        continuation.yield(.failed("The server answered with an error (\(http.statusCode))."))
+                        continuation.finish(); return
+                    }
+                    markUp()
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload == "[DONE]" { break }
+                        guard let data = payload.data(using: .utf8),
+                              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                        continuation.yield(Self.parse(event))
+                    }
+                } catch {
+                    continuation.yield(.failed(error.localizedDescription))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    private static func parse(_ event: [String: Any]) -> AskEvent {
+        let d = event["d"] as? String ?? ""
+        switch event["t"] as? String {
+        case "thinking", "plan": return .thinking(d)
+        case "phase": return .phase(d)
+        case "step": return .step(d)
+        case "observation": return .observation(d)
+        case "answer": return .answer(d)
+        case "done": return .done(reply: event["reply"] as? String ?? "",
+                                  steps: (event["steps"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                                  searched: event["searched"] as? String ?? "")
+        default: return .failed(d.isEmpty ? "stream error" : d)
+        }
+    }
+
     /// Ask Lumi on the server — the full agent, with its tools, Markdown answers
     /// and a trace of what it did. Used by the phone's Ask tab when the server is
     /// reachable, so the phone is a remote of the one brain.

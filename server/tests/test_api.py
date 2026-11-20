@@ -2121,3 +2121,50 @@ def test_mcp_servers_can_be_configured_through_the_page(stt):
     # Empty clears them.
     client.post("/browse/mcp", headers=AUTH, data={"servers": ""}, follow_redirects=False)
     assert config.mcp_servers == []
+
+
+def test_think_splitter_separates_reasoning_across_chunks():
+    from myna_server.engines import _ThinkSplitter
+
+    s = _ThinkSplitter()
+    out = []
+    # Feed in awkward chunks that split the tags.
+    for piece in ["Hello <thi", "nk>I should", " check</thi", "nk> the answer is 42"]:
+        out.extend(s.feed(piece))
+    out.extend(s.flush())
+    text = "".join(d for k, d in out if k == "text")
+    think = "".join(d for k, d in out if k == "thinking")
+    assert text == "Hello  the answer is 42"
+    assert think == "I should check"
+
+
+def test_answer_stream_emits_live_events():
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    store.sync(0, [change("utterance", "u1", {"text": "number is 415-555-0142", "heardAt": 1.0}, 1)])
+
+    class StreamWriter:
+        def stream(self, instructions, prompt, max_tokens):
+            if instructions.startswith("You are Lumi's planner") or "planner" in instructions:
+                # think, then decide — unless we already found the number.
+                if "415-555-0142" in prompt:
+                    for d in ['{"action":', ' "done"}']:
+                        yield ("text", d)
+                else:
+                    yield ("thinking", "I need the number")
+                    for d in ['{"action":"find",', '"what":"phone"}']:
+                        yield ("text", d)
+            else:
+                yield ("thinking", "putting it together")
+                for d in ["It's ", "415-555-0142."]:
+                    yield ("text", d)
+
+    events = list(recall.answer_stream(store, StreamWriter(), "what's the number?", []))
+    kinds = [e["t"] for e in events]
+    assert "thinking" in kinds and "plan" in kinds and "step" in kinds
+    assert "observation" in kinds and "answer" in kinds and kinds[-1] == "done"
+    assert "415-555-0142" in events[-1]["reply"]
+    # the observation carried the real finding
+    assert any(e["t"] == "observation" and "415-555-0142" in e["d"] for e in events)

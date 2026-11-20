@@ -129,6 +129,20 @@ struct ChatView: View {
             // rest render the way they're written, not as one flat run of text.
             // When "thinking" is on, the steps it took show above the answer.
             VStack(alignment: .leading, spacing: 6) {
+                if verbose, !m.think.isEmpty {
+                    // The model's reasoning and tool use, streaming in live.
+                    ScrollView {
+                        Text(m.think + (m.streaming ? " ▋" : ""))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.5))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 220)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(MynaTheme.cyan.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(MynaTheme.cyan.opacity(0.18)))
+                }
                 if verbose, !m.steps.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(m.steps.indices, id: \.self) { i in
@@ -144,7 +158,7 @@ struct ChatView: View {
                     }
                     .padding(.leading, 4)
                 }
-                MarkdownText(text: m.text)
+                MarkdownText(text: m.text.isEmpty ? "…" : m.text)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 11)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,12 +223,36 @@ struct ChatView: View {
         let before = messages.suffix(12).map { ["role": $0.role == .me ? "me" : "myna", "text": $0.text] }
         log.add(.me, trimmed)
         sending = true
+        let serverReady = server.isPaired && server.enabled && server.reachable == true
+
+        // Verbose + server reachable over the local network: stream everything
+        // live (reasoning, tool use, answer tokens) into a message in place.
+        if verbose, serverReady, !server.hasPrivateAddress {
+            let id = log.beginAssistant()
+            Task { @MainActor in
+                var steps: [String] = []
+                for await event in server.askStream(question: trimmed, history: before) {
+                    switch event {
+                    case .thinking(let d): log.update(id) { $0.think += d }
+                    case .phase(let d): log.update(id) { $0.think += "\n── \(d) ──\n" }
+                    case .step(let d): steps.append(d); log.update(id) { $0.steps = steps; $0.think += "\n→ \(d)\n" }
+                    case .observation(let d): log.update(id) { $0.think += "    " + d.prefix(400) + "\n" }
+                    case .answer(let d): log.update(id) { $0.text += d }
+                    case .done(let reply, let s, _): log.update(id) { if !reply.isEmpty { $0.text = reply }; if !s.isEmpty { $0.steps = s } }
+                    case .failed(let message): log.update(id) { if $0.text.isEmpty { $0.text = "Couldn't answer: \(message)" } }
+                    }
+                }
+                sending = false
+                log.finish(id)
+            }
+            return
+        }
+
         Task {
             // The server is the brain: when it's reachable, Lumi answers there,
             // with all its tools, Markdown and a trace. The phone falls back to
             // its own on-device answer only when the server can't be reached.
-            if server.isPaired, server.enabled, server.reachable == true,
-               let result = try? await server.ask(question: trimmed, history: before) {
+            if serverReady, let result = try? await server.ask(question: trimmed, history: before) {
                 await MainActor.run {
                     sending = false
                     log.add(.myna, result.reply.isEmpty ? "…" : result.reply, steps: result.steps)

@@ -973,6 +973,29 @@ def create_app(
         note("generate", writer.name, time.perf_counter() - began, f"Ask: {payload.question} → {result['reply']}")
         return result
 
+    @app.post("/browse/ask.stream")
+    async def browse_ask_stream(payload: AskRequest, _: None = Depends(paired)):
+        """The live view: streams the agent's reasoning, each tool call and its
+        result, and the answer tokens as they're produced, as Server-Sent Events."""
+        from fastapi.responses import StreamingResponse
+
+        lookup = getattr(app.state, "web_lookup", web.lookup)
+        embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
+        shell = recall.run_shell if config.shell_enabled else None
+        mcp = mcp_hub() if config.mcp_servers else None
+
+        def events():
+            try:
+                for event in recall.answer_stream(store, writer, payload.question, payload.history,
+                                                   lookup=lookup, embed=embed, shell=shell, mcp=mcp):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as error:
+                yield f"data: {json.dumps({'t': 'error', 'd': str(error)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     @app.get("/browse/live", response_class=HTMLResponse)
     def browse_live(_: None = Depends(paired)) -> str:
         return browse.live_page(store, engines_state())

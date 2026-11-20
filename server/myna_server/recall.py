@@ -491,6 +491,79 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
     return {"reply": reply, "search": last_web, "grounded": True, "steps": steps}
 
 
+def answer_stream(store: Store, writer, question: str, history: list[dict],
+                  lookup=None, embed=None, shell=None, mcp=None, max_steps: int = 6):
+    """The same agent as answer(), but a generator that yields events as they
+    happen — the planner's reasoning and chosen actions, each tool call and its
+    raw result, and the answer tokens as the model writes them. This is the live
+    'show me everything as it thinks' view. `writer` must have .stream() and
+    .generate(). Yields dicts with a type `t`."""
+    now = datetime.now().strftime("%A %d %B %Y, %H:%M")
+    hist = _history(history)
+    mcp_doc = _mcp_doc(mcp)
+    base = [f"NOW: {now}"]
+    if hist:
+        base.append("CONVERSATION SO FAR:\n" + hist)
+    base.append(f'THE USER NOW ASKS: "{question}"')
+
+    last_web = ""
+    looked_up: list[str] = []
+    did: list[str] = []
+    steps: list[str] = []
+    for step in range(max_steps):
+        prompt = "\n\n".join(base)
+        if looked_up or did:
+            prompt += "\n\nSO FAR:\n" + "\n\n".join(looked_up + did)
+        prompt += "\n\nYour single JSON action:"
+        yield {"t": "phase", "d": "Deciding what to do"}
+        raw = ""
+        for kind, delta in writer.stream(PLAN + mcp_doc, prompt, 400):
+            if kind == "thinking":
+                yield {"t": "thinking", "d": delta}
+            else:
+                raw += delta
+                yield {"t": "plan", "d": delta}   # the planner forming its decision
+        act = _first_json(raw)
+        if act is None:
+            break
+        name = act.get("action")
+        if name in (None, "done", "answer"):
+            break
+        if name == "web":
+            last_web = str(act.get("query") or "")
+        label = _step_label(act, "")
+        yield {"t": "step", "d": label}
+        result = execute(store, act, lookup, embed, shell, mcp)[:3500]
+        steps.append(_step_label(act, result))
+        yield {"t": "observation", "label": label, "d": result[:1500]}
+        if name in _ACTIONS:
+            did.append(result)
+        else:
+            looked_up.append(f"Looked up {json.dumps(act)[:200]}:\n{result}")
+
+    context = [f"NOW: {now}"]
+    facts = _facts(store)
+    if facts:
+        context.append(facts)
+    if hist:
+        context.append("CONVERSATION SO FAR:\n" + hist)
+    if looked_up:
+        context.append("WHAT YOU LOOKED UP IN THEIR DATA:\n" + "\n\n".join(looked_up))
+    if did:
+        context.append("WHAT YOU DID FOR THEM:\n" + "\n".join(f"- {d}" for d in did))
+    context.append(f'THE USER ASKS: "{question}"\n\nWrite your answer:')
+
+    yield {"t": "phase", "d": "Answering"}
+    reply_parts: list[str] = []
+    for kind, delta in writer.stream(ANSWER, "\n\n".join(context), 2000):
+        if kind == "thinking":
+            yield {"t": "thinking", "d": delta}
+        else:
+            reply_parts.append(delta)
+            yield {"t": "answer", "d": delta}
+    yield {"t": "done", "reply": "".join(reply_parts).strip(), "steps": steps, "searched": last_web}
+
+
 def _step_label(act: dict, result: str) -> str:
     """A short, human line describing one thing Lumi did — shown when 'thinking'
     is turned on."""

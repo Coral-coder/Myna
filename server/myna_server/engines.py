@@ -1092,6 +1092,115 @@ class LlamaWriter:
             text = answer["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", text).strip()
 
+    def stream(self, instructions: str, prompt: str, max_tokens: int):
+        """Like generate(), but yields (kind, delta) as the model produces it —
+        kind is "thinking" for the model's private reasoning (<think> or
+        reasoning_content) and "text" for the answer. For the live verbose view."""
+        twin = self._twin()
+        if twin is not None:
+            self._shared(twin)
+            yield from twin.stream(instructions, prompt, max_tokens)
+            return
+        import json
+        import urllib.request
+
+        if not self.chosen:
+            raise RuntimeError("no model has been chosen for this")
+        from .memory import budget
+
+        with self._lock:
+            if self._move and self._process is not None:
+                self._move = False
+                self._stop()
+            try:
+                self._ensure_running()
+            except Exception:
+                if not self._fall_back():
+                    raise
+            budget.touch(self._budget_key())
+            context = int(self._config.llm_context)
+            max_tokens = max(64, min(max_tokens, context // 3))
+            room = max(2000, (context - max_tokens - 256) * 3 - len(instructions))
+            prompt = fit_text(prompt, room)
+            body = json.dumps({
+                "messages": [{"role": "system", "content": instructions},
+                             {"role": "user", "content": prompt}],
+                "max_tokens": max_tokens, "temperature": 0.3, "stream": True,
+                # Ask thinking models (Qwen3, …) to show their reasoning for the
+                # live verbose view; ignored by models/templates that don't.
+                "chat_template_kwargs": {"enable_thinking": True},
+            }).encode()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self._port}/v1/chat/completions",
+                data=body, headers={"Content-Type": "application/json"},
+            )
+            splitter = _ThinkSplitter()
+            with urllib.request.urlopen(request, timeout=600) as reply:
+                for raw in reply:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                    reasoning = delta.get("reasoning_content")
+                    if reasoning:
+                        yield ("thinking", reasoning)
+                    piece = delta.get("content")
+                    if piece:
+                        yield from splitter.feed(piece)
+            yield from splitter.flush()
+
+
+class _ThinkSplitter:
+    """Splits a token stream into ("thinking", …) and ("text", …) by the
+    <think>…</think> markers, coping with tags that straddle chunks."""
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.buffer = ""
+
+    def feed(self, piece: str):
+        self.buffer += piece
+        # Emit everything up to a possible partial tag at the very end.
+        while True:
+            marker = "</think>" if self.in_think else "<think>"
+            idx = self.buffer.find(marker)
+            if idx != -1:
+                before = self.buffer[:idx]
+                if before:
+                    yield ("thinking" if self.in_think else "text", before)
+                self.buffer = self.buffer[idx + len(marker):]
+                self.in_think = not self.in_think
+                continue
+            # No complete marker. Keep a tail that might be the start of one.
+            keep = _tag_tail(self.buffer)
+            emit = self.buffer[: len(self.buffer) - keep]
+            if emit:
+                yield ("thinking" if self.in_think else "text", emit)
+            self.buffer = self.buffer[len(self.buffer) - keep:]
+            return
+
+    def flush(self):
+        if self.buffer:
+            yield ("thinking" if self.in_think else "text", self.buffer)
+            self.buffer = ""
+
+
+def _tag_tail(text: str) -> int:
+    """How many trailing characters might be the start of a <think>/</think>
+    tag, so we hold them back rather than emit a half tag."""
+    for tag in ("</think>", "<think>"):
+        for size in range(min(len(tag) - 1, len(text)), 0, -1):
+            if text.endswith(tag[:size]):
+                return size
+    return 0
+
 
 VOICE_MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx"
 VOICE_MODEL_SHA256 = "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
