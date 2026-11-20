@@ -69,6 +69,15 @@ class Config:
     owner_name: str = ""
     # Two recognizers hear every clip and are combined into one transcript
     # (see blend.py). The partner is chosen automatically when left empty.
+    # Where transcripts come from: "local" (Myna transcribes bracelet/phone
+    # audio here) or "bee" (pull finished transcripts and summaries from Bee's
+    # developer API — Bee's cloud does the transcription; the recognizer, the
+    # speaker models and the speech gate don't load at all).
+    transcribe_source: str = "local"
+    # Bee developer API token (from developer.bee.computer), for the "bee" source.
+    bee_token: str = ""
+    # How often to pull new Bee conversations, in minutes.
+    bee_sync_minutes: int = 10
     # Simple mode (Omi-style): one recognizer, one writing model, nothing else
     # loaded — no recognizer panel, no checker/helper/summary/embedder, no
     # per-clip speaker splitting, no auto-tuning. Keeps a 12 GB card breathing.

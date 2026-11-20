@@ -1444,3 +1444,44 @@ def test_the_main_recognizer_is_pinned_and_never_moves():
     main._move = True                       # even if something set it
     # The pinned recognizer keeps its loaded model; it is not dropped to re-place.
     assert main.essential and main._model is not None
+
+
+def test_bee_cloud_imports_conversations_and_dedupes(tmp_path):
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    class FakeBee(bee_cloud.BeeCloud):
+        def __init__(self):
+            super().__init__("tok")
+            self.detail_calls = 0
+
+        def recent_conversations(self, limit=30):
+            return [{"bee_id": 7, "start": 1000.0, "end": 1200.0, "summary": "Lunch with Sam about the launch", "state": "completed"},
+                    {"bee_id": 8, "start": 2000.0, "end": 2100.0, "summary": "Call with the plumber", "state": "completed"}]
+
+        def conversation(self, bee_id):
+            self.detail_calls += 1
+            return {"bee_id": bee_id, "start": 1000.0 if bee_id == 7 else 2000.0, "end": 1200.0,
+                    "summary": "Lunch with Sam about the launch" if bee_id == 7 else "Call with the plumber",
+                    "state": "completed",
+                    "lines": [(1000.0, "Speaker 1", "Should we move the launch?"), (1005.0, "Speaker 2", "Yes, to March.")]}
+
+    store = Store(tmp_path / "b.db")
+    bee = FakeBee()
+    assert bee_cloud.import_conversations(store, bee) == 2
+    assert bee_cloud.import_conversations(store, bee) == 0          # dedupe: nothing new
+    assert bee.detail_calls == 2                                     # the second pull fetched no details
+
+    convo = store.get("conversation", "bee-7")
+    assert convo["source"] == "bee" and convo["title"].startswith("Lunch with Sam")
+    assert convo["overview"] == "Lunch with Sam about the launch"
+    lines = [u for u in store.browse("utterance") if u.get("beeId") == 7]
+    assert len(lines) == 2 and lines[0]["engine"] == "bee"
+
+
+def test_bee_cloud_reads_dates_and_transcripts(tmp_path):
+    from myna_server import bee_cloud
+
+    assert bee_cloud._parse_date("2026-11-20T09:30:00Z") is not None
+    assert bee_cloud._parse_date(1700000000) == 1700000000.0
+    assert bee_cloud._parse_date("") is None
