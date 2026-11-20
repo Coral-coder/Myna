@@ -34,7 +34,7 @@ jobs:
       - name: Test the worker
         working-directory: server
         run: |
-          pip install -q fastapi uvicorn httpx numpy pytest
+          pip install -q fastapi uvicorn httpx numpy pytest pynacl qrcode
           python -m pytest -q tests
           python tests/check_llama_flags.py
 

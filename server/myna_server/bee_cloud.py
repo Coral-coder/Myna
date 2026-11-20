@@ -221,3 +221,104 @@ def needs_writeup(store, most: int = 200) -> list[str]:
     """Bee conversations that don't have a Myna write-up yet, newest first."""
     return [row["id"] for row in store.browse("conversation", limit=most)
             if row.get("source") == "bee" and not row.get("myna")]
+
+
+# -- QR login (app pairing), reverse-engineered from the official Bee CLI ----------------
+#
+# The CLI generates a NaCl box keypair, POSTs {app_id, publicKey} to
+# auth.beeai-services.com/apps/pairing/request, shows a QR of
+# bee.computer/connect#<requestId> for the phone to approve, then polls the same
+# endpoint until it returns an encryptedToken sealed to our public key.
+
+PAIRING_HOST = "https://auth.beeai-services.com"
+PAIRING_PATH = "/apps/pairing/request"
+PAIRING_APP_ID = "ph9fssu1kv1b0hns69fxf7rx"   # the Bee CLI's registered app id (prod)
+CONNECT_URL = "https://bee.computer/connect#"
+
+
+def _pairing_request(app_id: str, public_key_b64: str) -> dict:
+    body = json.dumps({"app_id": app_id, "publicKey": public_key_b64}).encode()
+    request = urllib.request.Request(PAIRING_HOST + PAIRING_PATH, data=body,
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as reply:
+            data = json.loads(reply.read())
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise BeeError("Bee's pairing endpoint wasn't found.") from error
+        raise BeeError(f"Bee pairing returned HTTP {error.code}.") from error
+    except (urllib.error.URLError, ValueError, TimeoutError) as error:
+        raise BeeError(f"Couldn't reach Bee to pair: {error}") from error
+    if data.get("ok") is not True:
+        raise BeeError("Bee sent an unexpected pairing response.")
+    return data
+
+
+def _decrypt_pairing_token(encrypted_b64: str, secret_key) -> str:
+    import base64
+
+    import nacl.public
+
+    packed = base64.b64decode(encrypted_b64)
+    if len(packed) < 1 + 24 + 32 + 16 or packed[0] != 1:
+        raise BeeError("Bee sent a pairing token Myna couldn't read.")
+    nonce, ephemeral, ciphertext = packed[1:25], packed[25:57], packed[57:]
+    box = nacl.public.Box(secret_key, nacl.public.PublicKey(ephemeral))
+    return box.decrypt(ciphertext, nonce).decode("utf-8").strip()
+
+
+class Pairing:
+    """One QR-login attempt: start it, show the URL/QR, poll until approved."""
+
+    def __init__(self, app_id: str = PAIRING_APP_ID) -> None:
+        import nacl.public
+
+        self._secret = nacl.public.PrivateKey.generate()
+        self.app_id = app_id
+        self.public_key_b64 = __import__("base64").b64encode(bytes(self._secret.public_key)).decode()
+        self.request_id = ""
+        self.expires_at = ""
+        self.url = ""
+        self.token = ""
+
+    def start(self) -> str | None:
+        """Begin pairing. Returns the connect URL to show as a QR, or the token
+        if Bee completed immediately."""
+        data = _pairing_request(self.app_id, self.public_key_b64)
+        status = data.get("status")
+        if status == "completed":
+            self.token = _decrypt_pairing_token((data.get("result") or {}).get("encryptedToken", ""), self._secret)
+            return None
+        if status == "expired":
+            raise BeeError("The pairing request expired. Start again.")
+        self.request_id = str(data.get("requestId") or "")
+        self.expires_at = str(data.get("expiresAt") or "")
+        self.url = CONNECT_URL + self.request_id
+        return self.url
+
+    def poll_once(self) -> bool:
+        """Check once whether the phone has approved. True once a token is in hand."""
+        if self.token:
+            return True
+        data = _pairing_request(self.app_id, self.public_key_b64)
+        status = data.get("status")
+        if status == "completed":
+            self.token = _decrypt_pairing_token((data.get("result") or {}).get("encryptedToken", ""), self._secret)
+            return True
+        if status == "expired":
+            raise BeeError("The pairing request expired. Start again.")
+        return False
+
+
+def qr_svg(url: str) -> str:
+    """An inline SVG QR code for `url`."""
+    import io
+
+    import qrcode
+    import qrcode.image.svg
+
+    img = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, box_size=10, border=2)
+    buf = io.BytesIO()
+    img.save(buf)
+    svg = buf.getvalue().decode("utf-8")
+    return svg[svg.index("<svg"):]

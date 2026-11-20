@@ -1523,3 +1523,51 @@ def test_bee_source_skips_local_transcription_and_syncs(tmp_path, monkeypatch):
     assert "Transcription source: BEE CLOUD" in page and "Dentist on Tuesday" not in page  # summary not on the models page
     convo = store.get("conversation", "bee-3")
     assert convo["overview"] == "Dentist on Tuesday" and convo.get("myna")   # both views stored
+
+
+def test_bee_pairing_decrypts_the_token_and_qr_renders():
+    import base64
+
+    import nacl.public
+    import nacl.utils
+
+    from myna_server import bee_cloud
+
+    pair = bee_cloud.Pairing()
+    # Simulate Bee sealing a token to our public key with an ephemeral keypair.
+    ephem = nacl.public.PrivateKey.generate()
+    our_pub = nacl.public.PublicKey(base64.b64decode(pair.public_key_b64))
+    nonce = nacl.utils.random(24)
+    ciphertext = nacl.public.Box(ephem, our_pub).encrypt(b"tok_live_123", nonce).ciphertext
+    packed = bytes([1]) + nonce + bytes(ephem.public_key) + ciphertext
+    token = bee_cloud._decrypt_pairing_token(base64.b64encode(packed).decode(), pair._secret)
+    assert token == "tok_live_123"
+
+    svg = bee_cloud.qr_svg("https://bee.computer/connect#abc")
+    assert svg.startswith("<svg") and "path" in svg
+
+
+def test_bee_connect_button_starts_pairing(tmp_path, monkeypatch):
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    # Pairing completes immediately with a token.
+    def fake_start(self):
+        self.token = "tok_from_pairing"
+        return None
+
+    monkeypatch.setattr(bee_cloud.Pairing, "start", fake_start)
+    config = Config(token="secret-token", transcribe_source="bee")
+    app = create_app(config, FakeTranscriber(), FakeWriter(), store=Store(tmp_path / "p.db"))
+    app.state.save_config = False
+    monkeypatch.setattr("myna_server.bee_cloud.BeeCloud.recent_conversations", lambda self, limit=30: [])
+    monkeypatch.setattr("myna_server.bee_cloud.BeeCloud.account_name", lambda self: "Ara")
+    client = TestClient(app)
+
+    client.post("/browse/bee/connect", headers=AUTH, follow_redirects=False)
+    import time as clock
+    for _ in range(50):
+        if config.bee_token == "tok_from_pairing":
+            break
+        clock.sleep(0.05)
+    assert config.bee_token == "tok_from_pairing"

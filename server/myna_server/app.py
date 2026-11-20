@@ -460,6 +460,7 @@ def create_app(
             "memory": memory.budget.snapshot(),
             "source": config.transcribe_source,
             "bee": dict(bee_state),
+            "bee_pair": dict(bee_pair),
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "blend": {
@@ -1060,6 +1061,38 @@ def create_app(
     from . import bee_cloud
 
     bee_state = {"status": "", "last_sync": 0.0, "new": 0, "account": "", "running": False}
+    bee_pair = {"active": False, "url": "", "svg": "", "status": "", "expires": ""}
+
+    def run_pairing() -> None:
+        import time
+
+        try:
+            pair = bee_cloud.Pairing()
+            url = pair.start()
+            if url is None:   # Bee completed immediately
+                config.bee_token = pair.token
+            else:
+                bee_pair.update(active=True, url=url, svg=bee_cloud.qr_svg(url), expires=pair.expires_at,
+                                status="Scan this with the Bee app (Developer Mode on), then approve.")
+                while bee_pair["active"]:
+                    time.sleep(2)
+                    if pair.poll_once():
+                        config.bee_token = pair.token
+                        break
+                if not pair.token:
+                    return   # cancelled
+            if getattr(app.state, "save_config", True):
+                config.save()
+            bee_state["account"] = ""
+            bee_pair.update(active=False, status="Connected to Bee. Syncing…")
+            config.transcribe_source = "bee"
+            if getattr(app.state, "save_config", True):
+                config.save()
+            threading.Thread(target=run_bee_sync, daemon=True).start()
+        except bee_cloud.BeeError as error:
+            bee_pair.update(active=False, status=str(error))
+        except Exception as error:
+            bee_pair.update(active=False, status=f"Pairing failed: {error}")
 
     def bee_client():
         return bee_cloud.BeeCloud(config.bee_token)
@@ -1099,6 +1132,22 @@ def create_app(
             bee_state["running"] = False
 
     app.state.run_bee_sync = run_bee_sync
+
+    @app.post("/browse/bee/connect")
+    async def bee_connect(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        if not bee_pair["active"]:
+            bee_pair.update(active=True, url="", svg="", status="Starting…")
+            threading.Thread(target=run_pairing, daemon=True).start()
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/bee/cancel")
+    async def bee_cancel(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        bee_pair.update(active=False, status="Cancelled.")
+        return RedirectResponse("/browse/models", status_code=303)
 
     @app.post("/browse/source")
     async def set_source(request: Request, _: None = Depends(paired)):

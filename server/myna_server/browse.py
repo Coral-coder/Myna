@@ -451,15 +451,31 @@ def _source_banner(config, state: dict) -> str:
         f'<button>Switch to {"Local" if source == "bee" else "Bee cloud"}</button></form>',
     ]
     if source == "bee":
+        pair = (state or {}).get("bee_pair") or {}
+        if pair.get("active"):
+            rows.append(f'<div class="dim" style="margin:4px 0 6px">{_e(pair.get("status") or "Connecting…")}</div>')
+            if pair.get("svg"):
+                rows.append('<div style="background:#fff;display:inline-block;padding:10px;border-radius:10px">'
+                            + pair["svg"] + "</div>")
+                rows.append(f'<div class="dim" style="margin:6px 0">Or open on this phone: '
+                            f'<a href="{_e(pair.get("url"))}">{_e(pair.get("url"))}</a></div>')
+            rows.append('<form method="post" action="/browse/bee/cancel" style="margin:4px 0"><button>Cancel</button></form>')
+        elif not token:
+            rows.append('<div class="dim" style="margin:4px 0 6px">Not connected. Connect scans a QR with the Bee app '
+                        '(turn on Developer Mode: in the Bee app, tap the version 5 times), then approves — no token to copy.</div>')
+            rows.append('<form method="post" action="/browse/bee/connect" style="margin:0 0 6px"><button>Connect Bee (QR)</button></form>')
+        else:
+            rows.append(f'<div class="dim" style="margin:4px 0">Connected · token {_e(hint)} · account '
+                        f'{_e(bee.get("account") or "—")} · last sync {_e(when)} · {_e(bee.get("status") or "")}</div>')
+            rows.append('<form method="post" action="/browse/source" style="display:flex;gap:6px;margin:0 0 6px">'
+                        '<button name="sync" value="now">Sync now</button></form>'
+                        '<form method="post" action="/browse/bee/connect" style="margin:0 0 6px"><button>Reconnect (QR)</button></form>')
         rows += [
-            '<form method="post" action="/browse/source" style="display:grid;gap:6px;margin:0">',
-            f'<div class="dim">Bee developer token (from developer.bee.computer) — currently {_e(hint)}. '
-            'In the Myna phone app, Backstage &rarr; Bee &rarr; Enter a token manually shows the one on your phone.</div>',
+            '<details style="margin-top:4px"><summary class="dim">Paste a token instead</summary>',
+            '<form method="post" action="/browse/source" style="display:grid;gap:6px;margin:6px 0">',
             '<input name="bee_token" placeholder="Bee developer token" autocomplete="off">',
             '<div style="display:flex;gap:6px"><button name="sync" value="save">Save token</button>'
-            '<button name="sync" value="now">Save &amp; sync now</button></div></form>',
-            f'<div class="dim" style="margin-top:6px">Account: {_e(bee.get("account") or "—")} · last sync: {_e(when)} · '
-            f'{_e(bee.get("status") or "")}</div>',
+            '<button name="sync" value="now">Save &amp; sync now</button></div></form></details>',
         ]
     rows.append("</div>")
     return "".join(rows)
