@@ -69,6 +69,18 @@ final class BeeManager: ObservableObject {
         return "none stored"
     }
     private static let enabledKey = "myna.bee.enabled"
+    private static let transcribeKey = "myna.bee.transcribe"
+
+    /// Whether this phone transcribes the bracelet's audio. Off by default now
+    /// that Bee's cloud does the transcription and the Myna server syncs it; the
+    /// bracelet still connects, so battery and brightness control keep working.
+    var transcribesBracelet: Bool { UserDefaults.standard.bool(forKey: Self.transcribeKey) }
+
+    func setTranscribesBracelet(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.transcribeKey)
+        objectWillChange.send()
+        if !on { audioActive = false }
+    }
 
     /// Bumped each handshake so a stale timeout from an earlier attempt is ignored.
     private var handshakeToken = 0
@@ -969,6 +981,9 @@ final class BeeManager: ObservableObject {
     // MARK: - Audio
 
     private func handleAudio(_ data: Data) {
+        // Not transcribing on this phone: the bracelet still streams to Bee's
+        // cloud, Myna just doesn't decode or feed it. Control still works.
+        guard transcribesBracelet else { return }
         func dropOnce(_ why: String) {
             guard !audioDropReasonLogged else { return }
             audioDropReasonLogged = true

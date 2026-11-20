@@ -357,6 +357,19 @@ struct BraceletCard: View {
                 .foregroundStyle(MynaTheme.cyan)
             }
 
+            Toggle(isOn: Binding(get: { bee.transcribesBracelet },
+                                 set: { bee.setTranscribesBracelet($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Transcribe on this phone").braceletCaption()
+                    Text(bee.transcribesBracelet
+                         ? "Myna decodes and transcribes the bracelet's audio here."
+                         : "Off — Bee's cloud transcribes; the server syncs it. Controls still work.")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.4))
+                }
+            }
+            .tint(MynaTheme.cyan)
+
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Brightness").braceletCaption()
