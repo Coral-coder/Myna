@@ -275,6 +275,10 @@ def create_app(
     async def transcribe(request: Request, _: None = Depends(paired)) -> dict:
         import hashlib
 
+        if config.transcribe_source == "bee":
+            # Transcripts come from Bee's cloud; the server does not transcribe,
+            # so no recognizer, speaker model or speech gate ever loads.
+            return {"text": "", "audio_seconds": 0.0, "took_seconds": 0.0, "engine": "bee", "segments": []}
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="No audio received.")
@@ -454,6 +458,8 @@ def create_app(
             "embedder_status": getattr(embedder, "status", "") if embedder is not None else "",
             "reset_status": reset_state["status"],
             "memory": memory.budget.snapshot(),
+            "source": config.transcribe_source,
+            "bee": dict(bee_state),
             "reprocess": dict(reprocess),
             "tune": {"running": tune_state["running"], "status": tune_state["status"]},
             "blend": {
@@ -1048,6 +1054,69 @@ def create_app(
                 config.save()
             return RedirectResponse("/browse/models", status_code=303)
         return RedirectResponse(f"/browse/experiment?kind={trying.get('kind') or form.get('kind', 'writing')}", status_code=303)
+
+    # -- Bee cloud: pull finished conversations from Bee's developer API ----------
+
+    from . import bee_cloud
+
+    bee_state = {"status": "", "last_sync": 0.0, "new": 0, "account": "", "running": False}
+
+    def bee_client():
+        return bee_cloud.BeeCloud(config.bee_token)
+
+    def run_bee_sync() -> int:
+        """Pull new Bee conversations, save a local copy, and (local AI on) write
+        each up Myna-style alongside Bee's own summary."""
+        client = bee_client()
+        if not client.configured or bee_state["running"]:
+            return 0
+        bee_state["running"] = True
+        job = doing("Syncing conversations from Bee")
+        job.__enter__()
+        try:
+            if not bee_state["account"]:
+                try:
+                    bee_state["account"] = client.account_name() or ""
+                except bee_cloud.BeeError:
+                    pass
+            added = bee_cloud.import_conversations(store, client, owner=config.owner_name)
+            # Myna's own write-up of each new Bee transcript (both views are kept).
+            if not config.simple_mode or True:   # local AI for conversations stays on
+                known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
+                for cid in bee_cloud.needs_writeup(store):
+                    bee_cloud.myna_writeup(store, cid, writer.generate, config.owner_name, known)
+            app.state.run_indexing()
+            bee_state.update(status=f"Synced. {added} new.", last_sync=time.time(), new=added)
+            return added
+        except bee_cloud.BeeError as error:
+            bee_state["status"] = str(error)
+            return 0
+        except Exception as error:
+            bee_state["status"] = f"Sync failed: {error}"
+            return 0
+        finally:
+            job.__exit__()
+            bee_state["running"] = False
+
+    app.state.run_bee_sync = run_bee_sync
+
+    @app.post("/browse/source")
+    async def set_source(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        if "source" in form:
+            config.transcribe_source = "bee" if form.get("source") == "bee" else "local"
+        if "bee_token" in form:
+            config.bee_token = form.get("bee_token", "").strip()
+            bee_state["account"] = ""   # re-check the account with the new token
+        if getattr(app.state, "save_config", True):
+            config.save()
+        if form.get("sync") == "now":
+            threading.Thread(target=run_bee_sync, daemon=True).start()
+        return RedirectResponse("/browse/models", status_code=303)
 
     @app.get("/browse/models", response_class=HTMLResponse)
     def browse_models(_: None = Depends(paired)) -> str:

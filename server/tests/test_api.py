@@ -1485,3 +1485,41 @@ def test_bee_cloud_reads_dates_and_transcripts(tmp_path):
     assert bee_cloud._parse_date("2026-11-20T09:30:00Z") is not None
     assert bee_cloud._parse_date(1700000000) == 1700000000.0
     assert bee_cloud._parse_date("") is None
+
+
+def test_bee_source_skips_local_transcription_and_syncs(tmp_path, monkeypatch):
+    from myna_server import bee_cloud
+    from myna_server.store import Store
+
+    store = Store(tmp_path / "s.db")
+    config = Config(token="secret-token", transcribe_source="bee", bee_token="devtok")
+
+    class Deaf(FakeTranscriber):
+        def transcribe(self, samples):
+            raise AssertionError("should not transcribe in Bee mode")
+
+    app = create_app(config, Deaf(), FakeWriter(), store=store)
+    app.state.save_config = False
+    client = TestClient(app)
+
+    # In Bee mode the server never runs a recognizer.
+    body = client.post("/v1/transcribe", headers=AUTH, content=wav_bytes(quiet(16000))).json()
+    assert body["text"] == "" and body["engine"] == "bee"
+
+    # Sync pulls and stores Bee conversations.
+    def fake_recent(self, limit=30):
+        return [{"bee_id": 3, "start": 100.0, "end": 200.0, "summary": "Dentist on Tuesday", "state": "completed"}]
+
+    def fake_detail(self, bee_id):
+        return {"bee_id": bee_id, "start": 100.0, "end": 200.0, "summary": "Dentist on Tuesday",
+                "state": "completed", "lines": [(100.0, "Speaker 1", "Booked the dentist for Tuesday.")]}
+
+    monkeypatch.setattr(bee_cloud.BeeCloud, "recent_conversations", fake_recent)
+    monkeypatch.setattr(bee_cloud.BeeCloud, "conversation", fake_detail)
+    monkeypatch.setattr(bee_cloud.BeeCloud, "account_name", lambda self: "Ara")
+
+    assert app.state.run_bee_sync() == 1
+    page = client.get("/browse/models", headers=AUTH).text
+    assert "Transcription source: BEE CLOUD" in page and "Dentist on Tuesday" not in page  # summary not on the models page
+    convo = store.get("conversation", "bee-3")
+    assert convo["overview"] == "Dentist on Tuesday" and convo.get("myna")   # both views stored

@@ -431,6 +431,40 @@ def _reset_buttons(state: dict, back: str) -> str:
     return "".join(out)
 
 
+def _source_banner(config, state: dict) -> str:
+    """Choose where transcripts come from: local transcription, or Bee's cloud."""
+    source = getattr(config, "transcribe_source", "local")
+    bee = (state or {}).get("bee") or {}
+    token = getattr(config, "bee_token", "")
+    hint = (token[:4] + "…" + token[-4:]) if len(token) > 10 else ("set" if token else "not set")
+    last = bee.get("last_sync") or 0
+    when = _when(last, "%d %b %H:%M") if last else "never"
+    rows = [
+        '<div style="border:1px solid #e9e9e6;border-radius:10px;padding:12px;margin-bottom:14px">',
+        f'<b>Transcription source: {"BEE CLOUD" if source == "bee" else "LOCAL"}</b>',
+        '<div class="dim" style="margin:4px 0 8px">Local: Myna transcribes bracelet/phone audio here. '
+        'Bee cloud: pull finished transcripts and summaries from Bee\'s developer API — Bee does the '
+        'transcription, Myna keeps a copy and writes its own notes and search. In Bee mode the recognizer, '
+        'speaker models and speech gate don\'t load at all.</div>',
+        '<form method="post" action="/browse/source" style="display:flex;gap:6px;margin:0 0 8px">',
+        f'<input type="hidden" name="source" value="{"local" if source == "bee" else "bee"}">',
+        f'<button>Switch to {"Local" if source == "bee" else "Bee cloud"}</button></form>',
+    ]
+    if source == "bee":
+        rows += [
+            '<form method="post" action="/browse/source" style="display:grid;gap:6px;margin:0">',
+            f'<div class="dim">Bee developer token (from developer.bee.computer) — currently {_e(hint)}. '
+            'In the Myna phone app, Backstage &rarr; Bee &rarr; Enter a token manually shows the one on your phone.</div>',
+            '<input name="bee_token" placeholder="Bee developer token" autocomplete="off">',
+            '<div style="display:flex;gap:6px"><button name="sync" value="save">Save token</button>'
+            '<button name="sync" value="now">Save &amp; sync now</button></div></form>',
+            f'<div class="dim" style="margin-top:6px">Account: {_e(bee.get("account") or "—")} · last sync: {_e(when)} · '
+            f'{_e(bee.get("status") or "")}</div>',
+        ]
+    rows.append("</div>")
+    return "".join(rows)
+
+
 def _simple_banner(config) -> str:
     """The Simple-mode switch at the top of the Models page."""
     on = getattr(config, "simple_mode", True)
@@ -465,6 +499,7 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
         "table{border-collapse:collapse;width:100%;margin-top:8px}td,th{text-align:left;padding:6px 10px 6px 0;"
         "border-bottom:1px solid #ffffff12;font-size:13px;vertical-align:top}th{font:11px ui-monospace,monospace;"
         "letter-spacing:.1em;text-transform:uppercase;color:#6a6c6e}</style>",
+        _source_banner(config, state),
         _simple_banner(config),
         "<h2>Transcription</h2>",
         f'<div class="dim">{_e(state.get("transcriber"))} — {_e(state.get("transcriber_status"))}</div>',

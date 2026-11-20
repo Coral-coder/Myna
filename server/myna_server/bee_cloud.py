@@ -191,3 +191,33 @@ def _title(summary: str) -> str:
     line = line.lstrip("# ").strip()
     words = line.split()
     return " ".join(words[:10]) + ("…" if len(words) > 10 else "") if words else "Conversation"
+
+
+def myna_writeup(store, conversation_id: str, write, owner: str = "", known_memories=None) -> bool:
+    """Run Myna's own writing model over a Bee conversation's transcript and
+    store the result alongside Bee's summary, so the phone can show either."""
+    from . import conversations
+
+    record = store.get("conversation", conversation_id)
+    if record is None or record.get("myna") or record.get("source") != "bee":
+        return False
+    bee_id = record.get("beeId")
+    lines = [u for u in store.browse("utterance", limit=4000) if u.get("beeId") == bee_id]
+    if not lines:
+        return False
+    lines.sort(key=lambda u: u.get("at", 0.0))
+    try:
+        result = conversations.process(lines, {}, [], known_memories or [], owner, write)
+    except Exception:
+        return False
+    record["myna"] = {key: result.get(key) for key in
+                      ("title", "emoji", "category", "gist", "overview", "sections",
+                       "actionItems", "events", "memories")}
+    _save(store, "conversation", conversation_id, record, float(record.get("startedAt") or 0))
+    return True
+
+
+def needs_writeup(store, most: int = 200) -> list[str]:
+    """Bee conversations that don't have a Myna write-up yet, newest first."""
+    return [row["id"] for row in store.browse("conversation", limit=most)
+            if row.get("source") == "bee" and not row.get("myna")]

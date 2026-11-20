@@ -58,10 +58,15 @@ def main() -> None:
         from datetime import datetime
 
         last_purge = 0.0
+        last_bee = 0.0
         while True:
             time.sleep(60)
             try:
                 now = time.time()
+                # Bee source: pull new conversations on the configured cadence.
+                if config.transcribe_source == "bee" and now - last_bee >= max(1, config.bee_sync_minutes) * 60:
+                    last_bee = now
+                    app.state.run_bee_sync()
                 last = store.last_clip_at()
                 if config.daily_summary and last > 0 and now - last >= config.idle_minutes * 60:
                     day = datetime.fromtimestamp(last).strftime("%Y-%m-%d")
@@ -69,7 +74,7 @@ def main() -> None:
                     if written is None or float(written.get("writtenAt") or 0) < last:
                         app.state.run_daily(day)
                 # Write up conversations that have ended.
-                if config.conversations:
+                if config.conversations and config.transcribe_source != "bee":
                     app.state.run_conversations()
                 app.state.run_indexing()
                 # Tune the transcription model while things are quiet.
