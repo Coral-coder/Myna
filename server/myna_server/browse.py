@@ -457,10 +457,14 @@ def _source_banner(config, state: dict) -> str:
             if pair.get("svg"):
                 rows.append('<div style="background:#fff;display:inline-block;padding:10px;border-radius:10px">'
                             + pair["svg"] + "</div>")
-                rows.append(f'<div class="dim" style="margin:6px 0">Or open on this phone: '
+            if pair.get("url"):
+                rows.append(f'<div class="dim" style="margin:6px 0">Scan the code, or open this on your phone: '
                             f'<a href="{_e(pair.get("url"))}">{_e(pair.get("url"))}</a></div>')
             rows.append('<form method="post" action="/browse/bee/cancel" style="margin:4px 0"><button>Cancel</button></form>')
         elif not token:
+            problem = bee.get("status") or ""
+            if problem and "cancel" not in problem.lower():
+                rows.append(f'<div style="margin:4px 0 6px;color:#FF5028">{_e(problem)}</div>')
             rows.append('<div class="dim" style="margin:4px 0 6px">Not connected. Connect scans a QR with the Bee app '
                         '(turn on Developer Mode: in the Bee app, tap the version 5 times), then approves — no token to copy.</div>')
             rows.append('<form method="post" action="/browse/bee/connect" style="margin:0 0 6px"><button>Connect Bee (QR)</button></form>')

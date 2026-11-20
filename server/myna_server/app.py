@@ -1083,12 +1083,12 @@ def create_app(
             return ""
         try:
             svg = bee_cloud.qr_svg(url)
-        except Exception as error:
-            bee_pair.update(active=False, status=f"Couldn't draw the QR: {error}")
-            return str(error)
+            note = "Scan this with the Bee app (Developer Mode on), then approve."
+        except Exception:
+            svg = ""   # no QR image, but the link still works
+            note = "Open the link below on your phone (the Bee app, Developer Mode on), then approve."
         pairing_holder["obj"] = pair
-        bee_pair.update(active=True, url=url, svg=svg, expires=pair.expires_at,
-                        status="Scan this with the Bee app (Developer Mode on), then approve.")
+        bee_pair.update(active=True, url=url, svg=svg, expires=pair.expires_at, status=note)
         threading.Thread(target=poll_pairing, daemon=True).start()
         return ""
 
