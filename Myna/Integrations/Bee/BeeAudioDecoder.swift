@@ -92,24 +92,37 @@ final class BeeAudioDecoder {
 
     // MARK: - AAC
 
-    /// Holds one compressed packet for the AudioConverter input callback. The
-    /// bytes must stay put for the duration of the fill call, so they live in a
-    /// caller-owned allocation referenced here.
+    /// Holds one compressed packet for the AudioConverter input callback, and
+    /// owns its memory. The converter is allowed to keep reading what the
+    /// callback handed it after the fill call returns (it buffers input and
+    /// may finish with it on a later call), so these are kept alive in
+    /// `recentInputs` rather than freed straight away. Freeing them at the end
+    /// of each call is what crashed build 99: hours in, the converter copied
+    /// from a packet that had already been released.
     private final class AACInput {
         let data: UnsafeMutableRawPointer
         let byteCount: Int
         let channels: UInt32
         let descPtr: UnsafeMutablePointer<AudioStreamPacketDescription>
         var consumed = false
-        init(data: UnsafeMutableRawPointer, byteCount: Int, channels: UInt32) {
-            self.data = data
-            self.byteCount = byteCount
+        init(payload: Data, channels: UInt32) {
+            byteCount = payload.count
+            data = UnsafeMutableRawPointer.allocate(byteCount: max(1, payload.count), alignment: 1)
+            payload.copyBytes(to: data.assumingMemoryBound(to: UInt8.self), count: payload.count)
             self.channels = channels
             descPtr = UnsafeMutablePointer<AudioStreamPacketDescription>.allocate(capacity: 1)
-            descPtr.initialize(to: AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(byteCount)))
+            descPtr.initialize(to: AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(payload.count)))
         }
-        deinit { descPtr.deinitialize(count: 1); descPtr.deallocate() }
+        deinit {
+            descPtr.deinitialize(count: 1)
+            descPtr.deallocate()
+            data.deallocate()
+        }
     }
+
+    /// The last few packets given to the converter, kept until it can no
+    /// longer be holding on to them.
+    private var recentInputs: [AACInput] = []
 
     /// Returned by the input proc to mean "no more data for THIS fill." It must
     /// be non-zero: returning 0 packets with noErr tells the AudioConverter the
@@ -141,6 +154,7 @@ final class BeeAudioDecoder {
     private func releaseAAC() {
         if let c = aacConverter { AudioConverterDispose(c) }
         aacConverter = nil
+        recentInputs.removeAll()   // only after the converter that used them is gone
     }
 
     /// Build the decoder for this frame's config and install the magic cookie
@@ -210,12 +224,9 @@ final class BeeAudioDecoder {
         }
         guard let converter = aacConverter, let outFormat = aacOutputFormat else { return nil }
 
-        let byteCount = frame.payload.count
-        let inputPtr = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 1)
-        defer { inputPtr.deallocate() }
-        frame.payload.copyBytes(to: inputPtr.assumingMemoryBound(to: UInt8.self), count: byteCount)
-
-        let ctx = AACInput(data: inputPtr, byteCount: byteCount, channels: UInt32(cfgChannels))
+        let ctx = AACInput(payload: frame.payload, channels: UInt32(cfgChannels))
+        recentInputs.append(ctx)
+        if recentInputs.count > 16 { recentInputs.removeFirst(recentInputs.count - 16) }
         let ctxPtr = Unmanaged.passUnretained(ctx).toOpaque()
 
         guard let output = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: framesPerPacket * 2) else { return nil }

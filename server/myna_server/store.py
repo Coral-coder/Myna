@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-KINDS = ("utterance", "note", "memory", "item", "person")
+KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily", "conversation", "message", "command")
 
 # Which field of a record places it in time, per kind.
 _TIME_FIELDS = {
@@ -23,6 +23,15 @@ _TIME_FIELDS = {
     "memory": ("createdAt",),
     "item": ("createdAt",),
     "person": ("createdAt",),
+    "song": ("lastHeard", "firstHeard"),
+    "daily": ("day",),
+    "conversation": ("startedAt",),
+    # A note Myna decides to send the user on its own — surfaced as a
+    # notification on the phone when it syncs.
+    "message": ("createdAt",),
+    # An instruction the phone carries out on the device — add a calendar
+    # event, a reminder, a contact — since those live on the phone.
+    "command": ("createdAt",),
 }
 
 
@@ -61,6 +70,41 @@ class Store:
             )
             self._db.execute("CREATE INDEX IF NOT EXISTS records_seq ON records (seq)")
             self._db.execute("CREATE INDEX IF NOT EXISTS records_time ON records (kind, deleted, sort_at)")
+            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'db_id'").fetchone()
+            if row is None:
+                import uuid as _uuid
+                self._db.execute("INSERT INTO meta (key, value) VALUES ('db_id', ?)", (str(_uuid.uuid4()),))
+                row = self._db.execute("SELECT value FROM meta WHERE key = 'db_id'").fetchone()
+            self.db_id = row["value"]
+            # Received audio (kept a few days) and what each transcription
+            # model made of it, for comparing models on the same recordings.
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS clips (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at REAL NOT NULL,
+                    seconds REAL NOT NULL,
+                    path TEXT NOT NULL
+                )"""
+            )
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS transcripts (
+                    clip_id INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    took REAL NOT NULL,
+                    made_at REAL NOT NULL,
+                    PRIMARY KEY (clip_id, model)
+                )"""
+            )
+            self._db.execute("CREATE INDEX IF NOT EXISTS clips_at ON clips (at)")
+            # Meaning-vectors for search by meaning (see meaning.py).
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS vectors (
+                    kind TEXT NOT NULL, id TEXT NOT NULL, made_at REAL NOT NULL, vec BLOB NOT NULL,
+                    PRIMARY KEY (kind, id)
+                )"""
+            )
 
     def _cursor(self) -> int:
         row = self._db.execute("SELECT COALESCE(MAX(seq), 0) AS top FROM records").fetchone()
@@ -129,7 +173,7 @@ class Store:
             for row in rows
             if (row["kind"], row["id"]) not in accepted
         ]
-        return {"changes": out, "cursor": top, "more": more}
+        return {"changes": out, "cursor": top, "more": more, "db_id": self.db_id}
 
     def browse(self, kind: str, query: str = "", limit: int = 300, before: float | None = None) -> list[dict]:
         """Records of one kind, newest first, optionally only those containing `query`."""
@@ -154,8 +198,157 @@ class Store:
             ).fetchone()
         return json.loads(row["data"]) if row else None
 
+    def get_meta(self, key: str, default: str = "") -> str:
+        """A small stored value, for cursors and the like (not a synced record)."""
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+            self._db.commit()
+
     def counts(self) -> dict[str, int]:
         with self._lock:
             rows = self._db.execute("SELECT kind, COUNT(*) AS n FROM records WHERE deleted = 0 GROUP BY kind").fetchall()
         found = {row["kind"]: int(row["n"]) for row in rows}
         return {kind: found.get(kind, 0) for kind in KINDS}
+
+    # -- received audio and model comparison -----------------------------------
+
+    def add_clip(self, at: float, seconds: float, path: str) -> int:
+        with self._lock, self._db:
+            return int(self._db.execute("INSERT INTO clips (at, seconds, path) VALUES (?, ?, ?)", (at, seconds, path)).lastrowid)
+
+    def add_transcript(self, clip_id: int, model: str, text: str, took: float) -> None:
+        import time
+
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO transcripts (clip_id, model, text, took, made_at) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT (clip_id, model) DO UPDATE SET text = excluded.text, took = excluded.took,
+                       made_at = excluded.made_at""",
+                (clip_id, model, text, took, time.time()),
+            )
+
+    def clips_since(self, since: float, without_model: str | None = None) -> list[dict]:
+        """Kept clips heard after `since`, oldest first; optionally only those
+        `without_model` hasn't transcribed yet."""
+        sql = "SELECT id, at, seconds, path FROM clips WHERE at >= ?"
+        args: list[Any] = [since]
+        if without_model is not None:
+            sql += " AND id NOT IN (SELECT clip_id FROM transcripts WHERE model = ?)"
+            args.append(without_model)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY at", args).fetchall()
+        return [dict(row) for row in rows]
+
+    def last_clip_at(self) -> float:
+        with self._lock:
+            row = self._db.execute("SELECT COALESCE(MAX(at), 0) AS latest FROM clips").fetchone()
+        return float(row["latest"])
+
+    def model_readout(self, since: float) -> list[dict]:
+        """For each model: how many clips it did, how much audio, how long it
+        took, and how many words it produced."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT t.model AS model, COUNT(*) AS clips, SUM(c.seconds) AS audio, SUM(t.took) AS took,
+                          SUM(CASE WHEN t.text = '' THEN 1 ELSE 0 END) AS empty,
+                          SUM(LENGTH(t.text) - LENGTH(REPLACE(t.text, ' ', '')) + (t.text != '')) AS words
+                   FROM transcripts t JOIN clips c ON c.id = t.clip_id WHERE c.at >= ?
+                   GROUP BY t.model ORDER BY MAX(t.made_at) DESC""",
+                (since,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def side_by_side(self, since: float, limit: int = 40) -> list[dict]:
+        """The latest clips, each with what every model heard in it."""
+        with self._lock:
+            clips = self._db.execute(
+                "SELECT id, at, seconds FROM clips WHERE at >= ? ORDER BY at DESC LIMIT ?", (since, limit)
+            ).fetchall()
+            out = []
+            for clip in clips:
+                texts = self._db.execute(
+                    "SELECT model, text, took FROM transcripts WHERE clip_id = ? ORDER BY made_at", (clip["id"],)
+                ).fetchall()
+                out.append({"at": clip["at"], "seconds": clip["seconds"], "texts": [dict(t) for t in texts]})
+        return out
+
+    def drop_clips_before(self, before: float) -> list[str]:
+        """Forget clips older than `before`; returns their file paths to delete."""
+        with self._lock, self._db:
+            rows = self._db.execute("SELECT id, path FROM clips WHERE at < ?", (before,)).fetchall()
+            self._db.execute("DELETE FROM transcripts WHERE clip_id IN (SELECT id FROM clips WHERE at < ?)", (before,))
+            self._db.execute("DELETE FROM clips WHERE at < ?", (before,))
+        return [row["path"] for row in rows]
+
+    def clips_heard_nothing(self, since: float) -> list[int]:
+        """Clips since `since` in which some model heard nothing."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT DISTINCT c.id AS id FROM clips c JOIN transcripts t ON t.clip_id = c.id
+                   WHERE c.at >= ? AND t.text = ''""",
+                (since,),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    # -- meaning-vectors ----------------------------------------------------------
+
+    def unindexed(self, kinds: tuple[str, ...], most: int = 64) -> list[dict]:
+        """Records with no meaning-vector yet, or changed since theirs was made."""
+        marks = ",".join("?" for _ in kinds)
+        with self._lock:
+            rows = self._db.execute(
+                f"""SELECT r.kind, r.id, r.data FROM records r LEFT JOIN vectors v ON v.kind = r.kind AND v.id = r.id
+                    WHERE r.kind IN ({marks}) AND r.deleted = 0 AND (v.made_at IS NULL OR v.made_at < r.updated_at)
+                    ORDER BY r.sort_at DESC LIMIT ?""",
+                (*kinds, most),
+            ).fetchall()
+        return [{"kind": row["kind"], "id": row["id"], **json.loads(row["data"])} for row in rows]
+
+    def put_vector(self, kind: str, record_id: str, vector: list[float], made_at: float) -> None:
+        import array
+
+        blob = array.array("f", vector).tobytes()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO vectors (kind, id, made_at, vec) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (kind, id) DO UPDATE SET made_at = excluded.made_at, vec = excluded.vec",
+                (kind, record_id, made_at, blob),
+            )
+
+    def nearest(self, vector: list[float], kinds: tuple[str, ...], most: int = 8) -> list[tuple[float, str, str]]:
+        """(similarity, kind, id) of the records closest in meaning, best first."""
+        import numpy as np
+
+        marks = ",".join("?" for _ in kinds)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT v.kind, v.id, v.vec FROM vectors v JOIN records r ON r.kind = v.kind AND r.id = v.id "
+                f"WHERE v.kind IN ({marks}) AND r.deleted = 0",
+                kinds,
+            ).fetchall()
+        if not rows:
+            return []
+        query = np.asarray(vector, dtype=np.float32)
+        query /= max(float(np.linalg.norm(query)), 1e-9)
+        matrix = np.stack([np.frombuffer(row["vec"], dtype=np.float32) for row in rows])
+        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9)
+        scores = matrix @ query
+        best = np.argsort(-scores)[:most]
+        return [(float(scores[i]), rows[i]["kind"], rows[i]["id"]) for i in best]
+
+    def transcript_of(self, clip_id: int, model: str) -> str | None:
+        """What `model` heard in one kept clip, if it has done it."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT text FROM transcripts WHERE clip_id = ? AND model = ? ORDER BY made_at DESC LIMIT 1",
+                (clip_id, model),
+            ).fetchone()
+        return row["text"] if row else None

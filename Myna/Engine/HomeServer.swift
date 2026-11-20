@@ -39,6 +39,8 @@ final class HomeServer: ObservableObject {
     /// outage costs one timeout, not one per sentence.
     private var retryAfter: Date = .distantPast
     private var recheck: Task<Void, Never>?
+    /// Called when the server starts answering after not doing so.
+    var onBack: (() -> Void)?
 
     struct ServerError: LocalizedError {
         let message: String
@@ -58,7 +60,10 @@ final class HomeServer: ObservableObject {
                 isPaired = true
             }
         }
-        if isPaired { Task { await check() } }
+        if isPaired {
+            startPrivateNetworkIfNeeded()
+            Task { await check() }
+        }
     }
 
     var address: String { baseURL?.absoluteString ?? "" }
@@ -96,6 +101,7 @@ final class HomeServer: ObservableObject {
         isPaired = true
         retryAfter = .distantPast
         lastError = nil
+        startPrivateNetworkIfNeeded()
         Task { await check() }
         return true
     }
@@ -110,6 +116,7 @@ final class HomeServer: ObservableObject {
         latencyMs = nil
         UserDefaults.standard.removeObject(forKey: Self.urlKey)
         Self.writeToken("")
+        TailnetLink.shared.stop()
     }
 
     // MARK: - Talking to the server
@@ -135,7 +142,9 @@ final class HomeServer: ObservableObject {
             }
             guard let found else { throw ServerError(message: "The home server didn't answer.") }
             baseURL = found.url
+            let wasAway = reachable != true
             reachable = true
+            if wasAway { onBack?() }
             latencyMs = found.ms
             info = found.info
             retryAfter = .distantPast
@@ -163,9 +172,24 @@ final class HomeServer: ObservableObject {
                      ms: Int(Date().timeIntervalSince(started) * 1000))
     }
 
+    /// One stretch of a clip, by one speaker, as the server heard it.
+    struct Segment: Sendable {
+        let text: String
+        /// Seconds from the start of the clip.
+        let start: Double
+        let duration: Double
+        /// The speaker's voice print (same voice model as the phone's), if any.
+        let voice: [Float]
+    }
+
+    /// The clip split by speaker, from the last `transcribe` call. Empty when
+    /// the server didn't separate speakers.
+    private(set) var lastSegments: [Segment] = []
+
     /// Transcribe one utterance (16-bit mono WAV). Throws if the server can't,
     /// so the caller does it on the phone.
     func transcribe(wav: Data, audioSeconds: Double) async throws -> String {
+        lastSegments = []
         do {
             // A graphics card does this far faster than real time; if it takes
             // this long, something is wrong and the phone should take over.
@@ -173,6 +197,12 @@ final class HomeServer: ObservableObject {
                                       timeout: max(8, audioSeconds))
             markUp()
             lastRoute = "Home server · transcription"
+            lastSegments = (json["segments"] as? [[String: Any]] ?? []).compactMap { piece in
+                guard let text = piece["text"] as? String, !text.isEmpty else { return nil }
+                let voice = (piece["voice"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.floatValue }
+                return Segment(text: text, start: piece["start"] as? Double ?? 0,
+                               duration: piece["duration"] as? Double ?? 0, voice: voice)
+            }
             return json["text"] as? String ?? ""
         } catch {
             markDown(error)
@@ -190,6 +220,122 @@ final class HomeServer: ObservableObject {
             markUp()
             lastRoute = "Home server · writing"
             return text
+        } catch {
+            markDown(error)
+            throw error
+        }
+    }
+
+    struct TodayFeed {
+        struct Line: Identifiable { let id = UUID(); let at: Date; let speaker: String; let text: String; let context: String }
+        var lines: [Line] = []
+        var seconds = 0, words = 0, segments = 0, voices = 0, notes = 0
+        var cloud: [String] = []
+    }
+
+    /// The day's transcript and numbers, straight from the server, so Today
+    /// reflects what the server actually has (Bee included) rather than a stale
+    /// local copy.
+    func today(day: String = "") async throws -> TodayFeed {
+        let path = day.isEmpty ? "browse/today.json" : "browse/today.json?day=\(day)"
+        let json = try await send(path: path, method: "GET", body: nil, contentType: nil, timeout: 30)
+        markUp()
+        var feed = TodayFeed()
+        if let stats = json["stats"] as? [String: Any] {
+            feed.seconds = stats["seconds"] as? Int ?? 0
+            feed.words = stats["words"] as? Int ?? 0
+            feed.segments = stats["segments"] as? Int ?? 0
+            feed.voices = stats["voices"] as? Int ?? 0
+            feed.notes = stats["notes"] as? Int ?? 0
+        }
+        feed.cloud = (json["words"] as? [Any])?.compactMap { $0 as? String } ?? []
+        feed.lines = (json["lines"] as? [[String: Any]] ?? []).map { line in
+            TodayFeed.Line(at: Date(timeIntervalSince1970: line["at"] as? Double ?? 0),
+                           speaker: line["speaker"] as? String ?? "",
+                           text: line["text"] as? String ?? "",
+                           context: line["context"] as? String ?? "")
+        }
+        return feed
+    }
+
+    struct AskResult { let reply: String; let searched: String; let steps: [String] }
+
+    /// One live event from the streaming Ask.
+    enum AskEvent {
+        case thinking(String)   // the model's private reasoning / planning
+        case phase(String)      // "Deciding what to do", "Answering"
+        case step(String)       // a tool it used
+        case observation(String)
+        case answer(String)     // answer tokens
+        case done(reply: String, steps: [String], searched: String)
+        case failed(String)
+    }
+
+    /// Stream Lumi's reasoning, tool use and answer as Server-Sent Events, so the
+    /// phone can show everything as it happens. Used when "thinking" is on.
+    func askStream(question: String, history: [[String: String]]) -> AsyncStream<AskEvent> {
+        AsyncStream { continuation in
+            let work = Task {
+                guard let baseURL else { continuation.finish(); return }
+                var request = URLRequest(url: baseURL.appendingPathComponent("browse/ask.stream"))
+                request.httpMethod = "POST"
+                request.timeoutInterval = 600
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try? JSONSerialization.data(withJSONObject: ["question": question, "history": history])
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        continuation.yield(.failed("The server answered with an error (\(http.statusCode))."))
+                        continuation.finish(); return
+                    }
+                    markUp()
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload == "[DONE]" { break }
+                        guard let data = payload.data(using: .utf8),
+                              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                        continuation.yield(Self.parse(event))
+                    }
+                } catch {
+                    continuation.yield(.failed(error.localizedDescription))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    private static func parse(_ event: [String: Any]) -> AskEvent {
+        let d = event["d"] as? String ?? ""
+        switch event["t"] as? String {
+        case "thinking", "plan": return .thinking(d)
+        case "phase": return .phase(d)
+        case "step": return .step(d)
+        case "observation": return .observation(d)
+        case "answer": return .answer(d)
+        case "done": return .done(reply: event["reply"] as? String ?? "",
+                                  steps: (event["steps"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                                  searched: event["searched"] as? String ?? "")
+        default: return .failed(d.isEmpty ? "stream error" : d)
+        }
+    }
+
+    /// Ask Lumi on the server — the full agent, with its tools, Markdown answers
+    /// and a trace of what it did. Used by the phone's Ask tab when the server is
+    /// reachable, so the phone is a remote of the one brain.
+    func ask(question: String, history: [[String: String]]) async throws -> AskResult {
+        do {
+            let payload: [String: Any] = ["question": question, "history": history]
+            let body = try JSONSerialization.data(withJSONObject: payload)
+            let json = try await send(path: "browse/ask.json", method: "POST", body: body,
+                                      contentType: "application/json", timeout: 240)
+            markUp()
+            lastRoute = "Home server · Lumi"
+            return AskResult(reply: json["reply"] as? String ?? "",
+                             searched: json["searched"] as? String ?? "",
+                             steps: (json["steps"] as? [Any])?.compactMap { $0 as? String } ?? [])
         } catch {
             markDown(error)
             throw error
@@ -230,18 +376,38 @@ final class HomeServer: ObservableObject {
         request.timeoutInterval = timeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        let (data, status) = try await perform(request, body: body)
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        if !(200..<300).contains(status) {
+            throw ServerError(message: (json["detail"] as? String) ?? "The server answered with an error (\(status)).")
+        }
+        return json
+    }
+
+    /// Carry one request: over the private network (Tailscale inside Myna) for
+    /// private-network addresses, directly for the home Wi-Fi address.
+    private func perform(_ request: URLRequest, body: Data?) async throws -> (Data, Int) {
+        if let host = request.url?.host, TailnetLink.isPrivateNetwork(host) {
+            return try await TailnetLink.shared.send(request, body: body)
+        }
         let reply: (Data, URLResponse)
         if let body {
             reply = try await URLSession.shared.upload(for: request, from: body)
         } else {
             reply = try await URLSession.shared.data(for: request)
         }
-        let json = (try? JSONSerialization.jsonObject(with: reply.0) as? [String: Any]) ?? [:]
-        if let http = reply.1 as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ServerError(message: (json["detail"] as? String) ?? "The server answered with an error (\(http.statusCode)).")
-        }
-        return json
+        return (reply.0, (reply.1 as? HTTPURLResponse)?.statusCode ?? 0)
     }
+
+    /// Whether any paired address is on the private network — if so, Myna's
+    /// built-in Tailscale is started.
+    private func startPrivateNetworkIfNeeded() {
+        if addresses.contains(where: { TailnetLink.isPrivateNetwork($0.host ?? "") }) {
+            TailnetLink.shared.start()
+        }
+    }
+
+    var hasPrivateAddress: Bool { addresses.contains { TailnetLink.isPrivateNetwork($0.host ?? "") } }
 
     /// One exchange with the home database: sends changes, returns the reply.
     func syncExchange(_ body: Data) async throws -> Data {
@@ -251,9 +417,9 @@ final class HomeServer: ObservableObject {
         request.timeoutInterval = 90
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ServerError(message: "The home database answered with an error (\(http.statusCode)).")
+        let (data, status) = try await perform(request, body: body)
+        if !(200..<300).contains(status) {
+            throw ServerError(message: "The home database answered with an error (\(status)).")
         }
         return data
     }

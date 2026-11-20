@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UserNotifications
 
 /// Keeps this iPhone and the home computer's database in step. Every minute or
 /// so, while the home server answers, it sends what changed here (transcript
@@ -66,6 +67,16 @@ final class HomeSync: ObservableObject {
 struct HomeSyncState: Codable {
     var cursor = 0
     var sent: [String: [String: String]] = [:]
+    /// The server database this cursor belongs to. If the server's database is
+    /// recreated (a reinstall, a wiped data folder) its id changes and its
+    /// sequence numbers restart, so we must pull everything again from 0.
+    var dbId: String = ""
+    /// Ids of receptionist messages already shown as a notification, so a
+    /// re-pull (e.g. after the server's db id changes) doesn't notify twice.
+    var notified: Set<String> = []
+    /// Ids of device commands (calendar, contacts) already carried out, so a
+    /// re-pull doesn't run them again.
+    var ranCommands: Set<String> = []
 
     private static var file: URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -122,7 +133,8 @@ extension Utterance: HomeSyncRecord {
     var syncID: String { id.uuidString }
 
     func syncData() -> [String: Any] {
-        ["heardAt": syncSeconds(heardAt), "text": text, "duration": duration, "engine": engine, "speaker": speakerKey]
+        ["heardAt": syncSeconds(heardAt), "text": text, "duration": duration, "engine": engine, "speaker": speakerKey,
+         "context": context, "segment": segment]
     }
 
     func syncApply(_ data: [String: Any]) {
@@ -131,6 +143,8 @@ extension Utterance: HomeSyncRecord {
         duration = data["duration"] as? Double ?? 0
         engine = syncText(data["engine"])
         speakerKey = syncText(data["speaker"])
+        context = syncText(data["context"])
+        segment = syncText(data["segment"])
     }
 
     static func syncMake(id: String) -> Utterance? {
@@ -194,6 +208,37 @@ extension MynaItem: HomeSyncRecord {
     static func syncMake(id: String) -> MynaItem? {
         guard let uuid = UUID(uuidString: id) else { return nil }
         let record = MynaItem(kind: .todo, text: "", source: .typed)
+        record.id = uuid
+        return record
+    }
+}
+
+extension HeardSong: HomeSyncRecord {
+    static var syncKind: String { "song" }
+    var syncID: String { id.uuidString }
+
+    func syncData() -> [String: Any] {
+        ["shazamID": shazamID, "title": title, "artist": artist, "appleMusicURL": appleMusicURL,
+         "artworkURL": artworkURL, "isrc": isrc, "appleMusicID": appleMusicID, "firstHeard": syncSeconds(firstHeard),
+         "lastHeard": syncSeconds(lastHeard), "timesHeard": timesHeard]
+    }
+
+    func syncApply(_ data: [String: Any]) {
+        shazamID = syncText(data["shazamID"])
+        title = syncText(data["title"])
+        artist = syncText(data["artist"])
+        appleMusicURL = syncText(data["appleMusicURL"])
+        artworkURL = syncText(data["artworkURL"])
+        isrc = syncText(data["isrc"])
+        appleMusicID = syncText(data["appleMusicID"])
+        firstHeard = syncDate(data["firstHeard"]) ?? firstHeard
+        lastHeard = syncDate(data["lastHeard"]) ?? lastHeard
+        timesHeard = data["timesHeard"] as? Int ?? timesHeard
+    }
+
+    static func syncMake(id: String) -> HeardSong? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        let record = HeardSong(shazamID: "", title: "", artist: "", appleMusicURL: "", artworkURL: "", isrc: "")
         record.id = uuid
         return record
     }
@@ -351,10 +396,29 @@ enum HomeSyncRun {
         context.autosaveEnabled = false
         var state = HomeSyncState.load()
 
+        // If the server's database was recreated (its id changed), its sequence
+        // numbers restarted, so our cursor is stale and would skip everything.
+        // Detect that up front and re-pull the whole database from scratch.
+        if let probe = try? await HomeServer.shared.syncExchange(
+                JSONSerialization.data(withJSONObject: ["since": state.cursor, "changes": []])),
+           let json = try? JSONSerialization.jsonObject(with: probe) as? [String: Any],
+           let serverDb = json["db_id"] as? String {
+            if !state.dbId.isEmpty, serverDb != state.dbId {
+                // cursor 0, nothing sent — pull it all again, but keep which
+                // messages were already shown so a re-pull doesn't notify twice.
+                var fresh = HomeSyncState()
+                fresh.notified = state.notified
+                fresh.ranCommands = state.ranCommands
+                state = fresh
+            }
+            state.dbId = serverDb
+            state.save()
+        }
+
         var shelves: [String: Shelf] = [:]
         let all = try [makeShelf(Utterance.self, in: context), makeShelf(ConversationNote.self, in: context),
                        makeShelf(Memory.self, in: context), makeShelf(MynaItem.self, in: context),
-                       makeShelf(VoicePerson.self, in: context)]
+                       makeShelf(VoicePerson.self, in: context), makeShelf(HeardSong.self, in: context)]
         for one in all { shelves[one.kind] = one }
 
         // What to send: new or changed records, and ones deleted here since.
@@ -382,6 +446,11 @@ enum HomeSyncRun {
         var index = 0
         var more = true
         var rounds = 0
+        // Messages Myna decided to send the user, gathered as they arrive and
+        // shown as notifications once the sync is done.
+        var nudges: [(id: String, text: String)] = []
+        // Device commands (calendar, contacts) to carry out after the sync.
+        var commands: [(id: String, data: [String: Any])] = []
         while (index < outgoing.count || more) && rounds < 2_000 {
             rounds += 1
             let batch = Array(outgoing[index..<min(index + 150, outgoing.count)])
@@ -406,8 +475,28 @@ enum HomeSyncRun {
                 }
             }
             for change in json["changes"] as? [[String: Any]] ?? [] {
-                guard let kind = change["kind"] as? String, let id = change["id"] as? String,
-                      let shelf = shelves[kind] else { continue }
+                guard let kind = change["kind"] as? String, let id = change["id"] as? String else { continue }
+                // A message from Myna's receptionist — not a stored record, a
+                // notification. Show each one once.
+                if kind == "message" {
+                    if change["deleted"] as? Bool != true, !state.notified.contains(id),
+                       let data = change["data"] as? [String: Any],
+                       let text = data["text"] as? String, !text.isEmpty {
+                        nudges.append((id, text))
+                        state.notified.insert(id)
+                    }
+                    continue
+                }
+                // A thing Lumi asked the phone to do on the device — run it once.
+                if kind == "command" {
+                    if change["deleted"] as? Bool != true, !state.ranCommands.contains(id),
+                       let data = change["data"] as? [String: Any] {
+                        commands.append((id, data))
+                        state.ranCommands.insert(id)
+                    }
+                    continue
+                }
+                guard let shelf = shelves[kind] else { continue }
                 if change["deleted"] as? Bool == true {
                     shelf.remove(id)
                     state.sent[kind]?.removeValue(forKey: id)
@@ -420,6 +509,22 @@ enum HomeSyncRun {
             state.save()
             more = json["more"] as? Bool ?? false
         }
+        state.save()
+        for nudge in nudges { await notify(id: nudge.id, text: nudge.text) }
+        for command in commands { await CommandCenter.run(command.data) }
         return state.total
+    }
+
+    /// Show a message from Myna as a local notification.
+    private static func notify(id: String, text: String) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Lumi"
+        content.body = text
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "myna.message.\(id)", content: content, trigger: nil)
+        try? await center.add(request)
     }
 }

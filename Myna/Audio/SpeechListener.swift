@@ -415,6 +415,13 @@ final class SpeechListener: NSObject, ObservableObject {
         // ticker and the spoken wake word — its text is not kept.
         if let externalTranscriber, !isPaused { externalTranscriber(buffer) }
 
+        // "Don't use this iPhone": no live ticker either, so Apple's recognizer
+        // gets no audio and does no work. (The spoken wake word rests with it.)
+        if externalTranscriber != nil, UserDefaults.standard.bool(forKey: "myna.server.only") {
+            externalBacklog.removeAll()
+            return
+        }
+
         guard let liveRequest else {
             externalBacklog.append(buffer)
             if externalBacklog.count > externalBacklogLimit {

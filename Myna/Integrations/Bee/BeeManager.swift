@@ -1,4 +1,5 @@
 import AVFoundation
+import Security
 import Combine
 import Foundation
 
@@ -68,6 +69,18 @@ final class BeeManager: ObservableObject {
         return "none stored"
     }
     private static let enabledKey = "myna.bee.enabled"
+    private static let transcribeKey = "myna.bee.transcribe"
+
+    /// Whether this phone transcribes the bracelet's audio. Off by default now
+    /// that Bee's cloud does the transcription and the Myna server syncs it; the
+    /// bracelet still connects, so battery and brightness control keep working.
+    var transcribesBracelet: Bool { UserDefaults.standard.bool(forKey: Self.transcribeKey) }
+
+    func setTranscribesBracelet(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.transcribeKey)
+        objectWillChange.send()
+        if !on { audioActive = false }
+    }
 
     /// Bumped each handshake so a stale timeout from an earlier attempt is ignored.
     private var handshakeToken = 0
@@ -222,6 +235,8 @@ final class BeeManager: ObservableObject {
     /// 1 = recording, 0 = mute, as Bee's app sends it.
     private var lastRecordingSet: Date = .distantPast
     func setRecording(_ on: Bool) {
+        // Asked for from Myna's own button: that is the wearer's choice too.
+        if on { UserDefaults.standard.set(false, forKey: Self.userMutedKey) }
         guard isReadyForControl, Date.now.timeIntervalSince(lastRecordingSet) > 1.5 else { return }
         lastRecordingSet = .now
         central.writeControl(BeeCommand.setDeviceState.frame(payload: [on ? 0x01 : 0x00]))
@@ -325,8 +340,25 @@ final class BeeManager: ObservableObject {
     private func handleSecureIds(deviceID: String, isSealed: Bool) {
         secureIdsToken = handshakeToken
         self.deviceID = deviceID
+        lastSealed = isSealed
         let heldKey = BeeKeyVault.existingKey(deviceID: deviceID)
         log("Secure IDs: device \(deviceID.prefix(8)), sealed=\(isSealed), keyHeld=\(heldKey != nil)")
+
+        // The own-key test is armed: take over before any provisioning seals the
+        // bracelet. If it's still sealed, unseal it ourselves; once it reports
+        // unsealed, write our own key and read the result.
+        if ownKeyTestArmed {
+            if isSealed {
+                // We can't unseal in software (only the button combo does), but
+                // we CAN refuse to re-seal: hold here so the bracelet stays as-is
+                // until it's factory-reset, instead of provisioning over it.
+                ownKeyTestResult = "Armed, but the bracelet is still sealed. Factory-reset it on the device (press the button 5× until blue+green), keep it near the phone, and the test runs by itself the moment it reconnects unsealed. Myna will not re-seal it in the meantime."
+                log("Own-key test armed; bracelet sealed — holding (not provisioning) until a factory reset.")
+            } else {
+                performOwnKeyTest()
+            }
+            return   // never run normal provisioning while the test is armed
+        }
 
         // A captured Bee-signed token (pasted in Backstage) gives the AES key
         // directly — bytes 12..<28 — with no Bee server at all.
@@ -456,6 +488,149 @@ final class BeeManager: ObservableObject {
     /// The full key token last installed, so the audio probe can test key offsets.
     private var installedToken: Data?
     private var decryptProbed = false
+
+    // MARK: - "My own key" test (is the bracelet's key forgeable?)
+    //
+    // The decisive question for a Bee-independent key generator: does the
+    // firmware's 0xC018 check only accept a key that Bee signed, or will it take
+    // any key wrapped in the right envelope? We answer it with ONE write on a
+    // factory-reset (unsealed) bracelet: take a real captured token and swap in
+    // our own randomly generated 16-byte key, keeping the rest of the envelope.
+    //   accepted  → the signature (if any) does NOT bind the key: forgeable, and
+    //               the bracelet now runs OUR key, so audio should decrypt with it.
+    //   rejected  → the key is cryptographically bound: a local generator is not
+    //               possible; the captured Bee key is the only way.
+    // The bracelet only takes a key while unsealed, so we never overwrite a good
+    // key — if the test is rejected the bracelet stays unsealed for normal setup.
+
+    /// Whether the last secure-IDs reply said the bracelet is sealed.
+    private(set) var lastSealed = false
+    @Published private(set) var ownKeyTestRunning = false
+    @Published private(set) var ownKeyTestArmed = false
+    @Published private(set) var ownKeyTestResult: String?
+    private var ownKeyProbe: CheckedContinuation<Bool, Never>?
+    private var ownKeyCandidate: Data?
+    /// Use a captured token as the envelope instead of a synthetic one. Off by
+    /// default: the whole point is to need no Bee token at all.
+    @Published var ownKeyUseCaptured = false
+
+    /// Whether the test can run. It no longer needs a captured key — a synthetic
+    /// envelope is built from the device id — so this is always allowed.
+    var canRunOwnKeyTest: Bool { true }
+
+    /// True when a captured token exists (so the "use captured envelope" option
+    /// is worth offering).
+    var hasCapturedEnvelope: Bool {
+        (BeeKeyVault.existingToken(deviceID: deviceID)?.count ?? 0) >= 44
+    }
+
+    /// Device id hex ("a1b2…") → bytes.
+    static func hexBytes(_ hex: String) -> [UInt8] {
+        let clean = hex.lowercased().filter(\.isHexDigit)
+        var out: [UInt8] = []
+        var i = clean.startIndex
+        while let j = clean.index(i, offsetBy: 2, limitedBy: clean.endIndex), j <= clean.endIndex {
+            if let b = UInt8(clean[i..<j], radix: 16) { out.append(b) }
+            i = j
+        }
+        return out
+    }
+
+    /// Arm (or disarm) the test. Once armed, Myna stops normal provisioning for
+    /// this bracelet and runs the test itself the instant the bracelet is seen
+    /// unsealed — so the auto-connect can't seal it out from under the test.
+    func armOwnKeyTest() {
+        if ownKeyTestArmed || ownKeyTestRunning {
+            ownKeyTestArmed = false
+            ownKeyTestResult = "Test disarmed. Normal setup resumes on the next connect."
+            log("Own-key test disarmed.")
+            return
+        }
+        ownKeyTestArmed = true
+        if lastSealed == false, !deviceID.isEmpty {
+            performOwnKeyTest()   // already connected and unsealed — go now
+        } else {
+            ownKeyTestResult = "Armed. Factory-reset the bracelet on the device (press the button 5× until blue+green). Myna won't re-seal it, and the test runs by itself the moment it reconnects unsealed."
+            log("Own-key test armed; waiting for an unsealed connect.")
+        }
+    }
+
+    private func performOwnKeyTest() {
+        guard !ownKeyTestRunning else { return }
+        ownKeyTestArmed = false
+
+        // Our own random AES-128 key.
+        var ownKey = [UInt8](repeating: 0, count: BeeProtocol.keyLength)
+        _ = SecRandomCopyBytes(kSecRandomDefault, ownKey.count, &ownKey)
+
+        // The 108-byte envelope the firmware expects. By default we build it
+        // ourselves from the device id alone — NO Bee token needed. If you have
+        // a captured token and asked to use it, we reuse that real envelope
+        // (more of its structure is guaranteed correct) and only swap the key.
+        var bytes: [UInt8]
+        let source: String
+        if ownKeyUseCaptured, let real = BeeKeyVault.existingToken(deviceID: deviceID), real.count >= 44 {
+            bytes = [UInt8](real)
+            source = "your captured envelope (only the key swapped)"
+        } else {
+            // Token layout learned from real tokens: "SKV1" + device id(8) +
+            // key(16) + 80-byte signature. Build that shape with our own key.
+            bytes = [UInt8](repeating: 0, count: 108)
+            bytes[0] = 0x53; bytes[1] = 0x4B; bytes[2] = 0x56; bytes[3] = 0x31   // "SKV1"
+            let id = Self.hexBytes(deviceID)
+            for i in 0..<min(8, id.count) { bytes[4 + i] = id[i] }   // device id at offset 4
+            // bytes 28..108 left zero: we can't sign them. If the firmware checks
+            // the signature this is refused; if it doesn't, our key is accepted.
+            source = "a synthetic SKV1 token (header + your device id + our key, zero signature) — no Bee token"
+        }
+        for i in 0..<BeeProtocol.keyLength { bytes[12 + i] = ownKey[i] }
+        let candidate = Data(bytes)
+        ownKeyCandidate = candidate
+        ownKeyTestRunning = true
+        ownKeyTestResult = "Testing a self-generated key (\(source))…"
+        log("Own-key test: writing \(candidate.count)-B token — \(source).")
+        Task { @MainActor in
+            let accepted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                ownKeyProbe = cont
+                central.writeControl(BeeCommand.setEncryptionKey.frame(payload: [UInt8](candidate)))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                    guard let self, let c = self.ownKeyProbe else { return }
+                    self.ownKeyProbe = nil
+                    c.resume(returning: false)
+                }
+            }
+            ownKeyTestRunning = false
+            if accepted {
+                // The device took our key. Keep it as the bracelet's key and set
+                // up decryption with it — if audio now flows, it's proven.
+                key = Data(ownKey)
+                BeeKeyVault.store(Data(ownKey), deviceID: deviceID)
+                installedToken = candidate
+                installDecryptor()
+                requestSessionNonce()
+                let howBuilt = ownKeyUseCaptured ? "a captured envelope" : "a fully synthetic token (just device id + our key)"
+                ownKeyTestResult = "FORGEABLE — the bracelet accepted \(howBuilt). The firmware doesn't verify a Bee signature over the key, so Myna can generate keys from the device id with no Bee cloud. The bracelet is now running your own key; if audio flows, it's confirmed end to end."
+                log("Own-key test: ACCEPTED (\(howBuilt)). The key is not signature-bound; a local generator is viable.")
+            } else {
+                ownKeyCandidate = nil
+                if ownKeyUseCaptured {
+                    ownKeyTestResult = "SIGNED — even with a real captured envelope and only the key changed, the bracelet refused it. The key is cryptographically signed by Bee, so a local generator isn't possible for this firmware; your captured key is the way. (If the log says ‘already set’ not ‘invalidParam’, it was still sealed — factory-reset and run again.) The bracelet is untouched."
+                } else {
+                    ownKeyTestResult = "The synthetic token was refused. That could mean the key is signed — OR just that our guess at the envelope's non-key bytes (header/device-id layout) is wrong. To tell them apart: if you have a captured key, turn on ‘use captured envelope’ and run again. If the captured one is ALSO refused, it's truly signed. (If the log says ‘already set’, it was still sealed — factory-reset and retry.) The bracelet is untouched."
+                }
+                log("Own-key test: not accepted (\(ownKeyUseCaptured ? "captured" : "synthetic") envelope). Check invalidParam vs alreadySet.")
+            }
+        }
+    }
+
+    /// Route a 0xC018 reply to the own-key test if one is waiting. Returns true
+    /// when the test consumed the reply (so normal provisioning is skipped).
+    private func resumeOwnKeyTest(accepted: Bool) -> Bool {
+        guard let c = ownKeyProbe else { return false }
+        ownKeyProbe = nil
+        c.resume(returning: accepted)
+        return true
+    }
 
     /// Save a token captured from the bracelet's BLE pairing (hex, optionally
     /// with the leading 18 C0 command bytes) and retry the handshake with it.
@@ -701,6 +876,17 @@ final class BeeManager: ObservableObject {
         if deviceState != state || self.codec != codec {
             log("Bracelet \(state.description), codec \(codec.description).")
         }
+        // Mute is the wearer's control. If the bracelet goes to mute while
+        // connected, that was them pressing the button, and it stays muted
+        // until they unmute it (on the bracelet or with the button in Myna).
+        // Remembered across reconnects and app updates.
+        let previous = deviceState
+        if state == .mute, let previous, previous != .mute {
+            UserDefaults.standard.set(true, forKey: Self.userMutedKey)
+            log("Bracelet muted by you. Myna will leave it muted.")
+        } else if state == .recording {
+            UserDefaults.standard.set(false, forKey: Self.userMutedKey)
+        }
         deviceState = state
         if self.codec != codec {
             self.codec = codec
@@ -713,17 +899,23 @@ final class BeeManager: ObservableObject {
             // Start the bracelet recording ourselves so Myna doesn't need the
             // Bee app to "unlock" it. Once per connection; the rate limiter in
             // setRecording keeps the device's own VAD toggles from spamming.
-            // The bracelet is meant to record continuously: whenever it reports
-            // anything but recording (muted, or dozing on its own VAD), put it
-            // back. State events only arrive on a change and setRecording is
-            // rate-limited, so this can't spin.
-            if state != .recording, state != .powerOff {
+            // The bracelet is meant to record continuously, so when it dozes on
+            // its own voice detection it is woken again. Mute is different: a
+            // mute the wearer chose is never undone here. (A bracelet found
+            // muted that the wearer didn't mute, e.g. fresh from the Bee app,
+            // is started once.) State events only arrive on a change and
+            // setRecording is rate-limited, so this can't spin.
+            let mutedByWearer = state == .mute && UserDefaults.standard.bool(forKey: Self.userMutedKey)
+            if state != .recording, state != .powerOff, !mutedByWearer {
                 if !autoRecordTried { log("Asking the bracelet to start recording…") }
                 autoRecordTried = true
                 setRecording(true)
             }
         }
     }
+
+    /// Whether the wearer muted the bracelet themselves.
+    private static let userMutedKey = "myna.bee.userMuted"
 
     /// Reset when a connection ends so the next one tries auto-record again.
     private var autoRecordTried = false
@@ -789,6 +981,9 @@ final class BeeManager: ObservableObject {
     // MARK: - Audio
 
     private func handleAudio(_ data: Data) {
+        // Not transcribing on this phone: the bracelet still streams to Bee's
+        // cloud, Myna just doesn't decode or feed it. Control still works.
+        guard transcribesBracelet else { return }
         func dropOnce(_ why: String) {
             guard !audioDropReasonLogged else { return }
             audioDropReasonLogged = true
@@ -942,6 +1137,7 @@ extension BeeManager: BeeCentralDelegate {
             handleResponse(response)
         case .failure(let failure):
             log("Bracelet replied \(failure) ← \(BeeProtocol.hex([UInt8](data)))")
+            if resumeOwnKeyTest(accepted: false) { return }   // a rejected key during the test
             if case .provisioning = pairing, failure != .unknownCommand {
                 pairing = .error("The bracelet refused a setup step (\(failure)). Send me the device log.")
             }
@@ -966,6 +1162,11 @@ extension BeeManager: BeeCentralDelegate {
         case .secureIds(let id, let sealed):
             handleSecureIds(deviceID: id, isSealed: sealed)
         case .encryptionKey(let result):
+            // Only a real install counts as the test accepting our key;
+            // `alreadySet` means the bracelet is still sealed and refused it.
+            if ownKeyProbe != nil {
+                if resumeOwnKeyTest(accepted: result == .installed) { return }
+            }
             handleKeyResult(result)
         case .sessionNonce(let value):
             handleNonce(value)

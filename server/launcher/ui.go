@@ -29,6 +29,16 @@ func qrImage(text string) string {
 // computer.
 func statusPage(st *status, token string, settings *launcherSettings) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			st.set(func(s *status) { s.Update = "Checking for an update…" })
+			select {
+			case updateNow <- struct{}{}:
+			default: // a check is already asked for
+			}
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
 	mux.HandleFunc("/lan", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			settings.AllowLAN = !settings.AllowLAN
@@ -42,7 +52,25 @@ func statusPage(st *status, token string, settings *launcherSettings) http.Handl
 	database := workerProxy()
 	// While the worker is still being set up, show the status page instead.
 	database.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// The worker isn't answering: it is being set up, updated or
+		// restarted. Say so (and what it is doing) rather than bounce to
+		// Settings, and try again by itself.
+		snap, lines := st.snapshot()
+		if r.Header.Get("Sec-Fetch-Dest") == "empty" || r.Method != http.MethodGet {
+			http.Error(w, "the server is still starting", http.StatusServiceUnavailable)
+			return
+		}
+		last := ""
+		if len(lines) > 0 {
+			last = lines[len(lines)-1]
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>Myna Server</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:560px;margin:110px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
+h1{font-weight:300;font-size:26px;margin:0 0 6px}p{color:#9b9d9e}a{color:#e9e9e6}code{font-size:12px;color:#9b9d9e;word-break:break-word}</style>
+<h1>Getting ready…</h1><p>This part of Myna Server isn't running yet. After an update it reinstalls its components, which can take a few minutes. This page opens by itself when it is ready.</p>
+<p>Now: %s</p><p><code>%s</code></p><p><a href="/">Open Settings</a></p>`, html.EscapeString(snap.Setup), html.EscapeString(last))
 	}
 	mux.HandleFunc("/browse", func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -84,8 +112,8 @@ code{word-break:break-all;font-size:12px}
 nav{display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid #ffffff22;padding-bottom:10px;margin-bottom:22px}
 nav a{text-decoration:none;font:12px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#9b9d9e}
 nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
-<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a class="on" href="/" style="margin-left:auto">Status</a></nav><div id="page">`)
-		fmt.Fprintf(&b, `<h1>Myna Server</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
+<nav><a href="/browse?kind=utterance">Transcript</a><a href="/browse?kind=conversation">Conversations</a><a href="/browse?kind=note">Notes</a><a href="/browse?kind=memory">Memories</a><a href="/browse?kind=item">Lists</a><a href="/browse?kind=person">People</a><a href="/browse?kind=song">Music</a><a href="/browse?kind=daily">Days</a><a href="/browse/ask" style="margin-left:auto">Ask</a><a href="/browse/live">Live</a><a href="/browse/compare">Compare</a><a href="/browse/models">Models</a><a href="/browse/experiment">Experiment</a><a class="on" href="/">Settings</a><form method="post" action="/lock" style="margin:0"><button style="padding:2px 10px;font-size:11px">Lock</button></form></nav><div id="page">`)
+		fmt.Fprintf(&b, `<h1>Settings</h1><div class="k">version %s</div>`, html.EscapeString(snap.Version))
 
 		row := func(label, value string) {
 			fmt.Fprintf(&b, `<div class="k">%s</div><div class="v">%s</div>`, html.EscapeString(label), html.EscapeString(value))
@@ -102,6 +130,7 @@ nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
 		if snap.Update != "" {
 			row("Updates", snap.Update)
 		}
+		b.WriteString(`<form method="post" action="/update" style="margin-top:10px"><button>Update now</button></form>`)
 
 		var addresses []string
 		if snap.AllowLAN && snap.LANAddress != "" {
@@ -148,10 +177,16 @@ nav a.on{color:#e9e9e6;border-bottom:1px solid #e9e9e6}</style>
 		// the activity list) stays where you put it.
 		b.WriteString(`<script>
 let last = document.getElementById('page').innerHTML;
+// Don't swap the page out from under a click: hold off for a moment after
+// any press, or the button being pressed is replaced before the click lands.
+let holdUntil = 0;
+document.addEventListener('pointerdown', () => { holdUntil = Date.now() + 2500; }, true);
 setInterval(async () => {
   try {
-    if (String(window.getSelection())) return;
-    const text = await (await fetch('/', {cache: 'no-store'})).text();
+    if (Date.now() < holdUntil || String(window.getSelection())) return;
+    const reply = await fetch('/', {cache: 'no-store'});
+    if (reply.status === 401) { location.reload(); return; }
+    const text = await reply.text();
     const next = new DOMParser().parseFromString(text, 'text/html').getElementById('page');
     if (!next || next.innerHTML === last) return;
     const page = document.getElementById('page');
@@ -165,11 +200,12 @@ setInterval(async () => {
     if (fresh) fresh.scrollTop = atEnd && top > 0 ? fresh.scrollHeight : top;
     window.scrollTo(0, y);
   } catch (e) {}
-}, 3000);
+}, 1500);
 </script>`)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
 	})
+	guarded := newLock(settings).guard(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Answer only when addressed as this computer, so no web page elsewhere
 		// can reach these pages under another name.
@@ -177,6 +213,6 @@ setInterval(async () => {
 			http.Error(w, "this page is only for this computer", http.StatusForbidden)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		guarded.ServeHTTP(w, r)
 	})
 }

@@ -36,6 +36,18 @@ enum MynaThemeStyle: String, CaseIterable, Identifiable {
 final class ThemeStore: ObservableObject {
     static let moodKey = "myna.mood"
     static let styleKey = "myna.theme"
+    static let lookKey = "myna.look"
+    static let vfdBaseKey = "myna.vfd.base"
+
+    /// The whole-app look: the usual one, or the Amber VFD dot-matrix display.
+    @Published var look: MynaLook {
+        didSet { UserDefaults.standard.set(look.rawValue, forKey: Self.lookKey) }
+    }
+
+    /// The VFD's base colour (replaces amber), as 0xRRGGBB.
+    @Published var vfdBase: UInt32 {
+        didSet { UserDefaults.standard.set(Int(vfdBase), forKey: Self.vfdBaseKey) }
+    }
 
     @Published var mood: MynaMood {
         didSet { UserDefaults.standard.set(mood.rawValue, forKey: Self.moodKey) }
@@ -49,7 +61,19 @@ final class ThemeStore: ObservableObject {
     init() {
         mood = MynaMood(rawValue: UserDefaults.standard.string(forKey: Self.moodKey) ?? "") ?? .daylight
         style = MynaThemeStyle(rawValue: UserDefaults.standard.string(forKey: Self.styleKey) ?? "") ?? .minimal
+        look = MynaLook(rawValue: UserDefaults.standard.string(forKey: Self.lookKey) ?? "") ?? .standard
+        let base = UserDefaults.standard.integer(forKey: Self.vfdBaseKey)
+        vfdBase = base > 0 ? UInt32(base) : VFDPalette.amber
     }
+}
+
+/// The app's two looks.
+enum MynaLook: String, CaseIterable, Identifiable {
+    case standard
+    case vfd
+
+    var id: String { rawValue }
+    var label: String { self == .standard ? "Standard" : "Amber VFD" }
 }
 
 /// Builds a colour that resolves itself per light/dark appearance — so one token

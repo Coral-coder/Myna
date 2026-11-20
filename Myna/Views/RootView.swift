@@ -17,6 +17,22 @@ struct RootView: View {
     @AppStorage("myna.onboarded") private var onboarded = false
 
     var body: some View {
+        Group {
+            if themeStore.look == .vfd {
+                VFDRootView()
+            } else {
+                standard
+            }
+        }
+        .fullScreenCover(isPresented: .constant(!onboarded)) {
+            PermissionsView(onboarded: $onboarded)
+        }
+        .onChange(of: onboarded) { _, isOnboarded in
+            if isOnboarded { AppServices.shared.becameActive() }
+        }
+    }
+
+    private var standard: some View {
         VStack(spacing: 0) {
             notice
 
@@ -36,12 +52,6 @@ struct RootView: View {
             tabBar
         }
         .background { AuroraBackground(energy: pilot.phase == .listening ? 0.9 : 0.35) }
-        .fullScreenCover(isPresented: .constant(!onboarded)) {
-            PermissionsView(onboarded: $onboarded)
-        }
-        .onChange(of: onboarded) { _, isOnboarded in
-            if isOnboarded { AppServices.shared.becameActive() }
-        }
     }
 
     // MARK: - Tab bar (a row of its own, below the content)

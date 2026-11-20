@@ -3,8 +3,9 @@ name: iOS build
 # Compiles Myna for iOS on every pull request so a broken build never reaches
 # main. No signing — this only proves the code builds with Xcode 26.
 
+# Runs only when started by hand. It used to run on every push to a pull
+# request, which queued a Mac build for each small change.
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:

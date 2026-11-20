@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Backstage card: bring your Bee conversations into Myna. Bee does the room
 /// recording and speaker separation; Myna files each conversation as a note.
@@ -7,6 +8,7 @@ struct BeeCloudCard: View {
     @State private var token = ""
     @State private var tokenVisible = false
     @State private var showAdvanced = false
+    @State private var revealToken = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -151,6 +153,22 @@ struct BeeCloudCard: View {
                 .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
 
                 Text("Or paste a developer token from developer.bee.computer.").cloudCaption()
+
+                if let saved = importer.storedToken, !saved.isEmpty {
+                    Divider().overlay(MynaTheme.ink.opacity(0.1))
+                    Text("Token on this phone (for the Myna server's Bee sync):").cloudCaption()
+                    Text(revealToken ? saved : String(repeating: "•", count: min(saved.count, 32)))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.75))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 10) {
+                        Button(revealToken ? "Hide" : "Show") { revealToken.toggle() }
+                        Button("Copy") { UIPasteboard.general.string = saved }
+                    }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .tint(MynaTheme.magenta)
+                }
             }
             .padding(.top, 6)
         } label: {

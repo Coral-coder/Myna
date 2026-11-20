@@ -44,6 +44,8 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Myna adds the songs it heard to a playlist in your Apple Music library when you ask it to.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Myna uses the camera only to scan the pairing code shown by Myna Server on your computer.</string>
 	<key>NSLocalNetworkUsageDescription</key>

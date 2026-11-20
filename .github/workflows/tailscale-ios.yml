@@ -1,0 +1,82 @@
+name: Build Tailscale for iOS
+
+# Builds Tailscale's own embeddable library (tailscale/libtailscale, BSD-3) for
+# iPhone and publishes it to the `tailscale-ios` release. Myna links it so the
+# phone can reach the home server over the private network with no separate
+# Tailscale app. Re-run only when the pinned version below changes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, tailscale-ios]
+    paths:
+      - .github/workflows/tailscale-ios.yml
+
+permissions:
+  contents: write
+
+env:
+  LIBTAILSCALE_COMMIT: dacde75057ff350e146505829beff446e6823966
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Fetch libtailscale at the pinned commit
+        run: |
+          git init -q libtailscale
+          cd libtailscale
+          git remote add origin https://github.com/tailscale/libtailscale.git
+          git fetch -q --depth 1 origin "$LIBTAILSCALE_COMMIT"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$LIBTAILSCALE_COMMIT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: libtailscale/go.mod
+          cache-dependency-path: libtailscale/go.sum
+
+      - name: Select Xcode 26 or later
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build the library for iPhone
+        working-directory: libtailscale
+        run: |
+          make c-archive-ios
+          ls -la libtailscale_ios.a
+
+      - name: Package as an xcframework
+        run: |
+          mkdir -p headers out
+          cp libtailscale/tailscale.h headers/
+          cat > headers/module.modulemap <<'MAP'
+          module libtailscale {
+              header "tailscale.h"
+              export *
+          }
+          MAP
+          sed -i '' 's/^          //' headers/module.modulemap
+          cat headers/module.modulemap
+          # The archive must be named lib<name>.a for the linker.
+          cp libtailscale/libtailscale_ios.a out/libtailscale.a
+          xcodebuild -create-xcframework -library out/libtailscale.a -headers headers \
+            -output out/libtailscale.xcframework
+          cd out
+          zip -q -r -y libtailscale.xcframework.zip libtailscale.xcframework
+          swift package compute-checksum libtailscale.xcframework.zip | tee checksum.txt
+          ls -la
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tailscale-ios
+          name: Tailscale library for iOS
+          body: |
+            Tailscale's embeddable library (github.com/tailscale/libtailscale, BSD-3-Clause), built for iPhone at commit ${{ env.LIBTAILSCALE_COMMIT }}. Myna's build downloads it from here.
+          files: |
+            out/libtailscale.xcframework.zip
+            out/checksum.txt

@@ -248,6 +248,8 @@ final class ConversationPilot: ObservableObject {
                 try await composeAndFile(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place, audioPath: audioPath)
             } catch MynaModelError.needsForeground {
                 enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
+            } catch MynaModelError.waitingForServer {
+                enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
             } catch MynaModelError.noModelInstalled {
                 enqueue(transcript: transcript, startedAt: startedAt, endedAt: endedAt, sourceRef: sourceRef, place: place)
                 banner = "Heard a conversation — it'll become a note once a model is installed."
@@ -398,6 +400,8 @@ final class ConversationPilot: ObservableObject {
                     try await composeAndFile(transcript: item.transcript, startedAt: item.startedAt, endedAt: item.endedAt, sourceRef: item.sourceRef, place: item.placeName)
                     modelContext.delete(item)
                 } catch MynaModelError.needsForeground {
+                    break queue
+                } catch MynaModelError.waitingForServer {
                     break queue
                 } catch MynaModelError.noModelInstalled {
                     break queue

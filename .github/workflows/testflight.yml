@@ -219,45 +219,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Keep build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: testflight-build-logs
-          path: |
-            archive.log
-            export.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Remove the API key and keychain
-        if: always()
-        run: |
-          rm -rf "$RUNNER_TEMP/keys"
-          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
-
-  upload:
-    needs: build
-    runs-on: macos-26
-    timeout-minutes: 60
-    env:
-      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ASC_KEY: ${{ secrets.ASC_KEY_P8 }}
-      BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
-    steps:
-      - name: Select Xcode 26 or later
-        run: |
-          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$xcode" ] && sudo xcode-select -s "$xcode/Contents/Developer" || true
-          xcrun altool --version || true
-
-      - name: Download the .ipa artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: myna-ipa
-          path: ${{ runner.temp }}/ipa
-
+      # Uploading happens here, on the same machine that built it. As a
+      # separate job it had to wait for a second Mac runner, and more than once
+      # none came free in time, so a finished build never reached TestFlight.
       - name: Install the API key for altool
         run: |
           mkdir -p "$HOME/.appstoreconnect/private_keys"
@@ -267,8 +231,7 @@ jobs:
       - name: Upload to TestFlight (altool, retried)
         run: |
           set -o pipefail
-          IPA="$(ls "$RUNNER_TEMP/ipa"/*.ipa | head -1)"
-          [ -n "$IPA" ] || { echo "::error::No .ipa in the build artifact."; exit 1; }
+          IPA="$RUNNER_TEMP/Myna.ipa"
           echo "Uploading $IPA"
           max=5
           for attempt in $(seq 1 "$max"); do
@@ -286,18 +249,24 @@ jobs:
               sleep $((attempt * 30))
             fi
           done
-          echo "::error::Upload to App Store Connect failed after $max attempts — likely an ASC outage. The .ipa is built and saved as the 'myna-ipa' artifact; just re-run THIS job (no re-archive needed) when ASC recovers."
+          echo "::error::Upload to App Store Connect failed after $max attempts. The .ipa is saved as the 'myna-ipa' artifact."
           exit 1
 
-      - name: Keep upload log
+      - name: Keep build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: testflight-upload-log
-          path: upload.log
+          name: testflight-build-logs
+          path: |
+            archive.log
+            export.log
+            upload.log
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Remove the API key
+      - name: Remove the API key and keychain
         if: always()
-        run: rm -rf "$HOME/.appstoreconnect/private_keys"
+        run: |
+          rm -rf "$RUNNER_TEMP/keys"
+          rm -rf "$HOME/.appstoreconnect/private_keys"
+          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi

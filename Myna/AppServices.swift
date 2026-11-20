@@ -79,6 +79,12 @@ final class AppServices {
         pilot.brain = brain
         TranscriptionLab.shared.attach(listener: listener, container: container)
         HomeSync.shared.start(container: container)
+        MusicSpotter.shared.attach(container: container)
+        // When the home server comes back, write up what was waiting for it.
+        HomeServer.shared.onBack = { [pilot] in pilot.drainQueue() }
+        TranscriptSorter.shared.start(container: container) { [modelManager] instructions, prompt in
+            try await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 80, background: true)
+        }
         beeCloud.brain = brain
         // Extraction runs on the user's downloaded model (a bigger MLX model when
         // installed and on screen, Apple Intelligence otherwise). Foreground only.
@@ -128,14 +134,14 @@ final class AppServices {
     private static func makeContainer() -> ModelContainer {
         for attempt in 0..<4 {
             do {
-                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self)
+                return try ModelContainer(for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self, HeardSong.self)
             } catch {
                 CrashReporter.log("ModelContainer attempt \(attempt) failed: \(error.localizedDescription)")
                 if attempt < 3 { Thread.sleep(forTimeInterval: 0.25) }
             }
         }
         if let fallback = try? ModelContainer(
-            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self,
+            for: ConversationNote.self, MynaItem.self, PendingConversation.self, Suggestion.self, Memory.self, Utterance.self, VoicePerson.self, HeardSong.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         ) {
             CrashReporter.log("ModelContainer: in-memory fallback (on-disk store unavailable this launch).")
@@ -175,6 +181,10 @@ final class AppServices {
             if self.whisper.isEnabled { self.whisper.load() }
             self.beeCloud.importIfEnabled()
             self.pilot.drainQueue()
+            // Pull the latest from the home server now, so Today reflects the
+            // server-side conversations and transcript as soon as Myna opens
+            // (otherwise it waits up to the 60-second sync timer).
+            await HomeSync.shared.syncNow()
         }
     }
 
@@ -190,30 +200,41 @@ final class AppServices {
 /// Shows Myna's reminders as banners even while the app is open, and carries out
 /// the Cancel button on an action notification (from the iPhone or Apple Watch).
 private final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
+    // These are the completion-handler forms on purpose. With the `async`
+    // forms, Swift calls the system's completion handler from a background
+    // thread when the method returns, and UIKit requires it on the main thread:
+    // tapping a notification raised an exception there and ended the app
+    // (build 99, and the earlier "notification" crashes).
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        if Thread.isMainThread {
+            completionHandler([.banner, .list, .sound])
+        } else {
+            DispatchQueue.main.async { completionHandler([.banner, .list, .sound]) }
+        }
     }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.actionIdentifier == ActionNotifier.undoActionID,
-              let undo = ActionUndo(payload: response.notification.request.content.userInfo) else { return }
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let action = response.actionIdentifier
+        let userInfo = response.notification.request.content.userInfo
         let identifier = response.notification.request.identifier
-        await MainActor.run {
+        Task { @MainActor in
+            defer { completionHandler() }
+            guard action == ActionNotifier.undoActionID, let undo = ActionUndo(payload: userInfo) else { return }
             // Only act once services are fully initialised. Never force a
-            // first-time AppServices init from the notification-delivery path —
-            // that races app launch and is one way this handler crashed.
+            // first-time AppServices init from the notification-delivery path.
             guard let services = AppServices.sharedIfReady else { return }
             // EventKit / CoreData calls in `undo` can raise an Objective-C
-            // NSException, which Swift cannot catch and which aborted the whole
-            // app when a notification was acted on (confirmed in a crash report).
-            // Run the work inside an ObjC @try/@catch so a raised exception is
-            // logged, never fatal.
+            // NSException, which Swift cannot catch; run the work inside an
+            // ObjC @try/@catch so a raised exception is logged, never fatal.
             if let reason = MynaExceptionCatcher.catching({
                 services.brain.undo(undo)
                 services.brain.notifier.clearDelivered(identifier)

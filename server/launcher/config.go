@@ -40,6 +40,9 @@ func readToken() (string, error) {
 // worker's config so neither overwrites the other.
 type launcherSettings struct {
 	AllowLAN bool `json:"allow_lan"`
+	// The window's password, kept only as a bcrypt hash. Delete this entry
+	// from launcher.json to choose a new password.
+	PasswordHash string `json:"password_hash,omitempty"`
 }
 
 func loadSettings() launcherSettings {
