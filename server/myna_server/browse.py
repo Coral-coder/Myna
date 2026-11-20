@@ -10,7 +10,7 @@ from . import catalog
 from .engines import speeds
 from .store import Store
 
-TABS = (("utterance", "Transcript"), ("conversation", "Conversations"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
+TABS = (("utterance", "Transcript"), ("conversation", "Conversations"), ("note", "Notes"), ("memory", "Memories"), ("item", "Lists"), ("message", "Messages"), ("person", "People"), ("song", "Music"), ("daily", "Days"))
 
 _STYLE = """<style>
 body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:28px auto;padding:0 20px;color:#e9e9e6;background:#141517;color-scheme:dark}
@@ -191,6 +191,11 @@ def list_page(store: Store, kind: str, query: str, before: float | None, daily_s
             parts.append(
                 f'<div class="row">{_e(row.get("name") or "Unnamed voice")}'
                 f' <span class="dim">heard {_e(row.get("sampleCount", 0))} times</span></div>'
+            )
+        elif kind == "message":
+            topic = f' <span class="dim">· {_e(row.get("topic"))}</span>' if row.get("topic") else ""
+            parts.append(
+                f'<div class="row"><span class="t">{clock}</span>{_e(row.get("text"))}{topic}</div>'
             )
     if kind == "memory" and not query:
         from .facts import pending

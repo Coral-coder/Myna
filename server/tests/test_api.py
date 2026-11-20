@@ -251,7 +251,9 @@ def test_choosing_where_models_run_and_big_models_are_shared(stt):
     assert config.llm_device == "shared" and config.llm_file == "Qwen_Qwen3-32B-Q4_K_M.gguf"
 
 
-def test_ask_uses_saved_material_and_the_web(stt):
+def test_ask_looks_things_up_in_transcripts_and_the_web(stt):
+    """Myna answers by actually searching — it scans the transcript for the
+    fact, and asks the web only for what the user's data doesn't cover."""
     from myna_server import web
 
     calls = []
@@ -261,22 +263,25 @@ def test_ask_uses_saved_material_and_the_web(stt):
 
         def generate(self, instructions, prompt, max_tokens):
             calls.append(prompt)
-            if "WEB RESULTS" in prompt:
-                return '{"reply": "It is 31 metres tall.", "search": ""}'
-            if "lighthouse" in prompt.split("THE USER ASKS")[-1]:
-                return '{"reply": "", "search": "height of the lighthouse"}'
-            return '{"reply": "You said you would call the dentist.", "search": ""}'
+            # The model works in a loop of JSON actions (see recall.py).
+            if "415-555-0142" in prompt:                       # the number came back from a search
+                return '{"action": "answer", "text": "Your dentist is on 415-555-0142.", "search": ""}'
+            if "31 metres" in prompt:                          # the web result came back
+                return '{"action": "answer", "text": "It is 31 metres tall.", "search": "height of the lighthouse"}'
+            if "lighthouse" in prompt:                         # nothing saved — go to the web
+                return '{"action": "web", "query": "height of the lighthouse"}'
+            return '{"action": "find", "what": "phone"}'       # first: scan the transcript for the number
 
     app = create_app(Config(token="secret-token"), stt, ScriptedWriter())
     app.state.web_lookup = lambda query: f"1. Lighthouse — 31 metres ({query})"
     client = TestClient(app)
     client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
-        change("utterance", "u1", {"text": "I need to call the dentist tomorrow", "heardAt": 1_700_000_000}, 1),
+        change("utterance", "u1", {"text": "The dentist's number is 415-555-0142, book me in.", "heardAt": 1_700_000_000}, 1),
     ]})
     assert client.post("/browse/ask.json", json={"question": "hi"}).status_code == 401
-    first = client.post("/browse/ask.json", headers=AUTH, json={"question": "what about the dentist?"}).json()
-    assert first == {"reply": "You said you would call the dentist.", "searched": ""}
-    assert "call the dentist tomorrow" in calls[0]  # the saved line reached the model
+    first = client.post("/browse/ask.json", headers=AUTH, json={"question": "what's the dentist's number?"}).json()
+    assert first == {"reply": "Your dentist is on 415-555-0142.", "searched": ""}
+    assert any("415-555-0142" in c for c in calls)   # the number was found in the transcript and fed back
     second = client.post("/browse/ask.json", headers=AUTH, json={
         "question": "how tall is the lighthouse?", "history": [{"role": "me", "text": "what about the dentist?"}]}).json()
     assert second == {"reply": "It is 31 metres tall.", "searched": "height of the lighthouse"}
@@ -287,6 +292,27 @@ def test_ask_uses_saved_material_and_the_web(stt):
            '<a class="result__snippet" href="#">Some &amp; text</a>'
     assert web.parse_results(page) == [("A title", "Some & text", "https://example.com/a")]
     assert web.readable("<head><title>x</title></head><script>var a</script><p>Hello <b>there</b></p>") == "Hello there"
+
+
+def test_ask_falls_back_to_gathered_material_when_the_model_skips_the_tools(stt):
+    """If the model answers in plain prose instead of the action protocol, Myna
+    still answers from the saved material rather than breaking."""
+    class PlainWriter:
+        name = "plain"
+        seen = []
+
+        def generate(self, instructions, prompt, max_tokens):
+            self.seen.append(prompt)
+            return "Friday at four."   # no JSON action — recall can't parse it
+
+    writer = PlainWriter()
+    client = TestClient(create_app(Config(token="secret-token"), stt, writer))
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "the dentist is at four on Friday", "heardAt": 1_700_000_000}, 1),
+    ]})
+    reply = client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the dentist?"}).json()
+    assert reply["reply"] == "Friday at four."
+    assert any("THE MOST RECENT THINGS HEARD" in p for p in writer.seen)  # the one-shot gather ran
 
 
 def test_transcribe_splits_a_clip_by_speaker(stt):
@@ -378,21 +404,6 @@ class Recorder:
 
     def stop(self):
         self.stopped += 1
-
-
-def test_helper_model_picks_out_context_for_the_main_model(stt):
-    helper = Recorder("small", "[Tue 10:00] the dentist is at four on Friday")
-    main = Recorder("big", '{"reply": "Friday at four.", "search": ""}')
-    client = TestClient(create_app(Config(token="secret-token"), stt, main, helper=helper))
-    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
-        change("utterance", "u1", {"text": "the dentist is at four on Friday", "heardAt": 1_700_000_000}, 1),
-        change("utterance", "u2", {"text": "we talked about the dentist bill", "heardAt": 1_700_000_100}, 1),
-    ]})
-    reply = client.post("/browse/ask.json", headers=AUTH, json={"question": "when is the dentist?"}).json()
-    assert reply["reply"] == "Friday at four."
-    assert "dentist bill" in helper.asked[0][1]            # the helper saw the wide material
-    assert "PICKED OUT" in main.asked[0][1] and "at four on Friday" in main.asked[0][1]
-    assert "dentist bill" not in main.asked[0][1]          # the main model only got what was picked
 
 
 def test_end_of_day_summary_uses_its_own_model_and_is_listed(stt):
@@ -1635,3 +1646,101 @@ def test_sync_reports_a_stable_db_id(tmp_path):
 
     other = Store(tmp_path / "db2.db")
     assert other.sync(0, [])["db_id"] != first["db_id"]                          # a new DB → new id
+
+
+def test_recall_finds_exact_facts_in_the_transcript():
+    """The whole point: recall can pull a specific number out of the words
+    actually spoken, not just a summary."""
+    import time
+
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    store.sync(0, [change("utterance", "u1",
+                          {"text": "Call me on 415-555-0142, and email alex@acme.com.", "heardAt": time.time(),
+                           "speakerName": "Alex", "beeId": "bee-1"}, time.time())])
+
+    assert "415-555-0142" in recall.execute(store, {"action": "find", "what": "phone"})
+    assert "alex@acme.com" in recall.execute(store, {"action": "find", "what": "email"})
+    assert "415-555-0142" in recall.execute(store, {"action": "transcript", "query": "call"})
+
+    # The agentic loop: scan, then answer from what was found.
+    script = iter(['{"action": "find", "what": "phone"}',
+                   '{"action": "answer", "text": "It is 415-555-0142.", "search": ""}'])
+    out = recall.answer(store, lambda a, b, c: next(script), "what's the number?", [])
+    assert out["reply"] == "It is 415-555-0142."
+
+
+def test_recall_can_write_a_document_the_user_can_see():
+    import time
+
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    recall.execute(store, {"action": "document", "title": "Plan", "body": "x" * 60}, None, None)
+    notes = store.browse("note", limit=5)
+    assert notes and notes[0]["title"] == "Plan"
+
+
+def test_receptionist_learns_follows_up_and_messages_on_its_own():
+    """After a conversation, Myna acts without being asked: it remembers a
+    fact, makes a follow-up, drafts a document, and sends one message."""
+    import time
+
+    from myna_server import reception
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    store.sync(0, [change("conversation", "bee-1",
+                          {"startedAt": time.time(), "title": "Call with Alex", "source": "bee", "beeId": "bee-1",
+                           "myna": {"overview": "Beta planning", "keyPoints": ["Ship Dec 1"]}}, time.time())])
+
+    def model(instructions, prompt, max_tokens):
+        assert "Call with Alex" in prompt           # it read the conversation
+        return ('{"remember": ["Alex works at Acme"],'
+                ' "followups": [{"text": "Email Alex the deck", "due": ""}],'
+                ' "documents": [{"title": "Beta plan", "body": "' + "y" * 60 + '"}],'
+                ' "message": {"send": true, "text": "Dont forget to email Alex."}}')
+
+    did = reception.reflect(store, model)
+    assert did == {"conversations": 1, "learned": 1, "followups": 1, "documents": 1, "messages": 1}
+    assert store.browse("memory", limit=5)[0]["content"] == "Alex works at Acme"
+    assert store.browse("item", limit=5)[0]["text"] == "Email Alex the deck"
+    assert store.browse("message", limit=5)[0]["text"] == "Dont forget to email Alex."
+    # It never acts on the same conversation twice.
+    assert reception.reflect(store, model)["conversations"] == 0
+
+
+def test_receptionist_messages_sync_to_the_phone():
+    """A message Myna sends is a syncable record, so the phone pulls it and can
+    turn it into a notification."""
+    client = TestClient(create_app(Config(token="secret-token"), FakeTranscriber(), FakeWriter()))
+    # The server's store is reachable through a sync round-trip.
+    from myna_server import reception
+
+    app_store = client.app.state.store
+    reception.send_message(app_store, "Your 3pm is in ten minutes.")
+    pulled = client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": []}).json()
+    messages = [c for c in pulled["changes"] if c["kind"] == "message"]
+    assert messages and messages[0]["data"]["text"] == "Your 3pm is in ten minutes."
+
+
+def test_receptionist_reminds_about_due_todos_once():
+    import time
+
+    from myna_server import reception
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    soon = time.time() + 3 * 3600
+    store.sync(0, [change("item", "i1",
+                          {"kind": "todo", "text": "Pay the invoice", "dueDate": soon, "isDone": False}, time.time())])
+    store.sync(0, [change("item", "i2",
+                          {"kind": "todo", "text": "Next week thing", "dueDate": time.time() + 10 * 86400, "isDone": False}, time.time())])
+
+    assert reception.remind_due(store) == 1                   # only the soon one
+    assert reception.remind_due(store) == 0                   # never twice
+    messages = store.browse("message", limit=5)
+    assert len(messages) == 1 and "Pay the invoice" in messages[0]["text"]

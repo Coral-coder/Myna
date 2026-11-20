@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, blend, browse, catalog, conversations, daily, memory, tuner, web
+from . import ask, blend, browse, catalog, conversations, daily, memory, reception, tuner, web
 from .engines import Transcriber, Writer, by_speaker
 from .store import KINDS, Store
 
@@ -165,6 +165,7 @@ def create_app(
             learning.save()
         return text
     app = FastAPI(title="Myna server", version=__version__)
+    app.state.store = store
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
     # What the server has just done, newest last, for the Live page.
@@ -756,6 +757,11 @@ def create_app(
                 handled += conversations.retry_failed(store, writer.generate, cheap, time.time(), config.owner_name)
             if handled:
                 talk_state["status"] = f"Wrote up {handled} conversation{'s' if handled != 1 else ''} at {time.strftime('%H:%M')}."
+                # Let the receptionist read the new conversations and act on them.
+                try:
+                    reception.reflect(store, writer.generate)
+                except Exception:
+                    pass
             return handled
         except Exception as error:
             talk_state["status"] = f"Couldn't write up a conversation: {error}"
@@ -903,10 +909,9 @@ def create_app(
         began = time.perf_counter()
         lookup = getattr(app.state, "web_lookup", web.lookup)
         try:
-            pick = helper.generate if chosen(helper) else None
             embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
             result = await run_in_threadpool(
-                ask.answer, store, writer.generate, lookup, payload.question, payload.history, pick, embed
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed
             )
         except Exception as error:
             note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
@@ -1146,6 +1151,15 @@ def create_app(
                 if row.get("source") == "bee":
                     bee_cloud.mirror_note(store, row["id"])
             app.state.run_indexing()
+            # The receptionist reads what's new and acts on it on its own —
+            # learns lasting facts, writes follow-ups and documents, and sends
+            # the user a message when something genuinely needs their attention.
+            try:
+                did = reception.reflect(store, writer.generate)
+                if did.get("messages") or did.get("followups") or did.get("learned"):
+                    bee_state["attended"] = did
+            except Exception as error:
+                bee_state["status"] = f"Synced {added}; reception skipped: {error}"
             bee_state.update(status=f"Synced. {added} new.", last_sync=time.time(), new=added)
             return added
         except bee_cloud.BeeError as error:

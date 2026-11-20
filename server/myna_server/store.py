@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily", "conversation")
+KINDS = ("utterance", "note", "memory", "item", "person", "song", "daily", "conversation", "message")
 
 # Which field of a record places it in time, per kind.
 _TIME_FIELDS = {
@@ -26,6 +26,9 @@ _TIME_FIELDS = {
     "song": ("lastHeard", "firstHeard"),
     "daily": ("day",),
     "conversation": ("startedAt",),
+    # A note Myna decides to send the user on its own — surfaced as a
+    # notification on the phone when it syncs.
+    "message": ("createdAt",),
 }
 
 
@@ -191,6 +194,20 @@ class Store:
                 "SELECT data FROM records WHERE kind = ? AND id = ? AND deleted = 0", (kind, record_id)
             ).fetchone()
         return json.loads(row["data"]) if row else None
+
+    def get_meta(self, key: str, default: str = "") -> str:
+        """A small stored value, for cursors and the like (not a synced record)."""
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+            self._db.commit()
 
     def counts(self) -> dict[str, int]:
         with self._lock:

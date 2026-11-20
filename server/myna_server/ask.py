@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from typing import Callable
 
+from . import recall
 from .store import Store
 
 _STOP = {
@@ -34,10 +35,10 @@ def _when(seconds) -> str:
         return ""
 
 
-def gather(store: Store, question: str, wide: bool = False) -> str:
-    """The saved material most likely to matter for `question`. `wide` takes
-    several times as much, for a helper model to sift."""
-    scale = 4 if wide else 1
+def gather(store: Store, question: str) -> str:
+    """The saved material most likely to matter for `question`, for the one-shot
+    fallback when the agentic recall loop can't run."""
+    scale = 1
     words = [w for w in re.findall(r"[a-z0-9']{3,}", question.lower()) if w not in _STOP][:8]
     parts: list[str] = []
 
@@ -103,25 +104,28 @@ def _parse(raw: str) -> tuple[str, str]:
     return raw.strip(), ""
 
 
-PICK = (
-    "You are preparing material for another assistant. Below is saved material about a person and a question "
-    "they asked. Copy out, word for word, only the lines that help answer the question, keeping their times. "
-    "If nothing helps, reply with the single word NONE. Add nothing of your own."
-)
-
-
 def answer(
     store: Store,
     generate: Callable[[str, str, int], str],
     lookup: Callable[[str], str],
     question: str,
     history: list[dict],
-    pick: Callable[[str, str, int], str] | None = None,
     embed: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> dict:
-    """One turn: the reply, and the web search made for it (if any). When a
-    helper model is given as `pick`, it reads a much larger slice of the saved
-    material first and hands the main model only what bears on the question."""
+    """One turn: the reply, and the web search made for it (if any).
+
+    Myna first tries to *look things up* — it searches the transcripts, scans
+    for numbers, reads conversations — so it can recall a specific fact like a
+    phone number instead of guessing from a pre-gathered blob (see recall.py).
+    If that loop can't run (an old model, a parsing problem) it falls back to
+    the one-shot gather below, so answering never simply breaks."""
+    try:
+        found = recall.answer(store, generate, question, history, lookup=lookup, embed=embed)
+        reply = (found.get("reply") or "").strip()
+        if reply:
+            return {"reply": reply, "searched": str(found.get("search") or "")}
+    except Exception:
+        pass  # fall through to the older single-shot path
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
     material = gather(store, question)
     if embed is not None:
@@ -136,14 +140,6 @@ def answer(
                 material = "RELATED BY MEANING:\n" + "\n".join(lines) + "\n\n" + material
         except Exception:
             pass  # search by meaning is a bonus; the keyword material still goes
-    if pick is not None:
-        try:
-            wide = gather(store, question, wide=True)
-            chosen = pick(PICK, f"{wide}\n\nQUESTION: {question}", 900).strip()
-            if chosen and chosen.upper() != "NONE":
-                material = "PICKED OUT OF THE USER'S SAVED MATERIAL AS RELEVANT:\n" + chosen
-        except Exception:
-            pass  # the helper is optional; carry on with the usual material
     earlier = "\n".join(
         f"{'USER' if turn.get('role') == 'me' else 'YOU'}: {str(turn.get('text', ''))[:500]}" for turn in history[-10:]
     )

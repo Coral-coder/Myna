@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UserNotifications
 
 /// Keeps this iPhone and the home computer's database in step. Every minute or
 /// so, while the home server answers, it sends what changed here (transcript
@@ -70,6 +71,9 @@ struct HomeSyncState: Codable {
     /// recreated (a reinstall, a wiped data folder) its id changes and its
     /// sequence numbers restart, so we must pull everything again from 0.
     var dbId: String = ""
+    /// Ids of receptionist messages already shown as a notification, so a
+    /// re-pull (e.g. after the server's db id changes) doesn't notify twice.
+    var notified: Set<String> = []
 
     private static var file: URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -397,7 +401,11 @@ enum HomeSyncRun {
            let json = try? JSONSerialization.jsonObject(with: probe) as? [String: Any],
            let serverDb = json["db_id"] as? String {
             if !state.dbId.isEmpty, serverDb != state.dbId {
-                state = HomeSyncState()   // cursor 0, nothing sent — pull it all again
+                // cursor 0, nothing sent — pull it all again, but keep which
+                // messages were already shown so a re-pull doesn't notify twice.
+                var fresh = HomeSyncState()
+                fresh.notified = state.notified
+                state = fresh
             }
             state.dbId = serverDb
             state.save()
@@ -434,6 +442,9 @@ enum HomeSyncRun {
         var index = 0
         var more = true
         var rounds = 0
+        // Messages Myna decided to send the user, gathered as they arrive and
+        // shown as notifications once the sync is done.
+        var nudges: [(id: String, text: String)] = []
         while (index < outgoing.count || more) && rounds < 2_000 {
             rounds += 1
             let batch = Array(outgoing[index..<min(index + 150, outgoing.count)])
@@ -458,8 +469,19 @@ enum HomeSyncRun {
                 }
             }
             for change in json["changes"] as? [[String: Any]] ?? [] {
-                guard let kind = change["kind"] as? String, let id = change["id"] as? String,
-                      let shelf = shelves[kind] else { continue }
+                guard let kind = change["kind"] as? String, let id = change["id"] as? String else { continue }
+                // A message from Myna's receptionist — not a stored record, a
+                // notification. Show each one once.
+                if kind == "message" {
+                    if change["deleted"] as? Bool != true, !state.notified.contains(id),
+                       let data = change["data"] as? [String: Any],
+                       let text = data["text"] as? String, !text.isEmpty {
+                        nudges.append((id, text))
+                        state.notified.insert(id)
+                    }
+                    continue
+                }
+                guard let shelf = shelves[kind] else { continue }
                 if change["deleted"] as? Bool == true {
                     shelf.remove(id)
                     state.sent[kind]?.removeValue(forKey: id)
@@ -472,6 +494,21 @@ enum HomeSyncRun {
             state.save()
             more = json["more"] as? Bool ?? false
         }
+        state.save()
+        for nudge in nudges { await notify(id: nudge.id, text: nudge.text) }
         return state.total
+    }
+
+    /// Show a message from Myna as a local notification.
+    private static func notify(id: String, text: String) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Myna"
+        content.body = text
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "myna.message.\(id)", content: content, trigger: nil)
+        try? await center.add(request)
     }
 }
