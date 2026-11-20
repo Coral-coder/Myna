@@ -49,6 +49,30 @@ def _parse_date(value) -> float | None:
         return None
 
 
+def _epoch(value) -> float | None:
+    """An absolute time in seconds, normalising milliseconds (Bee, like many
+    APIs, sometimes sends ms)."""
+    t = _parse_date(value)
+    if t is None:
+        return None
+    return t / 1000.0 if t > 1e11 else t
+
+
+def _at(value, base: float) -> float:
+    """An utterance's absolute time. Bee gives per-utterance times as an OFFSET
+    in seconds from the conversation's start (e.g. 12.5), not an epoch — so a
+    small value is added to the conversation start. Without that, every Bee line
+    was dated to 1970 and never showed up in Today (which lists today's lines)."""
+    t = _parse_date(value)
+    if t is None:
+        return base or 0.0
+    if t > 1e11:            # milliseconds → seconds
+        t = t / 1000.0
+    if t < 1e9:             # before ~2001: it's an offset from the start, not a date
+        return (base or 0.0) + t
+    return t
+
+
 class BeeCloud:
     def __init__(self, token: str, base: str = BASE) -> None:
         self.token = (token or "").strip()
@@ -103,7 +127,9 @@ class BeeCloud:
                 if not text:
                     continue
                 speaker = str(raw.get("speaker") or "").replace("speaker_", "Speaker ")
-                when = _parse_date(raw.get("spoken_at") or raw.get("start")) or summary["start"] or 0.0
+                # spoken_at is absolute; start is an offset from the conversation
+                # start. _at turns either into an absolute epoch time.
+                when = _at(raw.get("spoken_at") or raw.get("start"), summary["start"] or 0.0)
                 lines.append((when, speaker, text))
         lines.sort(key=lambda row: row[0])
         return {**summary, "lines": lines}
@@ -134,8 +160,9 @@ class BeeCloud:
         summary = str(raw.get("summary") or raw.get("short_summary") or "").strip()
         return {
             "bee_id": int(raw["id"]),
-            "start": _parse_date(raw.get("start") or raw.get("start_time") or raw.get("created_at")),
-            "end": _parse_date(raw.get("end") or raw.get("end_time")),
+            # Conversation-level start/end are absolute; normalise ms just in case.
+            "start": _epoch(raw.get("start") or raw.get("start_time") or raw.get("created_at")),
+            "end": _epoch(raw.get("end") or raw.get("end_time")),
             "summary": summary,
             "state": str(raw.get("state") or "").strip() or "unknown",
         }

@@ -1929,3 +1929,43 @@ def test_ask_returns_a_thinking_trace():
         return "It's 415-555-0142."
     out = recall.answer(store, gen, "what's my number?", [])
     assert out["steps"] and "transcript" in out["steps"][0].lower()
+
+
+def test_bee_utterance_times_are_absolute_not_1970():
+    """Bee gives per-utterance times as an offset from the conversation start.
+    They must become absolute epoch times, or every Bee line is dated to 1970
+    and never shows in Today (which lists today's transcript)."""
+    import json as _json
+    import time as _time
+
+    from myna_server import bee_cloud
+
+    start = _time.time() - 300   # the conversation started 5 minutes ago (today)
+
+    class FakeBee(bee_cloud.BeeCloud):
+        def _get(self, path):
+            return {"conversation": {
+                "id": 42, "created_at": start, "end_time": start + 120,
+                "summary": "Chat about the number",
+                "transcriptions": [{"utterances": [
+                    {"text": "Call me on 415-555-0142.", "speaker": "speaker_1", "start": 0.0},
+                    {"text": "Will do, thanks.", "speaker": "speaker_2", "start": 12.5},
+                ]}],
+            }}
+
+    convo = FakeBee("tok").conversation(42)
+    times = [when for when, _s, _t in convo["lines"]]
+    assert all(t > start - 1 for t in times)          # absolute, near the conversation start
+    assert times[1] == pytest.approx(start + 12.5, abs=1)   # offset added to the start
+    assert all(t > 1_600_000_000 for t in times)      # well after 1970 — shows up in Today
+
+
+def test_bee_time_helpers_normalise_offsets_and_milliseconds():
+    from myna_server import bee_cloud
+
+    base = 1_700_000_000.0
+    assert bee_cloud._at(12.5, base) == base + 12.5         # small value = offset from start
+    assert bee_cloud._at(1_700_000_050, base) == 1_700_000_050.0   # already absolute, kept
+    assert bee_cloud._at(1_700_000_000_000, base) == 1_700_000_000.0  # milliseconds → seconds
+    assert bee_cloud._epoch(1_700_000_000_000) == 1_700_000_000.0
+    assert bee_cloud._epoch(None) is None
