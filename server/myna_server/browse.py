@@ -525,8 +525,41 @@ def _shell_toggle(config) -> str:
         '<div class="dim" style="margin:4px 0 8px">Lets the assistant (Lumi) run shell commands on this computer '
         'when you ask it to — managing files, running scripts, checking things. This is real access to your machine; '
         'only turn it on if you want Lumi to act here.</div>'
-        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<form method="post" action="/browse/simple" style="margin:0 0 12px">'
         f'<input type="hidden" name="shell" value="{other}"><button>Turn command access {other}</button></form>'
+        + _mcp_box(config)
+    )
+
+
+def mcp_status(config, catalog: list | None) -> str:
+    servers = getattr(config, "mcp_servers", []) or []
+    if not servers:
+        return "No MCP servers connected."
+    names = [s.get("name") or s.get("command") or "?" for s in servers]
+    if catalog is None:
+        return f"{len(servers)} connected: {_e(', '.join(names))} (tools load when first used)."
+    by_server: dict[str, int] = {}
+    for tool in catalog or []:
+        by_server[tool["server"]] = by_server.get(tool["server"], 0) + 1
+    return " · ".join(f"{_e(name)}: {by_server.get(name, 0)} tools" for name in names)
+
+
+def _mcp_box(config, catalog: list | None = None) -> str:
+    """Connect MCP servers so Lumi can borrow their tools."""
+    import json as _json
+
+    servers = getattr(config, "mcp_servers", []) or []
+    current = _json.dumps(servers, indent=2) if servers else ""
+    placeholder = '[\n  {"name": "files", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]}\n]'
+    return (
+        '<b>MCP tools</b>'
+        '<div class="dim" style="margin:4px 0 8px">Connect Model-Context-Protocol servers and Lumi can use their '
+        'tools. Paste a JSON list of servers — each with a name and the command to run it. Adding one runs that '
+        f'program on this computer. <span style="color:#8a8c8e">{mcp_status(config, catalog)}</span></div>'
+        '<form method="post" action="/browse/mcp" style="margin:0">'
+        f'<textarea name="servers" rows="5" placeholder=\'{_e(placeholder)}\' style="width:100%;font:12px ui-monospace,'
+        f'monospace;background:#0000003a;color:#e9e9e6;border:1px solid #ffffff22;border-radius:8px;padding:8px">{_e(current)}</textarea>'
+        '<div style="margin-top:6px"><button>Save MCP servers</button></div></form>'
     )
 
 

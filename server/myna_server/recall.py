@@ -184,8 +184,12 @@ def run_shell(command: str, timeout: float = 60.0) -> str:
 
 
 def execute(store: Store, action: dict, lookup: Generate | None = None, embed=None,
-            shell: "Callable[[str], str] | None" = None) -> str:
+            shell: "Callable[[str], str] | None" = None, mcp=None) -> str:
     name = action.get("action")
+    if name == "mcp":
+        if mcp is None:
+            return "No MCP tools are available. Add an MCP server in the server's settings."
+        return mcp.call(str(action.get("server") or ""), str(action.get("tool") or ""), action.get("args") or {})
     if name == "shell":
         if shell is None:
             return "Shell access is off. Turn it on in the server's Models page to let me run commands here."
@@ -413,13 +417,30 @@ def _history(history: list[dict]) -> str:
     return "\n".join(turns)
 
 
+def _mcp_doc(mcp) -> str:
+    """The configured MCP servers' tools, described for the planner."""
+    if mcp is None:
+        return ""
+    try:
+        catalog = mcp.catalog()
+    except Exception:
+        return ""
+    if not catalog:
+        return ""
+    lines = [f'- server "{t["server"]}", tool "{t["name"]}": {t["description"]}' for t in catalog[:40]]
+    return ("\n\nYou can also use these connected tools (MCP). To use one:\n"
+            '{"action": "mcp", "server": "<server>", "tool": "<tool>", "args": {...}}\n'
+            "Available:\n" + "\n".join(lines))
+
+
 def answer(store: Store, generate: Generate, question: str, history: list[dict],
-           lookup: Generate | None = None, embed=None, shell=None, max_steps: int = 5) -> dict:
+           lookup: Generate | None = None, embed=None, shell=None, mcp=None, max_steps: int = 6) -> dict:
     """Answer `question` in two phases: a small-JSON planner decides what to look
     up in the user's data, then a plain-text call writes the real answer (so code
     and long answers come out whole, not crammed into a JSON field)."""
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
     hist = _history(history)
+    mcp_doc = _mcp_doc(mcp)
     base = [f"NOW: {now}"]
     if hist:
         base.append("CONVERSATION SO FAR:\n" + hist)
@@ -434,7 +455,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
         if looked_up or did:
             prompt += "\n\nSO FAR:\n" + "\n\n".join(looked_up + did)
         prompt += "\n\nYour single JSON action:"
-        act = _first_json(generate(PLAN, prompt, 300))
+        act = _first_json(generate(PLAN + mcp_doc, prompt, 300))
         if act is None:
             # The model isn't speaking the planner protocol at all (an older or
             # smaller model). On the first move, let the caller fall back to the
@@ -447,7 +468,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
             break
         if name == "web":
             last_web = str(act.get("query") or "")
-        result = execute(store, act, lookup, embed, shell)[:3500]
+        result = execute(store, act, lookup, embed, shell, mcp)[:3500]
         steps.append(_step_label(act, result))
         if name in _ACTIONS:
             did.append(f"{result}")
@@ -493,5 +514,7 @@ def _step_label(act: dict, result: str) -> str:
         return f"Added to your calendar: {act.get('title', '')}"
     if name == "add_contact":
         return f"Saved a contact: {act.get('name', '')}"
+    if name == "mcp":
+        return f"Used {act.get('server', '')} · {act.get('tool', '')}"
     # The action tools already return a plain confirmation ("Added … to your list").
     return result.split("\n")[0][:140]

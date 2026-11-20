@@ -2038,3 +2038,86 @@ def test_today_feed_reflects_the_server(stt):
     assert data["stats"]["words"] == 5 and data["stats"]["seconds"] == 5
     assert [l["text"] for l in data["lines"]] == ["I love Stay", "Booker again"]   # oldest first
     assert "stay" in data["words"] and "booker" in data["words"]
+
+
+# A tiny real MCP server over stdio, for the client test.
+_FAKE_MCP = '''
+import sys, json
+def send(m): sys.stdout.write(json.dumps(m)+"\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    msg=json.loads(line)
+    mid=msg.get("id"); method=msg.get("method")
+    if method=="initialize":
+        send({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1"}}})
+    elif method=="notifications/initialized":
+        pass
+    elif method=="tools/list":
+        send({"jsonrpc":"2.0","id":mid,"result":{"tools":[{"name":"echo","description":"Echo the text back","inputSchema":{"type":"object","properties":{"text":{"type":"string"}}}}]}})
+    elif method=="tools/call":
+        args=msg.get("params",{}).get("arguments",{})
+        send({"jsonrpc":"2.0","id":mid,"result":{"content":[{"type":"text","text":"ECHO: "+str(args.get("text",""))}]}})
+    else:
+        send({"jsonrpc":"2.0","id":mid,"error":{"code":-32601,"message":"unknown"}})
+'''
+
+
+def test_mcp_client_lists_and_calls_tools(tmp_path):
+    import sys
+
+    from myna_server import mcp as mcp_module
+
+    server_path = tmp_path / "fake_mcp.py"
+    server_path.write_text(_FAKE_MCP)
+    hub = mcp_module.MCPHub([{"name": "fake", "command": sys.executable, "args": [str(server_path)]}])
+    try:
+        catalog = hub.catalog()
+        assert any(t["server"] == "fake" and t["name"] == "echo" for t in catalog)
+        assert hub.call("fake", "echo", {"text": "hi lumi"}) == "ECHO: hi lumi"
+    finally:
+        hub.stop()
+
+
+def test_mcp_action_routes_through_the_hub():
+    from myna_server import recall
+    from myna_server.store import Store
+
+    class FakeHub:
+        def catalog(self): return [{"server": "fs", "name": "ls", "description": "list"}]
+        def call(self, server, tool, args): return f"{server}.{tool}({args.get('path','')})"
+
+    store = Store(":memory:")
+    assert recall.execute(store, {"action": "mcp", "server": "fs", "tool": "ls", "args": {"path": "/x"}}, mcp=FakeHub()) == "fs.ls(/x)"
+    # Without a hub configured, it says so.
+    assert "MCP" in recall.execute(store, {"action": "mcp", "server": "fs", "tool": "ls"}, mcp=None)
+
+    # The planner prompt advertises the connected tools.
+    seen = {}
+    def gen(instructions, prompt, mx):
+        if instructions.startswith("You are Lumi's planner") or "planner" in instructions:
+            seen["plan"] = instructions
+            return '{"action": "done"}'
+        return "ok"
+    recall.answer(store, gen, "hi", [], mcp=FakeHub())
+    assert 'server "fs"' in seen["plan"] and "ls" in seen["plan"]
+
+
+def test_mcp_servers_can_be_configured_through_the_page(stt):
+    import json as _json
+
+    config = Config(token="secret-token")
+    app = create_app(config, stt, FakeWriter())
+    app.state.save_config = False
+    client = TestClient(app)
+    servers = [{"name": "files", "command": "echo", "args": ["hi"]}]
+    client.post("/browse/mcp", headers=AUTH, data={"servers": _json.dumps(servers)}, follow_redirects=False)
+    assert config.mcp_servers == servers
+    assert "MCP tools" in client.get("/browse/models", headers=AUTH).text
+    assert "files" in client.get("/browse/models", headers=AUTH).text
+    # A bad JSON blob keeps the old config rather than wiping it.
+    client.post("/browse/mcp", headers=AUTH, data={"servers": "not json"}, follow_redirects=False)
+    assert config.mcp_servers == servers
+    # Empty clears them.
+    client.post("/browse/mcp", headers=AUTH, data={"servers": ""}, follow_redirects=False)
+    assert config.mcp_servers == []

@@ -4,6 +4,7 @@ phone's records in step with the database here."""
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import ipaddress
 import threading
@@ -887,6 +888,33 @@ def create_app(
                     await run_in_threadpool(extra.stop)
         return RedirectResponse("/browse/models", status_code=303)
 
+    @app.post("/browse/mcp")
+    async def set_mcp(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        raw = (form.get("servers") or "").strip()
+        servers: list = []
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                servers = [s for s in parsed if isinstance(s, dict) and s.get("command")]
+            except (json.JSONDecodeError, ValueError):
+                servers = config.mcp_servers  # keep the old ones on a parse error
+        config.mcp_servers = servers
+        if getattr(app.state, "save_config", True):
+            config.save()
+        # Rebuild the hub so the new servers are used (and old ones stopped).
+        try:
+            mcp_hub()
+        except Exception:
+            pass
+        return RedirectResponse("/browse/models", status_code=303)
+
     @app.post("/browse/daily")
     async def start_daily(request: Request, _: None = Depends(paired)):
         from urllib.parse import parse_qs
@@ -906,6 +934,25 @@ def create_app(
     def browse_ask(_: None = Depends(paired)) -> str:
         return browse.ask_page(store)
 
+    mcp_holder: dict = {"hub": None, "for": None}
+
+    def mcp_hub():
+        """The MCP client hub, rebuilt when the configured servers change."""
+        from . import mcp as mcp_module
+
+        signature = json.dumps(config.mcp_servers, sort_keys=True)
+        if mcp_holder["for"] != signature:
+            if mcp_holder["hub"] is not None:
+                try:
+                    mcp_holder["hub"].stop()
+                except Exception:
+                    pass
+            mcp_holder["hub"] = mcp_module.MCPHub(config.mcp_servers)
+            mcp_holder["for"] = signature
+        return mcp_holder["hub"]
+
+    app.state.mcp_hub = mcp_hub
+
     @app.post("/browse/ask.json")
     async def browse_ask_json(payload: AskRequest, _: None = Depends(paired)) -> dict:
         began = time.perf_counter()
@@ -915,8 +962,9 @@ def create_app(
             # Shell access is the agent's hands on this computer — only when the
             # user has turned it on in settings.
             shell = recall.run_shell if config.shell_enabled else None
+            mcp = mcp_hub() if config.mcp_servers else None
             result = await run_in_threadpool(
-                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed, shell
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed, shell, mcp
             )
         except Exception as error:
             note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
