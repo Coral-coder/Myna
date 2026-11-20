@@ -22,7 +22,7 @@ from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
 from . import ask, blend, browse, catalog, conversations, daily, memory, reception, tuner, web
-from .engines import Transcriber, Writer, by_speaker
+from .engines import Transcriber, Writer, by_speaker, fit_label
 from .store import KINDS, Store
 
 # Largest clip accepted: ten minutes of 16 kHz 16-bit mono, with headroom.
@@ -1255,6 +1255,15 @@ def create_app(
         form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
         speech = form.get("speech", "").strip()
         repo, file = form.get("repo", "").strip(), form.get("file", "").strip()
+        # Warn before a model that would run slowly (a dense model bigger than
+        # the card) is chosen — with a "Continue anyway" to go ahead.
+        if repo and file.endswith(".gguf") and form.get("confirm") != "1":
+            size = next((gb for r, f, _, gb, _ in catalog.WRITING if r == repo and f == file), 0.0)
+            name = next((nm for r, f, nm, _, _ in catalog.WRITING if r == repo and f == file), file)
+            _badge, _hint, slow = fit_label(file, float(size))
+            if slow:
+                warn_role = form.get("role", "llm") if form.get("role", "llm") in roles else "llm"
+                return HTMLResponse(browse.slow_model_warning(store, warn_role, repo, file, name, _badge))
         # A chosen model starts downloading and loading straight away, in the
         # background; the Models and Live pages show how far along it is.
         llm_device, stt_device = form.get("llm_device", ""), form.get("stt_device", "")

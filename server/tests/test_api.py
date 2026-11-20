@@ -244,10 +244,11 @@ def test_choosing_where_models_run_and_big_models_are_shared(stt):
     assert "DeepSeek R1 distill 14B" in page and "Llama 3.3 70B" in page and "Processor" in page
     client.post("/browse/models", headers=AUTH, data={"llm_device": "cpu", "stt_device": "cpu"}, follow_redirects=False)
     assert config.llm_device == "cpu" and config.stt_device == "cpu"
-    # A model bigger than the card, chosen while set to the card, is shared instead.
+    # A model bigger than the card, chosen while set to the card, is shared
+    # instead. (This one is dense, so it warns first — confirm to go ahead.)
     config.llm_device = "gpu"
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
-                data={"repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
+                data={"repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf", "confirm": "1"})
     assert config.llm_device == "shared" and config.llm_file == "Qwen_Qwen3-32B-Q4_K_M.gguf"
 
 
@@ -450,7 +451,8 @@ def test_models_page_assigns_jobs_to_models(stt):
     form = {"repo": "bartowski/Qwen_Qwen3-4B-GGUF", "file": "Qwen_Qwen3-4B-Q4_K_M.gguf"}
     client.post("/browse/models", headers=AUTH, data={"role": "helper", **form}, follow_redirects=False)
     client.post("/browse/models", headers=AUTH, follow_redirects=False,
-                data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q4_K_M.gguf"})
+                data={"role": "summary", "repo": "bartowski/Qwen_Qwen3-32B-GGUF",
+                      "file": "Qwen_Qwen3-32B-Q4_K_M.gguf", "confirm": "1"})  # dense+big: confirm past the warning
     assert config.helper_file == "Qwen_Qwen3-4B-Q4_K_M.gguf" and config.llm_file.startswith("Qwen3.6")
     assert config.summary_file == "Qwen_Qwen3-32B-Q4_K_M.gguf" and config.summary_device == "auto"  # placed automatically
     page = client.get("/browse/models", headers=AUTH).text
@@ -1744,3 +1746,52 @@ def test_receptionist_reminds_about_due_todos_once():
     assert reception.remind_due(store) == 0                   # never twice
     messages = store.browse("message", limit=5)
     assert len(messages) == 1 and "Pay the invoice" in messages[0]["text"]
+
+
+def test_model_picker_warns_before_a_slow_dense_model(stt):
+    """Choosing a dense model bigger than the card shows a warning with a
+    'Continue anyway', and only goes through on confirm."""
+    class Switchable(FakeWriter):
+        chosen = True
+        used = None
+
+        def use(self, repo, file):
+            type(self).used = (repo, file)
+            self.name = file.removesuffix(".gguf")
+
+    from myna_server import catalog
+
+    # A dense, bigger-than-the-card model from the catalog.
+    repo, file, *_ = next(r for r in catalog.WRITING if "Qwen2.5-32B" in r[1])
+    app = create_app(Config(token="secret-token", simple_mode=False), stt, Switchable())
+    app.state.save_config = False
+    client = TestClient(app)
+
+    first = client.post("/browse/models", headers=AUTH, data={"role": "llm", "repo": repo, "file": file},
+                        follow_redirects=False)
+    assert first.status_code == 200 and "Continue anyway" in first.text and "slow" in first.text.lower()
+    assert Switchable.used is None                       # nothing applied yet
+
+    client.post("/browse/models", headers=AUTH, data={"role": "llm", "repo": repo, "file": file, "confirm": "1"},
+                follow_redirects=False)
+    assert Switchable.used == (repo, file)               # confirmed → applied
+
+
+def test_model_picker_does_not_warn_for_a_big_moe_model(stt):
+    """A mixture-of-experts model bigger than the card is fast, so no warning."""
+    class Switchable(FakeWriter):
+        chosen = True
+        used = None
+
+        def use(self, repo, file):
+            type(self).used = (repo, file)
+
+    from myna_server import catalog
+
+    repo, file, *_ = next(r for r in catalog.WRITING if "A3B" in r[1])
+    app = create_app(Config(token="secret-token", simple_mode=False), stt, Switchable())
+    app.state.save_config = False
+    client = TestClient(app)
+    reply = client.post("/browse/models", headers=AUTH, data={"role": "llm", "repo": repo, "file": file},
+                        follow_redirects=False)
+    assert reply.status_code == 303 and Switchable.used == (repo, file)   # applied, no warning

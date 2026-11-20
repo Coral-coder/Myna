@@ -430,6 +430,35 @@ def is_moe(model_file: str) -> bool:
     return bool(re.search(r"A\d+B|gpt-oss|moe|mixtral", model_file, re.IGNORECASE))
 
 
+def card_total_gb(default: float = 12.0) -> float:
+    """How much memory the graphics card has, in GB (its real size when it can
+    be read, else a sensible default)."""
+    from . import memory
+    reading = memory.budget.reading("gpu")
+    if reading and reading[1] > 0:
+        return reading[1] / (1024 ** 3)
+    return default
+
+
+def fit_label(model_file: str, size_gb: float, card_gb: float | None = None) -> tuple[str, str, bool]:
+    """How a model of this size runs on the card: a short badge, a colour hint
+    ("ok"/"warn"), and whether it's a *slow* choice worth warning about.
+
+    The distinction that matters: a mixture-of-experts model bigger than the
+    card still runs fast, because only its few active experts matter per word
+    and the rest sits in ordinary memory. A dense model bigger than the card is
+    slow, because every word needs every weight, streamed over the bus."""
+    card = card_gb if card_gb is not None else card_total_gb()
+    headroom = card - 1.5
+    if size_gb <= 0:
+        return ("Size unknown", "", False)
+    if size_gb <= headroom:
+        return ("Fits the graphics card", "ok", False)
+    if is_moe(model_file):
+        return ("Bigger than the card — still fast (mixture-of-experts, the extra sits in memory)", "ok", False)
+    return ("Bigger than the card — slow (dense: every word streams from memory)", "warn", True)
+
+
 def runner_args(device: str, model: str, context: int, port: int, threads: int, mtp: bool = False,
                 embedding: bool = False) -> list[str]:
     """llama-server's options for where a model runs. Only options this

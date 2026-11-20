@@ -514,6 +514,29 @@ def _simple_banner(config) -> str:
     )
 
 
+def slow_model_warning(store: Store, role: str, repo: str, file: str, name: str, badge: str) -> str:
+    """A full page shown before a model that would run slowly is chosen, with a
+    'Continue anyway' that re-submits the same choice."""
+    label = {"llm": "the main model", "helper": "the helper", "summary": "the summary model",
+             "checker": "the checker", "embedder": "the search model"}.get(role, role)
+    body = (
+        f'<h1>Heads up</h1>'
+        f'<p>{_e(name or file)} is <b>{_e(badge)}</b>.</p>'
+        f'<p class="dim">A dense model bigger than your graphics card runs mostly from ordinary memory, '
+        f'streaming its weights for every word — so answers and notes come slowly. Mixture-of-experts models '
+        f'(ones with "A3B", "A22B", "gpt-oss" in the name) don\'t have this problem: only a small part of them '
+        f'works per word, so they stay fast even when they\'re far bigger than the card.</p>'
+        f'<p>Use it as {_e(label)} anyway?</p>'
+        f'<div style="display:flex;gap:10px;margin-top:14px">'
+        f'<form method="post" action="/browse/models" style="margin:0">'
+        f'<input type="hidden" name="role" value="{_e(role)}"><input type="hidden" name="repo" value="{_e(repo)}">'
+        f'<input type="hidden" name="file" value="{_e(file)}"><input type="hidden" name="confirm" value="1">'
+        f'<button>Continue anyway</button></form>'
+        f'<a href="/browse/models" style="align-self:center">Cancel</a></div>'
+    )
+    return _frame("models", "", body, store.counts())
+
+
 def models_page(store: Store, config, state: dict, listening: list[str] | None = None,
                 trust: dict | None = None, readout: dict | None = None) -> str:
     """Choose which models transcribe and write, and where each runs."""
@@ -571,9 +594,13 @@ def models_page(store: Store, config, state: dict, listening: list[str] | None =
             speed = f' · <b>{measured["writing"]:.0f} words/s</b> here'
             if measured.get("accepted"):
                 speed += f' ({measured["accepted"]:.0%} of drafts kept)'
+        from .engines import fit_label
+        badge, hint, _slow = fit_label(file, float(size))
+        colour = "#7fd17f" if hint == "ok" else ("#e0a24a" if hint == "warn" else "#9b9d9e")
+        tag = f'<div class="dim" style="color:{colour}">{_e(badge)}</div>' if badge else ""
         parts.append(
             f'<div class="row pick"><div>{_e(name)} <span class="dim">{size:g} GB{speed}</span>'
-            f'<div class="dim">{_e(note)}</div></div><div style="display:flex;gap:6px;align-items:center">{"".join(buttons)}</div></div>'
+            f'<div class="dim">{_e(note)}</div>{tag}</div><div style="display:flex;gap:6px;align-items:center">{"".join(buttons)}</div></div>'
         )
     if not listed:
         parts.append(f'<div class="row pick"><div>{_e(config.llm_file)}<div class="dim">{_e(config.llm_repo)}</div></div><span class="t">MAIN</span></div>')
@@ -929,17 +956,24 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
     else:
         for job, models in SUGGESTED_WRITING:
             parts.append(f'<div class="dim" style="margin-top:12px">{_e(job.upper())}</div>')
+            from .engines import fit_label
             for repo_id, file, name, gb, why in models:
                 busy = mark(f"{repo_id}/{file}", file)
                 fields = (f'<input type="hidden" name="repo" value="{_e(repo_id)}">'
                           f'<input type="hidden" name="file" value="{_e(file)}">')
                 action = busy if "IN USE" in busy else try_form(fields)
-                parts.append(f'<div class="row pick"><div>{_e(name)} <span class="dim">{gb:g} GB</span> '
+                badge, hint_colour, _slow = fit_label(file, float(gb))
+                colour = "#7fd17f" if hint_colour == "ok" else ("#e0a24a" if hint_colour == "warn" else "#9b9d9e")
+                tag = f'<span class="dim" style="color:{colour}"> · {_e(badge)}</span>' if badge else ""
+                parts.append(f'<div class="row pick"><div>{_e(name)} <span class="dim">{gb:g} GB</span>{tag} '
                              f'{busy if "tried" in busy else ""}<div class="dim">{_e(why)}</div></div>{action}</div>')
 
     # -- or search ------------------------------------------------------------------------------
     parts.append("<h2>Or search Hugging Face</h2>")
-    hint = ("Writing models are GGUF files: try “qwen3”, “gemma”, “phi”, “deepseek”, “mistral”."
+    hint = ("Writing models are GGUF files: try “qwen3”, “gemma”, “phi”, “deepseek”, “mistral”. "
+            "To go bigger without going slower, pick a mixture-of-experts model — names with "
+            "“A3B”, “A22B” or “gpt-oss”: only a small part runs on each word, so it stays fast even "
+            "when it's far bigger than the graphics card. Each file below is labelled with how it will run."
             if kind == "writing" else
             "Speech models here are Whisper models made for faster-whisper (CTranslate2): try “whisper”, "
             "“distil”, “turbo”, “faster-whisper”.")
@@ -952,10 +986,14 @@ def experiment_page(store: Store, trying: dict, kind: str, query: str, repo: str
         parts.append(f'<h2>{_e(repo)}</h2><div class="dim">Pick a file. Smaller files are faster and lighter, '
                      "a little less careful; about 4–5 bits per weight (Q4_K_M) is the usual balance. "
                      "Up to about 11 GB fits wholly on the graphics card.</div>")
+        from .engines import fit_label
         for row in files:
             fields = (f'<input type="hidden" name="repo" value="{_e(repo)}">'
                       f'<input type="hidden" name="file" value="{_e(row["file"])}">')
-            parts.append(f'<div class="row pick"><div>{_e(row["file"])} <span class="dim">{row["gb"]:g} GB</span></div>'
+            badge, hint, _slow = fit_label(row["file"], row.get("gb", 0.0))
+            colour = "#7fd17f" if hint == "ok" else ("#e0a24a" if hint == "warn" else "#9b9d9e")
+            tag = f'<div class="dim" style="color:{colour}">{_e(badge)}</div>' if badge else ""
+            parts.append(f'<div class="row pick"><div>{_e(row["file"])} <span class="dim">{row["gb"]:g} GB</span>{tag}</div>'
                          f"{try_form(fields)}</div>")
         if not files and not problem:
             parts.append('<p class="dim">No GGUF files in this repository.</p>')
