@@ -7,6 +7,8 @@ struct ChatView: View {
     @EnvironmentObject private var brain: MynaBrain
 
     @ObservedObject private var log = ChatLog.shared
+    @ObservedObject private var server = HomeServer.shared
+    @AppStorage("myna.verboseThinking") private var verbose = false
     private var messages: [Message] { log.messages }
     @State private var draft = ""
     @State private var sending = false
@@ -53,6 +55,14 @@ struct ChatView: View {
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(MynaTheme.ink)
             Spacer()
+            Button {
+                withAnimation { verbose.toggle() }
+            } label: {
+                Image(systemName: verbose ? "eye.fill" : "eye")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(verbose ? MynaTheme.cyan : MynaTheme.ink.opacity(0.4))
+            }
+            .accessibilityLabel("Show thinking")
             if !messages.isEmpty {
                 Button {
                     withAnimation { log.clear() }
@@ -115,16 +125,33 @@ struct ChatView: View {
             }
             .id(m.id)
         } else {
-            // Myna's answers are Markdown — code blocks, tables, lists and the
+            // Lumi's answers are Markdown — code blocks, tables, lists and the
             // rest render the way they're written, not as one flat run of text.
-            HStack {
+            // When "thinking" is on, the steps it took show above the answer.
+            VStack(alignment: .leading, spacing: 6) {
+                if verbose, !m.steps.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(m.steps.indices, id: \.self) { i in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "arrow.turn.down.right")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(MynaTheme.cyan.opacity(0.6))
+                                Text(m.steps[i])
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(MynaTheme.ink.opacity(0.45))
+                            }
+                        }
+                    }
+                    .padding(.leading, 4)
+                }
                 MarkdownText(text: m.text)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 11)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
-                Spacer(minLength: 24)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 24)
             .id(m.id)
         }
     }
@@ -178,9 +205,22 @@ struct ChatView: View {
         guard !trimmed.isEmpty, !sending else { return }
         inputFocused = false
         draft = ""
+        // The turns before this question, for the server to keep context.
+        let before = messages.suffix(12).map { ["role": $0.role == .me ? "me" : "myna", "text": $0.text] }
         log.add(.me, trimmed)
         sending = true
         Task {
+            // The server is the brain: when it's reachable, Lumi answers there,
+            // with all its tools, Markdown and a trace. The phone falls back to
+            // its own on-device answer only when the server can't be reached.
+            if server.isPaired, server.enabled, server.reachable == true,
+               let result = try? await server.ask(question: trimmed, history: before) {
+                await MainActor.run {
+                    sending = false
+                    log.add(.myna, result.reply.isEmpty ? "…" : result.reply, steps: result.steps)
+                }
+                return
+            }
             let reply = await brain.handleTyped(trimmed)
             await MainActor.run {
                 sending = false

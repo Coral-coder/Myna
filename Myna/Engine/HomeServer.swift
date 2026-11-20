@@ -226,6 +226,28 @@ final class HomeServer: ObservableObject {
         }
     }
 
+    struct AskResult { let reply: String; let searched: String; let steps: [String] }
+
+    /// Ask Lumi on the server — the full agent, with its tools, Markdown answers
+    /// and a trace of what it did. Used by the phone's Ask tab when the server is
+    /// reachable, so the phone is a remote of the one brain.
+    func ask(question: String, history: [[String: String]]) async throws -> AskResult {
+        do {
+            let payload: [String: Any] = ["question": question, "history": history]
+            let body = try JSONSerialization.data(withJSONObject: payload)
+            let json = try await send(path: "browse/ask.json", method: "POST", body: body,
+                                      contentType: "application/json", timeout: 240)
+            markUp()
+            lastRoute = "Home server · Lumi"
+            return AskResult(reply: json["reply"] as? String ?? "",
+                             searched: json["searched"] as? String ?? "",
+                             steps: (json["steps"] as? [Any])?.compactMap { $0 as? String } ?? [])
+        } catch {
+            markDown(error)
+            throw error
+        }
+    }
+
     /// Record that the phone did a job itself.
     func noteLocal(_ what: String) {
         guard isPaired, enabled else { return }

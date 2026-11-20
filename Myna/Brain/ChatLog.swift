@@ -13,6 +13,8 @@ final class ChatLog: ObservableObject {
         var role: Role
         var text: String
         var at = Date()
+        /// What Lumi did to answer (shown when "thinking" is on). Myna messages only.
+        var steps: [String] = []
     }
 
     @Published private(set) var messages: [Message] = []
@@ -30,8 +32,8 @@ final class ChatLog: ObservableObject {
         }
     }
 
-    func add(_ role: Message.Role, _ text: String) {
-        messages.append(Message(role: role, text: text))
+    func add(_ role: Message.Role, _ text: String, steps: [String] = []) {
+        messages.append(Message(role: role, text: text, steps: steps))
         if messages.count > 400 { messages.removeFirst(messages.count - 400) }
         save()
     }
