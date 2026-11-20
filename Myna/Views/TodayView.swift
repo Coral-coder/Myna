@@ -9,6 +9,7 @@ import SwiftUI
 /// small views, so the transcript and the numbers aren't rebuilt per packet.
 struct TodayView: View {
     @AppStorage("myna.today.showLive") private var showLive = true
+    @ObservedObject private var store = TodayStore.shared
     @State private var search = ""
 
     var body: some View {
@@ -16,8 +17,16 @@ struct TodayView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 TodayHeader()
-                TodayStats(dayStart: dayStart)
-                TodayCloud(dayStart: dayStart, search: $search)
+                // The server is the source of truth: when it answers, Today shows
+                // its live view (Bee included). Offline, it falls back to what's
+                // on this phone.
+                if let feed = store.feed {
+                    ServerStats(feed: feed)
+                    ServerCloud(words: feed.cloud, search: $search)
+                } else {
+                    TodayStats(dayStart: dayStart)
+                    TodayCloud(dayStart: dayStart, search: $search)
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle(isOn: $showLive) {
                         Text("LIVE")
@@ -29,7 +38,11 @@ struct TodayView: View {
                     if showLive { LiveTicker() }
                 }
                 searchField
-                TodaySegments(dayStart: dayStart, search: search.trimmingCharacters(in: .whitespaces))
+                if let feed = store.feed {
+                    ServerTranscript(feed: feed, search: search.trimmingCharacters(in: .whitespaces))
+                } else {
+                    TodaySegments(dayStart: dayStart, search: search.trimmingCharacters(in: .whitespaces))
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 14)
@@ -37,6 +50,13 @@ struct TodayView: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
+        .task {
+            // Poll the server while Today is on screen; cancels on disappear.
+            while !Task.isCancelled {
+                await store.refresh()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 
     private var searchField: some View {
@@ -546,6 +566,125 @@ private struct CloudLayout: Layout {
                 x += item.size.width + spacing
             }
             y += rowHeight + lineSpacing
+        }
+    }
+}
+
+// MARK: - Server-backed Today (the server is the source of truth)
+
+/// The day's numbers from the server's own view — so they match what the
+/// server (and Bee) actually have, not a stale local copy.
+private struct ServerStats: View {
+    let feed: HomeServer.TodayFeed
+
+    var body: some View {
+        let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+            TodayStatCell(value: Self.clock(feed.seconds), label: "talk heard")
+            TodayStatCell(value: "\(feed.words)", label: "words")
+            TodayStatCell(value: "\(feed.segments)", label: "segments")
+            TodayStatCell(value: "\(feed.voices)", label: feed.voices == 1 ? "voice" : "voices")
+            TodayStatCell(value: "\(feed.notes)", label: feed.notes == 1 ? "note" : "notes")
+            BatteryStat()
+        }
+        .padding(.vertical, 16)
+        .overlay(alignment: .top) { Rectangle().fill(MynaTheme.hairSoft).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(MynaTheme.hairSoft).frame(height: 1) }
+    }
+
+    private static func clock(_ seconds: Int) -> String {
+        if seconds >= 3600 { return "\(seconds / 3600)h \((seconds % 3600) / 60)m" }
+        if seconds >= 60 { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+}
+
+/// The server's word cloud, biggest first (the server already ranked them).
+private struct ServerCloud: View {
+    let words: [String]
+    @Binding var search: String
+
+    var body: some View {
+        if words.count >= 4 {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("WORDS")
+                    .font(MynaTheme.mono(11))
+                    .tracking(2)
+                    .foregroundStyle(MynaTheme.faint)
+                CloudLayout(spacing: 10, lineSpacing: 6) {
+                    ForEach(Array(words.enumerated()), id: \.element) { index, word in
+                        let weight = 1.0 - Double(index) / Double(max(1, words.count - 1))
+                        Button { search = word } label: {
+                            Text(word)
+                                .font(.system(size: 13 + 17 * weight, weight: .light))
+                                .foregroundStyle(weight > 0.5 ? MynaTheme.ink : MynaTheme.muted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Today's transcript from the server. Shows every source (bracelet, this
+/// phone, Bee) with no dependence on local sync.
+private struct ServerTranscript: View {
+    let feed: HomeServer.TodayFeed
+    let search: String
+    @AppStorage("myna.today.hideMedia") private var hideMedia = false
+
+    private var lines: [HomeServer.TodayFeed.Line] {
+        var rows = feed.lines
+        if !search.isEmpty { rows = rows.filter { $0.text.localizedCaseInsensitiveContains(search) } }
+        if hideMedia { rows = rows.filter { !TranscriptSorter.isMedia($0.context) } }
+        return rows.reversed()   // newest first
+    }
+
+    var body: some View {
+        let rows = lines
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(search.isEmpty ? "TRANSCRIPT" : "\(rows.count) MATCHES")
+                    .font(MynaTheme.mono(11)).tracking(2).foregroundStyle(MynaTheme.faint)
+                Spacer()
+                Button { hideMedia.toggle() } label: {
+                    Text(hideMedia ? "MEDIA HIDDEN" : "MEDIA SHOWN")
+                        .font(MynaTheme.mono(10)).tracking(1.5).foregroundStyle(MynaTheme.muted)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 8)
+
+            if rows.isEmpty {
+                Text(search.isEmpty ? "Nothing transcribed yet today. Lines appear here as the server hears them."
+                                    : "Nothing heard matches that.")
+                    .font(.system(size: 14, weight: .light))
+                    .foregroundStyle(MynaTheme.muted)
+                    .padding(.vertical, 12)
+            }
+
+            ForEach(rows) { line in
+                HStack(alignment: .top, spacing: 12) {
+                    Text(line.at.formatted(.dateTime.hour().minute()))
+                        .font(MynaTheme.mono(10)).foregroundStyle(MynaTheme.faint)
+                        .frame(width: 46, alignment: .leading).padding(.top, 3)
+                    VStack(alignment: .leading, spacing: 3) {
+                        if !line.speaker.isEmpty {
+                            Text(line.speaker)
+                                .font(MynaTheme.mono(10)).tracking(1).textCase(.uppercase)
+                                .foregroundStyle(MynaTheme.muted)
+                        }
+                        Text(line.text)
+                            .font(.system(size: 15, weight: .light))
+                            .foregroundStyle(TranscriptSorter.isMedia(line.context) ? MynaTheme.muted : MynaTheme.ink)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 12)
+                Rectangle().fill(MynaTheme.hairSoft).frame(height: 1)
+            }
         }
     }
 }

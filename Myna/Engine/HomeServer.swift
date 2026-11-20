@@ -226,6 +226,38 @@ final class HomeServer: ObservableObject {
         }
     }
 
+    struct TodayFeed {
+        struct Line: Identifiable { let id = UUID(); let at: Date; let speaker: String; let text: String; let context: String }
+        var lines: [Line] = []
+        var seconds = 0, words = 0, segments = 0, voices = 0, notes = 0
+        var cloud: [String] = []
+    }
+
+    /// The day's transcript and numbers, straight from the server, so Today
+    /// reflects what the server actually has (Bee included) rather than a stale
+    /// local copy.
+    func today(day: String = "") async throws -> TodayFeed {
+        let path = day.isEmpty ? "browse/today.json" : "browse/today.json?day=\(day)"
+        let json = try await send(path: path, method: "GET", body: nil, contentType: nil, timeout: 30)
+        markUp()
+        var feed = TodayFeed()
+        if let stats = json["stats"] as? [String: Any] {
+            feed.seconds = stats["seconds"] as? Int ?? 0
+            feed.words = stats["words"] as? Int ?? 0
+            feed.segments = stats["segments"] as? Int ?? 0
+            feed.voices = stats["voices"] as? Int ?? 0
+            feed.notes = stats["notes"] as? Int ?? 0
+        }
+        feed.cloud = (json["words"] as? [Any])?.compactMap { $0 as? String } ?? []
+        feed.lines = (json["lines"] as? [[String: Any]] ?? []).map { line in
+            TodayFeed.Line(at: Date(timeIntervalSince1970: line["at"] as? Double ?? 0),
+                           speaker: line["speaker"] as? String ?? "",
+                           text: line["text"] as? String ?? "",
+                           context: line["context"] as? String ?? "")
+        }
+        return feed
+    }
+
     struct AskResult { let reply: String; let searched: String; let steps: [String] }
 
     /// Ask Lumi on the server — the full agent, with its tools, Markdown answers

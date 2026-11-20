@@ -935,6 +935,16 @@ def create_app(
         working = [{"what": what, "seconds": round(now - since)} for what, since in list(busy.values())]
         return {**engines_state(), **stats, "events": list(activity)[-80:], "busy": working}
 
+    @app.get("/browse/today.json")
+    def browse_today_json(day: str = "", _: None = Depends(paired)) -> dict:
+        """The day's transcript and numbers for the phone's Today page, so it
+        shows the server's live view (Bee included) rather than a stale copy."""
+        try:
+            daily.day_bounds(day)
+        except ValueError:
+            day = time.strftime("%Y-%m-%d")
+        return daily.today_feed(store, day)
+
     # -- the Experiment tab: find a model, try it on the last few hours ------------
 
     from . import experiment

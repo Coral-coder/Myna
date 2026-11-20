@@ -2016,3 +2016,25 @@ def test_calendar_and_contact_tools_queue_commands_for_the_phone():
     recall.execute(store, {"action": "add_contact", "name": "Alex Rivera", "phone": "415-555-0142"})
     contact = [c for c in store.browse("command", limit=5) if c["do"] == "contact"][0]
     assert contact["name"] == "Alex Rivera" and contact["phone"] == "415-555-0142"
+
+
+def test_today_feed_reflects_the_server(stt):
+    """The Today endpoint returns the day's lines, stats and word cloud straight
+    from the server — including Bee lines."""
+    import time as _time
+
+    app = create_app(Config(token="secret-token"), stt, FakeWriter())
+    client = TestClient(app)
+    now = _time.time()
+    client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
+        change("utterance", "u1", {"text": "I love Stay", "heardAt": now - 60, "speakerName": "Speaker 1",
+                                   "duration": 3.0, "engine": "bee"}, now - 60),
+        change("utterance", "u2", {"text": "Booker again", "heardAt": now - 30, "speakerName": "Speaker 2",
+                                   "duration": 2.0, "engine": "bee"}, now - 30),
+        change("utterance", "old", {"text": "yesterday", "heardAt": now - 90_000, "duration": 5.0}, now - 90_000),
+    ]})
+    data = client.get("/browse/today.json", headers=AUTH).json()
+    assert data["stats"]["segments"] == 2 and data["stats"]["voices"] == 2   # only today's two lines
+    assert data["stats"]["words"] == 5 and data["stats"]["seconds"] == 5
+    assert [l["text"] for l in data["lines"]] == ["I love Stay", "Booker again"]   # oldest first
+    assert "stay" in data["words"] and "booker" in data["words"]

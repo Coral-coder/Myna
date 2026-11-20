@@ -46,6 +46,40 @@ def day_bounds(day: str) -> tuple[float, float]:
     return start.timestamp(), (start + timedelta(days=1)).timestamp()
 
 
+def today_feed(store: Store, day: str) -> dict:
+    """The day's transcript, numbers and word cloud, straight from the server —
+    whatever the source (bracelet, this phone, or Bee's cloud). This is what the
+    phone's Today page shows, so it always reflects the server, not a stale local
+    copy."""
+    import re
+
+    from .ask import _STOP
+
+    start, end = day_bounds(day)
+    utter = [r for r in store.browse("utterance", limit=6000, before=end) if r["at"] >= start]
+    utter.sort(key=lambda r: r["at"])
+    lines = [{"at": r["at"], "speaker": r.get("speakerName") or "", "text": r.get("text", ""),
+              "context": r.get("context", ""), "engine": r.get("engine", "")}
+             for r in utter if (r.get("text") or "").strip()]
+    seconds = sum(float(r.get("duration") or 0) for r in utter)
+    words_total = sum(len((r.get("text") or "").split()) for r in utter)
+    voices = len({(r.get("speakerName") or r.get("speaker") or "").strip()
+                  for r in utter if (r.get("speakerName") or r.get("speaker"))})
+    notes = len([r for r in store.browse("note", limit=3000, before=end) if r["at"] >= start])
+
+    freq: dict[str, int] = {}
+    for row in utter:
+        for word in re.findall(r"[a-z']{3,}", (row.get("text") or "").lower()):
+            if word not in _STOP:
+                freq[word] = freq.get(word, 0) + 1
+    top = [word for word, _ in sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[:12]]
+
+    return {"day": day, "lines": lines[-500:],
+            "stats": {"seconds": round(seconds), "words": words_total, "segments": len(utter),
+                      "voices": voices, "notes": notes},
+            "words": top}
+
+
 def gather(store: Store, day: str) -> dict:
     """Everything saved for `day` (YYYY-MM-DD), oldest first."""
     start, end = day_bounds(day)
