@@ -45,7 +45,7 @@ enum CommandCenter {
         contact.givenName = parts.first ?? name
         if parts.count > 1 { contact.familyName = parts[1] }
         if let phone = data["phone"] as? String, !phone.isEmpty {
-            contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(string: phone))]
+            contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: phone))]
         }
         if let email = data["email"] as? String, !email.isEmpty {
             contact.emailAddresses = [CNLabeledValue(label: CNLabelHome, value: email as NSString)]
