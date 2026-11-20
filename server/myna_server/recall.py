@@ -22,9 +22,9 @@ Generate = Callable[[str, str, int], str]
 # Phase 1: decide what (if anything) to look up. The model only emits small
 # JSON actions here — never the final answer — so a long answer or a code block
 # never has to survive JSON escaping.
-PLAN = """You are Myna's planner. The user said something. Decide the next single step
-— look something up, DO something for them, or finish. Reply with EXACTLY ONE
-JSON object.
+PLAN = """You are Lumi's planner (Lumi is the user's assistant). The user said something.
+Decide the next single step — look something up, DO something for them, or
+finish. Reply with EXACTLY ONE JSON object.
 
 Look things up (in the user's own saved data):
 {"action": "search", "query": "keywords"}   find their conversations/notes/facts
@@ -40,13 +40,18 @@ Do things for them (only when they ask you to):
 {"action": "forget", "fact": "which one"}                             drop a saved fact
 {"action": "document", "title": "...", "body": "..."}                 save a written document/note for them
 
+Do things on their computer (only when shell access is on and they asked):
+{"action": "shell", "command": "..."}   run a command on their computer and read the output
+
 Finish:
 {"action": "done"}   you have what you need and have done what they asked — go answer
 
 Rules:
 - Take a DO action only when the user actually asked for that thing ("remind
-  me…", "add … to my list", "remember that…", "write me a…"). Never invent
-  tasks, facts or reminders they didn't ask for.
+  me…", "add … to my list", "remember that…", "write me a…", "run …", "what's
+  in this folder"). Never invent tasks, facts or reminders they didn't ask for.
+- Use "shell" for things on their computer (files, processes, scripts). If it
+  replies that shell access is off, tell them to turn it on — don't retry.
 - For an exact fact — a number, a name, a time, a quote — look it up with
   "transcript" or "find", never guess.
 - A plain question, general knowledge, or just writing something back needs no
@@ -56,11 +61,11 @@ Rules:
 
 # Phase 2: write the real answer as plain text (no JSON), so code blocks, drafts
 # and long answers come out whole.
-ANSWER = """You are Myna, the user's personal assistant. You help with anything — answer
+ANSWER = """You are Lumi, the user's personal assistant. You help with anything — answer
 questions, explain things, WRITE whatever they ask for (scripts, code, emails,
 plans, lists, summaries), and you can DO things for them: add to their lists, set
-reminders, remember facts, save documents. You also know their recorded life and
-can draw on the material below.
+reminders, remember facts, save documents, and run commands on their computer.
+You also know their recorded life and can draw on the material below.
 
 How to answer:
 - If you DID something for them (the "WHAT YOU DID" notes below say so), confirm
@@ -115,8 +120,35 @@ def _first_json(text: str) -> dict | None:
     return None
 
 
-def execute(store: Store, action: dict, lookup: Generate | None = None, embed=None) -> str:
+def run_shell(command: str, timeout: float = 60.0) -> str:
+    """Run a command on this computer and return what it printed. Used only when
+    the user has turned shell access on. Runs on the user's own machine, at their
+    request — the agent's hands on their computer."""
+    import subprocess
+
+    command = str(command or "").strip()
+    if not command:
+        return "No command given."
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True,
+                              timeout=timeout, creationflags=flags)
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout:.0f}s."
+    except Exception as error:
+        return f"Couldn't run it: {error}"
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    head = f"(exit {proc.returncode})\n" if proc.returncode else ""
+    return (head + output)[:4000] or f"(no output, exit {proc.returncode})"
+
+
+def execute(store: Store, action: dict, lookup: Generate | None = None, embed=None,
+            shell: "Callable[[str], str] | None" = None) -> str:
     name = action.get("action")
+    if name == "shell":
+        if shell is None:
+            return "Shell access is off. Turn it on in the server's Models page to let me run commands here."
+        return shell(str(action.get("command") or ""))
     if name == "search":
         query = str(action.get("query") or "")
         out: list[str] = []
@@ -279,7 +311,7 @@ def _history(history: list[dict]) -> str:
     answers (a script it wrote, a draft) rather than lose them."""
     turns = []
     for turn in history[-12:]:
-        who = "USER" if turn.get("role") == "me" else "MYNA"
+        who = "USER" if turn.get("role") == "me" else "LUMI"
         text = str(turn.get("text", "")).strip()
         if len(text) > 2000:
             text = text[:2000] + " […]"
@@ -288,7 +320,7 @@ def _history(history: list[dict]) -> str:
 
 
 def answer(store: Store, generate: Generate, question: str, history: list[dict],
-           lookup: Generate | None = None, embed=None, max_steps: int = 5) -> dict:
+           lookup: Generate | None = None, embed=None, shell=None, max_steps: int = 5) -> dict:
     """Answer `question` in two phases: a small-JSON planner decides what to look
     up in the user's data, then a plain-text call writes the real answer (so code
     and long answers come out whole, not crammed into a JSON field)."""
@@ -320,7 +352,7 @@ def answer(store: Store, generate: Generate, question: str, history: list[dict],
             break
         if name == "web":
             last_web = str(act.get("query") or "")
-        result = execute(store, act, lookup, embed)[:3500]
+        result = execute(store, act, lookup, embed, shell)[:3500]
         if name in _ACTIONS:
             did.append(f"{result}")
         else:

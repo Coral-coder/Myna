@@ -111,6 +111,7 @@ def answer(
     question: str,
     history: list[dict],
     embed: Callable[[list[str]], list[list[float]]] | None = None,
+    shell: Callable[[str], str] | None = None,
 ) -> dict:
     """One turn: the reply, and the web search made for it (if any).
 
@@ -120,7 +121,7 @@ def answer(
     If that loop can't run (an old model, a parsing problem) it falls back to
     the one-shot gather below, so answering never simply breaks."""
     try:
-        found = recall.answer(store, generate, question, history, lookup=lookup, embed=embed)
+        found = recall.answer(store, generate, question, history, lookup=lookup, embed=embed, shell=shell)
         reply = (found.get("reply") or "").strip()
         if reply:
             return {"reply": reply, "searched": str(found.get("search") or "")}

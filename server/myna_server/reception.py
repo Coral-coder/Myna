@@ -28,7 +28,7 @@ Generate = Callable[[str, str, int], str]
 # follow-up/document ids — re-running a reflection never duplicates them.
 _NS = uuid.UUID("c0ffee00-0000-4000-8000-a5ec0ffee000")
 
-INSTRUCTIONS = """You are Myna, a sharp, warm personal assistant who looks after one person.
+INSTRUCTIONS = """You are Lumi, a sharp, warm personal assistant who looks after one person.
 You've just read a conversation of theirs. Do what a thoughtful assistant would
 do with it — WITHOUT being asked:
 
@@ -157,7 +157,7 @@ def _document(store: Store, docs: list, conv_id: str) -> int:
             "createdAt": now, "startedAt": now, "endedAt": now, "title": title or "Document",
             "overview": body[:200], "detailedNotes": body, "keyPoints": [], "decisions": [],
             "actionItems": [], "detectedEvents": [], "followUps": [], "transcript": "",
-            "modelName": "Myna", "sourceRef": "reception", "placeName": "", "people": [],
+            "modelName": "Lumi", "sourceRef": "reception", "placeName": "", "people": [],
         }}])
         saved += 1
     return saved

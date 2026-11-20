@@ -292,7 +292,7 @@ def test_ask_looks_things_up_in_transcripts_and_the_web(stt):
         "question": "how tall is the lighthouse?", "history": [{"role": "me", "text": "what about the dentist?"}]}).json()
     assert second == {"reply": "It is 31 metres tall.", "searched": "height of the lighthouse"}
     assert "CONVERSATION SO FAR" in calls[-1] and "31 metres" in calls[-1]
-    assert "Ask Myna" in client.get("/browse/ask", headers=AUTH).text
+    assert "Ask Lumi" in client.get("/browse/ask", headers=AUTH).text
 
     page = '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;x=1">A <b>title</b></a>' \
            '<a class="result__snippet" href="#">Some &amp; text</a>'
@@ -1867,3 +1867,32 @@ def test_ask_can_do_things_add_remember_complete_forget():
     out = recall.answer(store, gen, "remind me to call the bank on December 1", [])
     assert "call the bank" in out["reply"]
     assert any(i["text"] == "call the bank" and i.get("dueDate") for i in store.browse("item", limit=10))
+
+
+def test_shell_tool_runs_only_when_enabled():
+    """Shell access is off unless turned on; when on, Lumi can run a command and
+    read its output."""
+    from myna_server import recall
+    from myna_server.store import Store
+
+    store = Store(":memory:")
+    # Off: the tool refuses and tells the user how to enable it.
+    off = recall.execute(store, {"action": "shell", "command": "echo hi"}, shell=None)
+    assert "off" in off.lower()
+
+    # On: a shell runner is supplied and the command runs.
+    out = recall.execute(store, {"action": "shell", "command": "echo hello-lumi"}, shell=recall.run_shell)
+    assert "hello-lumi" in out
+
+
+def test_shell_toggle_flips_config(stt):
+    config = Config(token="secret-token")
+    app = create_app(config, stt, FakeWriter())
+    app.state.save_config = False
+    client = TestClient(app)
+    assert config.shell_enabled is False
+    client.post("/browse/simple", headers=AUTH, data={"shell": "on"}, follow_redirects=False)
+    assert config.shell_enabled is True
+    assert "Run commands on this computer: ON" in client.get("/browse/models", headers=AUTH).text
+    client.post("/browse/simple", headers=AUTH, data={"shell": "off"}, follow_redirects=False)
+    assert config.shell_enabled is False

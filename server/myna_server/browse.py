@@ -508,9 +508,25 @@ def _simple_banner(config) -> str:
         f'<input type="hidden" name="simple" value="{other}"><button>Switch to {label}</button></form>'
         f'<b>Speaker separation: {"ON" if speakers else "OFF"}</b>'
         '<div class="dim" style="margin:4px 0 8px">Tell who is speaking apart on each clip (on the processor).</div>'
-        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<form method="post" action="/browse/simple" style="margin:0 0 8px">'
         f'<input type="hidden" name="speakers" value="{sp_other}"><button>Turn speaker separation {sp_other}</button></form>'
+        + _shell_toggle(config) +
         "</div>"
+    )
+
+
+def _shell_toggle(config) -> str:
+    """Let Lumi run commands on this computer. Off by default — it's real shell
+    access on your machine, so it's opt-in."""
+    on = getattr(config, "shell_enabled", False)
+    other = "off" if on else "on"
+    return (
+        f'<b>Run commands on this computer: {"ON" if on else "OFF"}</b>'
+        '<div class="dim" style="margin:4px 0 8px">Lets the assistant (Lumi) run shell commands on this computer '
+        'when you ask it to — managing files, running scripts, checking things. This is real access to your machine; '
+        'only turn it on if you want Lumi to act here.</div>'
+        f'<form method="post" action="/browse/simple" style="margin:0">'
+        f'<input type="hidden" name="shell" value="{other}"><button>Turn command access {other}</button></form>'
     )
 
 
@@ -650,7 +666,7 @@ def ask_page(store: Store) -> str:
 border:1px solid #e9e9e6;color:#e9e9e6;background:none;border-radius:99px;cursor:pointer}
 </style>
 <div id="chat"><p class="dim">Ask about anything Myna has heard or saved, or anything it can look up on the web.</p></div>
-<form id="bar"><input id="q" placeholder="Ask Myna" autocomplete="off" autofocus><button>Ask</button></form>
+<form id="bar"><input id="q" placeholder="Ask Lumi" autocomplete="off" autofocus><button>Ask</button></form>
 <p><button id="new" type="button">New chat</button></p>
 <script>
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));

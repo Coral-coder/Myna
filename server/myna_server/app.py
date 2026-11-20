@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import ask, blend, browse, catalog, conversations, daily, memory, reception, tuner, web
+from . import ask, blend, browse, catalog, conversations, daily, memory, reception, recall, tuner, web
 from .engines import Transcriber, Writer, by_speaker, fit_label
 from .store import KINDS, Store
 
@@ -876,6 +876,8 @@ def create_app(
             config.simple_mode = form.get("simple") != "off"
         if "speakers" in form:
             config.speakers = form.get("speakers") != "off"
+        if "shell" in form:
+            config.shell_enabled = form.get("shell") == "on"
         if getattr(app.state, "save_config", True):
             config.save()
         # Free the extra models' memory the moment simple mode is turned on.
@@ -910,8 +912,11 @@ def create_app(
         lookup = getattr(app.state, "web_lookup", web.lookup)
         try:
             embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
+            # Shell access is the agent's hands on this computer — only when the
+            # user has turned it on in settings.
+            shell = recall.run_shell if config.shell_enabled else None
             result = await run_in_threadpool(
-                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed, shell
             )
         except Exception as error:
             note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)

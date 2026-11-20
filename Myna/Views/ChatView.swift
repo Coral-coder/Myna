@@ -49,7 +49,7 @@ struct ChatView: View {
 
     private var header: some View {
         HStack {
-            Text("Ask Myna")
+            Text("Ask Lumi")
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(MynaTheme.ink)
             Spacer()
@@ -100,23 +100,33 @@ struct ChatView: View {
         }
     }
 
-    private func bubble(_ m: Message) -> some View {
-        HStack {
-            if m.role == .me { Spacer(minLength: 40) }
-            Text(m.text)
-                .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(m.role == .me ? MynaTheme.ink : MynaTheme.ink.opacity(0.9))
-                .padding(.horizontal, 15)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(m.role == .me ? MynaTheme.cyan.opacity(0.18) : MynaTheme.ink.opacity(0.06))
-                )
-                .frame(maxWidth: .infinity, alignment: m.role == .me ? .trailing : .leading)
-                .textSelection(.enabled)
-            if m.role == .myna { Spacer(minLength: 40) }
+    @ViewBuilder private func bubble(_ m: Message) -> some View {
+        if m.role == .me {
+            HStack {
+                Spacer(minLength: 40)
+                Text(m.text)
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundStyle(MynaTheme.ink)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(MynaTheme.cyan.opacity(0.18)))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .textSelection(.enabled)
+            }
+            .id(m.id)
+        } else {
+            // Myna's answers are Markdown — code blocks, tables, lists and the
+            // rest render the way they're written, not as one flat run of text.
+            HStack {
+                MarkdownText(text: m.text)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
+                Spacer(minLength: 24)
+            }
+            .id(m.id)
         }
-        .id(m.id)
     }
 
     private var thinking: some View {

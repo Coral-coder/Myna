@@ -505,7 +505,7 @@ enum HomeSyncRun {
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Myna"
+        content.title = "Lumi"
         content.body = text
         content.sound = .default
         let request = UNNotificationRequest(identifier: "myna.message.\(id)", content: content, trigger: nil)

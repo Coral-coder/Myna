@@ -82,6 +82,9 @@ class Config:
     # loaded — no recognizer panel, no checker/helper/summary/embedder, no
     # per-clip speaker splitting, no auto-tuning. Keeps a 12 GB card breathing.
     simple_mode: bool = True
+    # Let the assistant run commands on this computer when asked. Off by default:
+    # it hands the AI a real shell on your machine, so you turn it on knowingly.
+    shell_enabled: bool = False
     # Tell speakers apart on each clip (pyannote + WeSpeaker, on the processor).
     # Independent of simple mode — the lean layers are the recognizer panel and
     # the extra writing-model roles, not this.
