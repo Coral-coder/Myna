@@ -2168,3 +2168,20 @@ def test_answer_stream_emits_live_events():
     assert "415-555-0142" in events[-1]["reply"]
     # the observation carried the real finding
     assert any(e["t"] == "observation" and "415-555-0142" in e["d"] for e in events)
+
+
+def test_omi_mode_sets_up_parakeet_on_cpu_and_lean(stt):
+    class Switchable:
+        name = "turbo"
+        def use(self, model): self.name = model
+        def warm(self): pass
+
+    config = Config(token="secret-token", transcribe_source="bee", simple_mode=False, stt_model="turbo")
+    app = create_app(config, Switchable(), FakeWriter())
+    app.state.save_config = False
+    client = TestClient(app)
+    client.post("/browse/omi", headers=AUTH, follow_redirects=False)
+    assert config.transcribe_source == "local"
+    assert config.stt_model == "sherpa:parakeet-v3" and config.stt_device == "cpu"
+    assert config.simple_mode is True
+    assert "Omi mode: ON" in client.get("/browse/models", headers=AUTH).text

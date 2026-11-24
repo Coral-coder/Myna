@@ -888,6 +888,28 @@ def create_app(
                     await run_in_threadpool(extra.stop)
         return RedirectResponse("/browse/models", status_code=303)
 
+    @app.post("/browse/omi")
+    async def set_omi(_: None = Depends(paired)):
+        """One-tap: set the server up like a self-hosted Omi server — transcribe
+        here with Parakeet on the processor, lean layers, GPU free for writing."""
+        from fastapi.responses import RedirectResponse
+
+        config.transcribe_source = "local"
+        config.simple_mode = True
+        config.stt_model = "sherpa:parakeet-v3"   # NVIDIA Parakeet (what Omi's servers run)
+        config.stt_device = "cpu"                 # on the processor, leaving the card for the writer
+        # Drop the extra writing roles' memory; one recognizer + one writer.
+        for extra in (helper, summarizer, checker, embedder):
+            if extra is not None and hasattr(extra, "stop"):
+                await run_in_threadpool(extra.stop)
+        if hasattr(transcriber, "use"):
+            await run_in_threadpool(transcriber.use, "sherpa:parakeet-v3")
+            if hasattr(transcriber, "warm"):
+                threading.Thread(target=transcriber.warm, daemon=True).start()
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/models", status_code=303)
+
     @app.post("/browse/mcp")
     async def set_mcp(request: Request, _: None = Depends(paired)):
         from urllib.parse import parse_qs

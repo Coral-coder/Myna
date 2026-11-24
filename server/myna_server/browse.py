@@ -497,7 +497,18 @@ def _simple_banner(config) -> str:
     other = "off" if on else "on"
     label = "Full" if on else "Lean"
     sp_other = "off" if speakers else "on"
+    source = getattr(config, "transcribe_source", "local")
+    stt = getattr(config, "stt_model", "")
+    omi_on = source == "local" and "parakeet" in stt and getattr(config, "simple_mode", True)
     return (
+        '<div style="border:1px solid #4a9db0;border-radius:10px;padding:12px;margin-bottom:14px">'
+        f'<b>Omi mode: {"ON" if omi_on else "OFF"}</b>'
+        '<div class="dim" style="margin:4px 0 8px">Set the server up like a self-hosted Omi server: transcribe here '
+        'with <b>Parakeet</b> (NVIDIA, what Omi runs) on the <b>processor</b>, lean layers, and the graphics card left '
+        'free for the writing model. Fast and simple. One tap sets the recognizer, device and layers for you.</div>'
+        f'<form method="post" action="/browse/omi" style="margin:0 0 4px">'
+        f'<button>{"Already in Omi mode — re-apply" if omi_on else "Set up like Omi"}</button></form>'
+        '</div>'
         '<div style="border:1px solid #e9e9e6;border-radius:10px;padding:12px;margin-bottom:14px">'
         f'<b>Lean layers: {"ON" if on else "OFF"}</b>'
         '<div class="dim" style="margin:4px 0 8px">One recognizer and one writing model — no recognizer panel and '
