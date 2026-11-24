@@ -4,8 +4,15 @@ phone's records in step with the database here."""
 from __future__ import annotations
 
 import hmac
+import json
+import os
 import ipaddress
+import threading
 import time
+import wave
+
+import numpy as np
+from collections import deque
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -13,10 +20,10 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .audio import AudioError, decode_wav, resample_to_16k
+from .audio import AudioError, decode_wav, level, loudness, resample_to_16k
 from .config import Config
-from . import browse
-from .engines import Transcriber, Writer
+from . import ask, blend, browse, catalog, conversations, daily, memory, reception, recall, tuner, web
+from .engines import Transcriber, Writer, by_speaker, fit_label
 from .store import KINDS, Store
 
 # Largest clip accepted: ten minutes of 16 kHz 16-bit mono, with headroom.
@@ -31,6 +38,11 @@ _TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 class SyncRequest(BaseModel):
     since: int = 0
     changes: list[dict] = Field(default_factory=list, max_length=5000)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    history: list[dict] = Field(default_factory=list, max_length=40)
 
 
 class GenerateRequest(BaseModel):
@@ -52,12 +64,126 @@ def _allowed(host: str | None, allow_lan: bool) -> bool:
 
 
 def create_app(
-    config: Config, transcriber: Transcriber, writer: Writer, allow_lan: bool = False, store: Store | None = None
+    config: Config,
+    transcriber: Transcriber,
+    writer: Writer,
+    allow_lan: bool = False,
+    store: Store | None = None,
+    voices=None,
+    helper=None,
+    summarizer=None,
+    audio_dir=None,
+    partner_for=None,
+    learning_path=None,
+    checker=None,
+    embedder=None,
+    trial=None,
 ) -> FastAPI:
     store = store or Store(":memory:")
+    roles = {"llm": writer, "helper": helper, "summary": summarizer, "checker": checker, "embedder": embedder}
+
+    def chosen(model) -> bool:
+        return model is not None and getattr(model, "chosen", True)
+
+    # -- recognizers working together -------------------------------------------
+
+    learning = blend.Learning(learning_path)
+    partner = {"model": "", "engine": None}
+    known_words = {"at": 0.0, "list": []}
+    blend_stats = {"last": ""}
+
+    def vocabulary() -> list[str]:
+        """The wearer's own words, refreshed every ten minutes."""
+        if time.time() - known_words["at"] > 600:
+            known_words["at"] = time.time()
+            try:
+                known_words["list"] = blend.vocabulary(store)
+            except Exception:
+                pass
+            if hasattr(transcriber, "hotwords"):
+                transcriber.hotwords = ", ".join(known_words["list"][:40])
+        return known_words["list"]
+
+    engines_made: dict = {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="recognizer")
+
+    def others():
+        """The other recognizers on the panel, made on first need."""
+        if config.simple_mode or not config.blend or partner_for is None or tune_state["running"]:
+            return []   # simple mode: just the one recognizer
+        out = []
+        # Two Whisper models fit on the graphics card; any further Whisper
+        # models chosen run on the processor instead, so there is no limit.
+        on_card = 0 if config.stt_model.startswith("sherpa:") or config.stt_device == "cpu" else 1
+        for model in blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models):
+            device = None
+            if not model.startswith("sherpa:"):
+                if on_card < 2 and config.stt_device != "cpu":
+                    on_card += 1
+                else:
+                    device = "cpu"
+            key = f"{model}@{device or 'auto'}"
+            if key not in engines_made:
+                engines_made[key] = partner_for(model, device) if device else partner_for(model)
+            out.append(engines_made[key])
+        partner["engine"] = out[0] if out else None
+        partner["model"] = ", ".join(engine.name for engine in out)
+        return out
+
+    def hear(audio) -> str:
+        """Transcribe one stretch with every recognizer on the panel, combined
+        into one transcript; the checker settles disagreements."""
+        from .cleanup import clean
+
+        words_known = vocabulary()
+        panel_now = others()
+        if not panel_now:
+            return clean(transcriber.transcribe(audio))
+        # Every recognizer works on the clip at the same time (the graphics
+        # card and the processor in parallel) rather than one after another.
+        jobs = {transcriber.name: pool.submit(transcriber.transcribe, audio)}
+        for engine in panel_now:
+            jobs[engine.name] = pool.submit(engine.transcribe, audio)
+        first = clean(jobs.pop(transcriber.name).result())   # the main one failing is an error, as before
+        candidates = {transcriber.name: first}
+        for name, job in jobs.items():
+            try:
+                # Stuck repeats and stock made-up lines are taken out of each
+                # version first, so one recognizer's phantom can't be "rescued".
+                candidates[name] = clean(job.result(timeout=120))
+            except Exception:
+                pass  # one recognizer failing (or stuck) never stops the others
+        if len(candidates) < 2:
+            return first
+        reconcile = None if config.simple_mode else (checker.generate if chosen(checker) else (helper.generate if chosen(helper) else None))
+        text, how = blend.combine(candidates, learning, reconcile, words_known)
+        learning.note(candidates, text)
+        text = clean(text)
+        blend_stats["last"] = how
+        if sum(learning.heard.values()) % 20 == 0:
+            learning.save()
+        return text
     app = FastAPI(title="Myna server", version=__version__)
+    app.state.store = store
     started = time.time()
     stats = {"transcribed": 0, "generated": 0}
+    # What the server has just done, newest last, for the Live page.
+    activity: deque[dict] = deque(maxlen=200)
+
+    def note(kind: str, engine: str, took: float, text: str, audio_seconds: float = 0.0, failed: bool = False) -> None:
+        activity.append(
+            {
+                "at": time.time(),
+                "kind": kind,
+                "engine": engine,
+                "took": round(took, 2),
+                "audio_seconds": round(audio_seconds, 1),
+                "text": text[:600],
+                "failed": failed,
+            }
+        )
 
     @app.middleware("http")
     async def only_known_networks(request: Request, call_next):
@@ -85,11 +211,85 @@ def create_app(
             **stats,
         }
 
+    # The same audio sent twice (a retry, or held audio sent again) gets the
+    # same answer; a line that repeats one heard moments ago from overlapping
+    # audio is not given twice.
+    answered: dict[str, tuple[float, dict]] = {}
+    said_recently: deque[tuple[float, str]] = deque(maxlen=60)
+
+    def drop_repeats(text: str, segments: list[dict]) -> tuple[str, list[dict]]:
+        from .cleanup import bare, similar
+
+        now = time.time()
+        while said_recently and now - said_recently[0][0] > 90:
+            said_recently.popleft()
+
+        def fresh(line: str) -> bool:
+            if len(bare(line).split()) < 4:
+                return True  # short lines ("Hello?") are often really said twice
+            return not any(similar(line, earlier) >= 0.85 for _, earlier in said_recently)
+
+        if segments:
+            segments = [piece for piece in segments if fresh(piece["text"])]
+            text = " ".join(piece["text"] for piece in segments)
+        elif not fresh(text):
+            text = ""
+        for line in [piece["text"] for piece in segments] or ([text] if text else []):
+            said_recently.append((now, line))
+        return text, segments
+
+    # What the server is busy with right now, for the Live page: id -> (what, since).
+    busy: dict[int, list] = {}
+    busy_ids = iter(range(1, 10**9))
+    live_inflight = {"count": 0}
+    import asyncio as _asyncio
+
+    clip_slots = _asyncio.Semaphore(3)   # clips worked on at once; more wait, then are refused
+
+    class doing:
+        """`with doing("what"):` lists a job on the Live page while it runs."""
+
+        def __init__(self, what: str) -> None:
+            self.what = what
+            self.id = next(busy_ids)
+
+        def __enter__(self):
+            busy[self.id] = [self.what, time.time()]
+            return self
+
+        def step(self, what: str) -> None:
+            if self.id in busy:
+                busy[self.id][0] = what
+
+        def __exit__(self, *exc) -> None:
+            busy.pop(self.id, None)
+
+    app.state.doing = doing
+
+    def wait_for_live() -> None:
+        """Background work pauses while live audio is being transcribed."""
+        while live_inflight["count"] > 0:
+            time.sleep(0.25)
+
+    app.state.wait_for_live = wait_for_live
+
     @app.post("/v1/transcribe")
     async def transcribe(request: Request, _: None = Depends(paired)) -> dict:
+        import hashlib
+
+        if config.transcribe_source == "bee":
+            # Transcripts come from Bee's cloud; the server does not transcribe,
+            # so no recognizer, speaker model or speech gate ever loads.
+            return {"text": "", "audio_seconds": 0.0, "took_seconds": 0.0, "engine": "bee", "segments": []}
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="No audio received.")
+        setup = f"{transcriber.name}|{config.blend}|{config.blend_count}|{getattr(config, 'blend_models', '')}|{config.speech_gate}"
+        fingerprint = hashlib.sha256(body + setup.encode()).hexdigest()
+        for key in [key for key, (at, _) in answered.items() if time.time() - at > 900]:
+            answered.pop(key, None)
+        if fingerprint in answered:
+            return answered[fingerprint][1]
         if len(body) > MAX_AUDIO_BYTES:
             raise HTTPException(status_code=413, detail="That clip is too long; send it in shorter pieces.")
         try:
@@ -98,20 +298,142 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         seconds = samples.size / rate if rate else 0.0
         began = time.perf_counter()
-        text = await run_in_threadpool(transcriber.transcribe, resample_to_16k(samples, rate))
+        raw_audio = resample_to_16k(samples, rate)
+        # Digital silence (a muted or idle microphone): nothing to transcribe.
+        # Far-away speech is far louder than this.
+        if raw_audio.size == 0 or (loudness(raw_audio) < 0.0002 and float(np.abs(raw_audio).max()) < 0.002):
+            note("transcribe", transcriber.name, 0.0, "", seconds)
+            return {"text": "", "audio_seconds": round(seconds, 3), "took_seconds": 0.0,
+                    "engine": transcriber.name, "segments": []}
+        # No speech in it at all (room noise, music-free quiet): don't run the
+        # recognizers. Fails open: if the detector can't run, transcribe anyway.
+        if config.speech_gate and partner_for is not None:
+            try:
+                detect = getattr(app.state, "speech_seconds", None)
+                if detect is None:
+                    from .sidecar import helper as side
+
+                    def detect(samples):
+                        return side.call("vad", samples, timeout=60, wait=10)
+                # Off the event loop: waiting on the helper here would freeze
+                # every page and every other request.
+                if await run_in_threadpool(detect, raw_audio) < 0.2:
+                    stats["no_speech"] = stats.get("no_speech", 0) + 1
+                    note("transcribe", "speech detector", time.perf_counter() - began, "", seconds)
+                    return {"text": "", "audio_seconds": round(seconds, 3),
+                            "took_seconds": round(time.perf_counter() - began, 3),
+                            "engine": transcriber.name, "segments": []}
+            except Exception:
+                pass
+        # Quiet (far-away) speech is brought up to a working level first.
+        audio = level(raw_audio)
+
+        def work() -> tuple[str, list[dict]]:
+            """The text, and (when the voice models are there) the clip split
+            by speaker, each stretch with its speaker's voice print."""
+            if voices is None or not config.speakers:
+                return hear(audio), []   # speaker separation off: transcribe the whole clip
+            try:
+                pieces = by_speaker(voices.split(audio))
+            except Exception:
+                return hear(audio), []
+            if not pieces:
+                return hear(audio), []
+            prints: dict[int, list[float]] = {}
+            for speaker in {piece[2] for piece in pieces}:
+                own = np.concatenate([audio[int(a * 16000) : int(b * 16000)] for a, b, who in pieces if who == speaker])
+                try:
+                    prints[speaker] = voices.print_of(own[: 16000 * 30])
+                except Exception:
+                    prints[speaker] = []
+            out = []
+            if len(prints) == 1:
+                # One speaker: transcribe the clip whole (better than in pieces).
+                whole = hear(audio)
+                if whole:
+                    out.append({"text": whole, "start": round(pieces[0][0], 2),
+                                "duration": round(pieces[-1][1] - pieces[0][0], 2), "voice": prints[pieces[0][2]]})
+                return whole, out
+            # Every part of the clip is transcribed: each speaker's turns, and
+            # also the stretches between them, where the speaker separation
+            # found nobody but faint or distant speech may still be.
+            spans: list[tuple[float, float, int | None]] = []
+            cursor = 0.0
+            for start, end, speaker in pieces:
+                if start - cursor >= 1.0:
+                    spans.append((cursor, start, None))
+                spans.append((start, end, speaker))
+                cursor = end
+            if len(audio) / 16000 - cursor >= 1.0:
+                spans.append((cursor, len(audio) / 16000, None))
+            for start, end, speaker in spans:
+                said = hear(audio[int(start * 16000) : int(end * 16000)])
+                if said:
+                    out.append({"text": said, "start": round(start, 2), "duration": round(end - start, 2),
+                                "voice": prints[speaker] if speaker is not None else []})
+            return " ".join(piece["text"] for piece in out), out
+
+        try:
+            await _asyncio.wait_for(clip_slots.acquire(), timeout=45)
+        except _asyncio.TimeoutError:
+            # Too much at once: refuse rather than queue forever; the phone
+            # keeps the audio and sends it again.
+            raise HTTPException(status_code=503, detail="The server is busy; send this clip again shortly.",
+                                headers={"Retry-After": "30"})
+        live_inflight["count"] += 1
+        job = doing(f"Live clip ({seconds:.0f} s of audio)")
+        job.__enter__()
+        try:
+            text, segments = await run_in_threadpool(work)
+        except Exception as error:
+            job.__exit__()
+            live_inflight["count"] -= 1
+            clip_slots.release()
+            note("transcribe", transcriber.name, time.perf_counter() - began, str(error), seconds, failed=True)
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {error}") from error
+        job.__exit__()
+        live_inflight["count"] -= 1
+        clip_slots.release()
+        text, segments = drop_repeats(text, segments)
         stats["transcribed"] += 1
-        return {
+        note("transcribe", transcriber.name, time.perf_counter() - began, text, seconds)
+        # Keep the audio for a few days, with what this model heard in it, so
+        # another model can be tried on the same recording later.
+        if audio_dir is not None and config.keep_audio_days > 0:
+            try:
+                heard_at = time.time() - seconds
+                folder = audio_dir / time.strftime("%Y-%m-%d", time.localtime(heard_at))
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"{int(heard_at * 1000)}.wav"
+                with wave.open(str(path), "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(16000)
+                    out.writeframes((np.clip(raw_audio, -1, 1) * 32767).astype("<i2").tobytes())
+                clip = store.add_clip(heard_at, seconds, str(path))
+                store.add_transcript(clip, transcriber.name, text, time.perf_counter() - began)
+            except Exception:
+                pass  # keeping the audio is a convenience; never fail the transcription over it
+        reply = {
             "text": text,
             "audio_seconds": round(seconds, 3),
             "took_seconds": round(time.perf_counter() - began, 3),
             "engine": transcriber.name,
+            "segments": segments,
         }
+        answered[fingerprint] = (time.time(), reply)
+        return reply
 
     @app.post("/v1/generate")
     async def generate(payload: GenerateRequest, _: None = Depends(paired)) -> dict:
         began = time.perf_counter()
-        text = await run_in_threadpool(writer.generate, payload.instructions, payload.prompt, payload.max_tokens)
+        try:
+            text = await run_in_threadpool(writer.generate, payload.instructions, payload.prompt, payload.max_tokens)
+        except Exception as error:
+            note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
+            raise HTTPException(status_code=500, detail=f"Writing failed: {error}") from error
         stats["generated"] += 1
+        note("generate", writer.name, time.perf_counter() - began, text)
         return {"text": text, "took_seconds": round(time.perf_counter() - began, 3), "engine": writer.name}
 
     @app.post("/v1/sync")
@@ -120,7 +442,996 @@ def create_app(
 
     @app.get("/browse", response_class=HTMLResponse)
     def browse_list(kind: str = "utterance", q: str = "", before: float | None = None, _: None = Depends(paired)) -> str:
-        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before)
+        status = talk_state.get("status", "") if kind == "conversation" else daily_state.get("status", "")
+        return browse.list_page(store, kind if kind in KINDS else "utterance", q, before, status)
+
+    def engines_state() -> dict:
+        return {
+            "transcriber": transcriber.name,
+            "transcriber_status": getattr(transcriber, "status", ""),
+            "writer": writer.name,
+            "writer_status": getattr(writer, "status", ""),
+            "voices_status": getattr(voices, "status", "") if voices is not None else "",
+            "helper": getattr(helper, "name", "") if chosen(helper) else "",
+            "helper_status": getattr(helper, "status", "") if helper is not None else "",
+            "summary": getattr(summarizer, "name", "") if chosen(summarizer) else "",
+            "summary_status": getattr(summarizer, "status", "") if summarizer is not None else "",
+            "checker_status": getattr(checker, "status", "") if checker is not None else "",
+            "embedder_status": getattr(embedder, "status", "") if embedder is not None else "",
+            "reset_status": reset_state["status"],
+            "memory": memory.budget.snapshot(),
+            "source": config.transcribe_source,
+            "bee": dict(bee_state),
+            "bee_pair": dict(bee_pair),
+            "reprocess": dict(reprocess),
+            "tune": {"running": tune_state["running"], "status": tune_state["status"]},
+            "blend": {
+                "on": bool(config.blend and partner_for is not None),
+                "partner": getattr(partner["engine"], "name", "") or "",
+                "partner_status": getattr(partner["engine"], "status", "") or "",
+                "last": blend_stats["last"],
+                "reconciled": learning.reconciled,
+                "rescued": learning.rescued,
+            },
+            "daily": dict(daily_state),
+        }
+
+    # -- trying a transcription model on the kept recordings -------------------
+
+    reprocess = {"running": False, "done": 0, "total": 0, "model": "", "note": ""}
+
+    def run_reprocess(hours: float) -> None:
+        model = transcriber.name
+        try:
+            job = doing(f"Re-transcribing the last {hours:g} hours with {model}")
+            job.__enter__()
+            clips = store.clips_since(time.time() - hours * 3600, without_model=model)
+            reprocess.update(running=True, done=0, total=len(clips), model=model, note="")
+            for clip in clips:
+                wait_for_live()
+                if transcriber.name != model:
+                    reprocess["note"] = "Stopped: the model was changed part-way."
+                    break
+                try:
+                    with wave.open(clip["path"], "rb") as source:
+                        raw = source.readframes(source.getnframes())
+                    audio = level(np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0)
+                    began = time.perf_counter()
+                    text = transcriber.transcribe(audio)
+                    store.add_transcript(clip["id"], model, text, time.perf_counter() - began)
+                except Exception as error:
+                    reprocess["note"] = f"A clip failed: {error}"
+                reprocess["done"] += 1
+            if not reprocess["note"]:
+                reprocess["note"] = "Finished." if clips else "Nothing to do: this model has already done every kept recording in that span."
+        finally:
+            job.__exit__()
+            reprocess["running"] = False
+
+    @app.post("/browse/reprocess")
+    async def start_reprocess(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        try:
+            hours = min(max(float(form.get("hours", "24")), 0.25), 24 * 30)
+        except ValueError:
+            hours = 24
+        if not reprocess["running"]:
+            reprocess.update(running=True, done=0, total=0, model=transcriber.name, note="Starting…")
+            threading.Thread(target=run_reprocess, args=(hours,), daemon=True).start()
+        return RedirectResponse("/browse/compare", status_code=303)
+
+    @app.get("/browse/compare", response_class=HTMLResponse)
+    def browse_compare(hours: float = 24, _: None = Depends(paired)) -> str:
+        together = {
+            "on": bool(config.blend and partner_for is not None),
+            "partner": ", ".join(blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models)),
+            "trust": dict(learning.trust), "heard": dict(learning.heard),
+            "reconciled": learning.reconciled, "rescued": learning.rescued,
+            "phantoms": dict(learning.phantoms),
+            "words": list(known_words["list"]),
+            "arbiter": checker.name if chosen(checker) else (helper.name if chosen(helper) else ""),
+            "count": config.blend_count,
+        }
+        return browse.compare_page(store, transcriber.name, dict(reprocess), hours, config.keep_audio_days,
+                                   dict(tune_state), config.auto_tune, together)
+
+    @app.post("/browse/blend")
+    async def set_blend(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        if form.get("blend") in ("on", "off"):
+            config.blend = form["blend"] == "on"
+        if "partner" in form and (form["partner"] == "" or form["partner"] in {key for key, _, _ in catalog.SPEECH}):
+            config.blend_partner = form["partner"]
+        if form.get("count", "").isdigit():
+            config.blend_count = min(max(int(form["count"]), 2), 4)
+            config.blend_models = []
+        speech_keys = {key for key, _, _ in catalog.SPEECH}
+        if "listening" in form:
+            # The checkbox list: every ticked model listens alongside the main one.
+            ticked = [m for m in parse_qs((await request.body()).decode()).get("model", []) if m in speech_keys]
+            config.blend_models = [m for m in ticked if m != config.stt_model]
+            config.blend = bool(config.blend_models)
+        elif form.get("listen") in speech_keys:
+            wanted = form["listen"]
+            current = list(config.blend_models) or blend.panel(config.stt_model, config.blend_count, config.blend_partner)
+            if wanted in current:
+                current.remove(wanted)
+            else:
+                current.append(wanted)
+            config.blend_models = current
+            config.blend = bool(current)   # nothing listening alongside = just the main one
+        if form.get("listen") == "auto":
+            config.blend_models = []
+        back = form.get("back", "")
+        if getattr(app.state, "save_config", True):
+            config.save()
+        if back == "models":
+            return RedirectResponse("/browse/models", status_code=303)
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/compare", status_code=303)
+
+    # -- choosing the transcription model by itself ----------------------------
+
+    tune_state = {"running": False, "status": "", "report": []}
+
+    def run_tune() -> str:
+        """Try the candidate models on the hardest recent recordings and keep
+        the best. Returns the chosen model ("" if nothing was done). Stops and
+        puts things back if recording starts again."""
+        if tune_state["running"] or reprocess["running"] or not hasattr(transcriber, "use"):
+            return ""
+        tune_state.update(running=True, status="Picking the hardest recordings…", report=[])
+        original = config.stt_model
+        busy_at = store.last_clip_at()
+        try:
+            clips = store.clips_since(time.time() - 3 * 86400)
+            for clip in clips:
+                try:
+                    with wave.open(clip["path"], "rb") as source:
+                        clip["audio"] = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+                    clip["loudness"] = loudness(clip["audio"])
+                except Exception:
+                    clip["audio"], clip["loudness"] = None, 0.0
+            nothing = set(store.clips_heard_nothing(time.time() - 3 * 86400))
+            tests = tuner.hardest([clip for clip in clips if clip["audio"] is not None], nothing)
+            if len(tests) < 6:
+                tune_state["status"] = "Not enough recordings yet to tune on (needs at least six of three seconds or more)."
+                return ""
+            candidates = [model for model in getattr(app.state, "tune_candidates", tuner.CANDIDATES)]
+            if original not in candidates:
+                candidates.append(original)
+            results: dict[str, list[str]] = {}
+            speeds: dict[str, float] = {}
+            audio_seconds = sum(clip["seconds"] for clip in tests)
+            for number, model in enumerate(candidates):
+                tune_state["status"] = f"Trying {model} ({number + 1} of {len(candidates)}) on {len(tests)} hard recordings…"
+                try:
+                    transcriber.use(model)
+                    texts, spent = [], 0.0
+                    for clip in tests:
+                        if store.last_clip_at() != busy_at:
+                            tune_state["status"] = "Stopped: recording started again. It will try again when things are quiet."
+                            return ""
+                        began = time.perf_counter()
+                        text = transcriber.transcribe(level(clip["audio"]))
+                        took = time.perf_counter() - began
+                        spent += took
+                        texts.append(text)
+                        store.add_transcript(clip["id"], transcriber.name, text, took)
+                    results[model] = texts
+                    speeds[model] = audio_seconds / spent if spent > 0 else 0.0
+                except Exception as error:
+                    tune_state["report"].append({"model": model, "note": f"couldn't run: {error}"})
+            if len(results) < 2:
+                tune_state["status"] = "Couldn't compare: fewer than two models ran."
+                return ""
+            scores = tuner.score(results)
+            winner = tuner.choose(scores, speeds)
+            for model in results:
+                tune_state["report"].append({
+                    "model": model, "agreement": round(scores[model], 3), "speed": round(speeds[model], 1),
+                    "words": sum(len(tuner.words(text)) for text in results[model]), "chosen": model == winner,
+                })
+            tune_state["report"].sort(key=lambda row: -row.get("agreement", 0))
+            original = winner  # what `finally` puts in place
+            config.tuned_at = time.time()
+            tune_state["status"] = (
+                f"Tuned {time.strftime('%d %b %H:%M')}: {winner} did best on {len(tests)} hard recordings "
+                f"({audio_seconds / 60:.1f} minutes of audio)."
+            )
+            return winner
+        except Exception as error:
+            tune_state["status"] = f"Tuning failed: {error}"
+            return ""
+        finally:
+            try:
+                if transcriber.name != original or config.stt_model != original:
+                    transcriber.use(original)
+                config.stt_model = original
+                if getattr(app.state, "save_config", True):
+                    config.save()
+                if hasattr(transcriber, "warm"):
+                    threading.Thread(target=transcriber.warm, daemon=True).start()
+            finally:
+                tune_state["running"] = False
+
+    app.state.run_tune = run_tune
+
+    @app.post("/browse/tune")
+    async def start_tune(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        threading.Thread(target=run_tune, daemon=True).start()
+        return RedirectResponse("/browse/compare", status_code=303)
+
+    # -- stopping and reloading models that have hung --------------------------
+
+    reset_state = {"status": ""}
+
+    def reset(which: str) -> str:
+        """Stop a model at once (even mid-request) and load it again. "all"
+        restarts the whole worker, which frees every bit of memory it holds."""
+        stamp = time.strftime("%H:%M:%S")
+        if which == "all":
+            reset_state["status"] = f"{stamp}: restarting the whole server; back in a minute or two."
+
+            def leave() -> None:
+                time.sleep(1.5)  # let the page answer first
+                getattr(app.state, "exit", lambda: os._exit(3))()
+
+            threading.Thread(target=leave, daemon=True).start()
+            return reset_state["status"]
+        done = []
+        if which in ("transcriber", "recognition"):
+            if hasattr(transcriber, "force_reset"):
+                transcriber.force_reset()
+                done.append(transcriber.name)
+            for engine in list(engines_made.values()):
+                if hasattr(engine, "force_reset"):
+                    engine.force_reset()
+            engines_made.clear()
+            if voices is not None and hasattr(voices, "force_reset"):
+                voices.force_reset()
+            done.append("the other recognizers and the voice models")
+
+            def again() -> None:
+                if hasattr(transcriber, "warm"):
+                    transcriber.warm()
+                if voices is not None and hasattr(voices, "warm"):
+                    voices.warm()
+
+            threading.Thread(target=again, daemon=True).start()
+        elif which in roles and roles[which] is not None:
+            model = roles[which]
+            if hasattr(model, "force_stop"):
+                model.force_stop()
+            done.append(getattr(model, "name", which))
+            if which != "summary" and hasattr(model, "warm"):
+                threading.Thread(target=model.warm, daemon=True).start()
+        reset_state["status"] = f"{stamp}: stopped and reloading {', '.join(done) or 'nothing'}."
+        return reset_state["status"]
+
+    app.state.reset = reset
+
+    @app.post("/browse/reset")
+    async def start_reset(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        reset(form.get("which", ""))
+        back = form.get("back", "live")
+        return RedirectResponse("/browse/models" if back == "models" else "/browse/live", status_code=303)
+
+    # -- writing up finished conversations, the way Omi does --------------------
+
+    talk_state = {"running": False, "status": ""}
+
+    def run_conversations(most: int = 2) -> int:
+        """Write up conversations that have finished since the last one handled."""
+        if talk_state["running"] or tune_state["running"] or daily_state["running"]:
+            return 0
+        talk_state["running"] = True
+        job = doing("Writing up conversations")
+        job.__enter__()
+        try:
+            def progress(text: str) -> None:
+                talk_state["status"] = text
+
+            # The keep-or-discard call is a quick yes/no: a small model does it
+            # (Omi uses a cheap model for this step too), the main one writes.
+            cheap = None if config.simple_mode else (helper.generate if chosen(helper) else (checker.generate if chosen(checker) else None))
+            handled = conversations.run_pending(store, writer.generate, cheap, time.time(), config.owner_name,
+                                                most, progress)
+            if most > 2:  # the button: also try again the ones that failed before
+                progress("Trying again the conversations that failed…")
+                handled += conversations.retry_failed(store, writer.generate, cheap, time.time(), config.owner_name)
+            if handled:
+                talk_state["status"] = f"Wrote up {handled} conversation{'s' if handled != 1 else ''} at {time.strftime('%H:%M')}."
+                # Let the receptionist read the new conversations and act on them.
+                try:
+                    reception.reflect(store, writer.generate)
+                except Exception:
+                    pass
+            return handled
+        except Exception as error:
+            talk_state["status"] = f"Couldn't write up a conversation: {error}"
+            return 0
+        finally:
+            job.__exit__()
+            talk_state["running"] = False
+
+    app.state.run_conversations = run_conversations
+
+    def run_indexing() -> int:
+        """Give new or changed conversations, notes and memories their meaning-vectors."""
+        if config.simple_mode or not chosen(embedder) or not hasattr(embedder, "embed"):
+            return 0
+        from . import meaning
+
+        try:
+            return meaning.index_pending(store, embedder.embed)
+        except Exception:
+            return 0
+
+    app.state.run_indexing = run_indexing
+
+    @app.post("/browse/conversations")
+    async def start_conversations(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        threading.Thread(target=run_conversations, args=(20,), daemon=True).start()
+        return RedirectResponse("/browse?kind=conversation", status_code=303)
+
+    @app.post("/browse/facts")
+    async def decide_fact(request: Request, _: None = Depends(paired)):
+        """Keep or reject a suggested memory; confirm or forget a saved one."""
+        from fastapi.responses import RedirectResponse
+
+        from urllib.parse import parse_qs
+
+        from . import facts
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        action = form.get("action", "")
+        if form.get("conversation") and action in ("keep", "reject"):
+            try:
+                index = int(form.get("index", "-1"))
+            except ValueError:
+                index = -1
+            await run_in_threadpool(facts.decide, store, form["conversation"], index, action == "keep")
+        elif form.get("todo") and action in ("add", "dismiss"):
+            try:
+                index = int(form.get("index", "-1"))
+            except ValueError:
+                index = -1
+            await run_in_threadpool(facts.decide_todo, store, form["todo"], index, action == "add")
+            return RedirectResponse("/browse?kind=item", status_code=303)
+        elif form.get("memory"):
+            await run_in_threadpool(facts.mark, store, form["memory"], action)
+        return RedirectResponse("/browse?kind=memory", status_code=303)
+
+    @app.get("/browse/conversation", response_class=HTMLResponse)
+    def browse_conversation(id: str, _: None = Depends(paired)) -> str:
+        return browse.conversation_page(store, id)
+
+    # -- the end-of-day summary -------------------------------------------------
+
+    daily_state = {"running": False, "status": ""}
+
+    def run_daily(day: str) -> str:
+        """Write (or rewrite) the summary for `day`, YYYY-MM-DD."""
+        if daily_state["running"]:
+            return ""
+        daily_state.update(running=True, status="Starting…")
+        own_model = chosen(summarizer)
+        try:
+            write = summarizer.generate if own_model else writer.generate
+            condense = helper.generate if chosen(helper) else write
+            if own_model and hasattr(writer, "stop"):
+                writer.stop()  # make room for the summary model
+
+            def progress(text: str) -> None:
+                daily_state["status"] = text
+
+            text = daily.summarize(store, day, condense, write, progress)
+            if text:
+                start, _ = daily.day_bounds(day)
+                store.sync(0, [{
+                    "kind": "daily", "id": day, "updated_at": time.time(), "deleted": False,
+                    "data": {"day": start, "date": day, "text": text, "writtenAt": time.time(),
+                             "model": summarizer.name if own_model else writer.name},
+                }])
+                daily_state["status"] = f"Wrote the summary for {day}."
+            else:
+                daily_state["status"] = f"Nothing was saved on {day} to summarise."
+            return text
+        except Exception as error:
+            daily_state["status"] = f"The summary for {day} failed: {error}"
+            return ""
+        finally:
+            if own_model and hasattr(summarizer, "stop"):
+                summarizer.stop()
+            daily_state["running"] = False
+
+    app.state.run_daily = run_daily
+
+    @app.post("/browse/simple")
+    async def set_simple(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        if "simple" in form:
+            config.simple_mode = form.get("simple") != "off"
+        if "speakers" in form:
+            config.speakers = form.get("speakers") != "off"
+        if "shell" in form:
+            config.shell_enabled = form.get("shell") == "on"
+        if getattr(app.state, "save_config", True):
+            config.save()
+        # Free the extra models' memory the moment simple mode is turned on.
+        if config.simple_mode:
+            for extra in (helper, summarizer, checker, embedder):
+                if extra is not None and hasattr(extra, "stop"):
+                    await run_in_threadpool(extra.stop)
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/omi")
+    async def set_omi(_: None = Depends(paired)):
+        """One-tap: set the server up like a self-hosted Omi server — transcribe
+        here with Parakeet on the processor, lean layers, GPU free for writing."""
+        from fastapi.responses import RedirectResponse
+
+        config.transcribe_source = "local"
+        config.simple_mode = True
+        config.stt_model = "sherpa:parakeet-v3"   # NVIDIA Parakeet (what Omi's servers run)
+        config.stt_device = "cpu"                 # on the processor, leaving the card for the writer
+        # Drop the extra writing roles' memory; one recognizer + one writer.
+        for extra in (helper, summarizer, checker, embedder):
+            if extra is not None and hasattr(extra, "stop"):
+                await run_in_threadpool(extra.stop)
+        if hasattr(transcriber, "use"):
+            await run_in_threadpool(transcriber.use, "sherpa:parakeet-v3")
+            if hasattr(transcriber, "warm"):
+                threading.Thread(target=transcriber.warm, daemon=True).start()
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/mcp")
+    async def set_mcp(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        raw = (form.get("servers") or "").strip()
+        servers: list = []
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                servers = [s for s in parsed if isinstance(s, dict) and s.get("command")]
+            except (json.JSONDecodeError, ValueError):
+                servers = config.mcp_servers  # keep the old ones on a parse error
+        config.mcp_servers = servers
+        if getattr(app.state, "save_config", True):
+            config.save()
+        # Rebuild the hub so the new servers are used (and old ones stopped).
+        try:
+            mcp_hub()
+        except Exception:
+            pass
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/daily")
+    async def start_daily(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        day = form.get("day") or time.strftime("%Y-%m-%d")
+        try:
+            daily.day_bounds(day)
+        except ValueError:
+            day = time.strftime("%Y-%m-%d")
+        threading.Thread(target=run_daily, args=(day,), daemon=True).start()
+        return RedirectResponse("/browse?kind=daily", status_code=303)
+
+    @app.get("/browse/ask", response_class=HTMLResponse)
+    def browse_ask(_: None = Depends(paired)) -> str:
+        return browse.ask_page(store)
+
+    mcp_holder: dict = {"hub": None, "for": None}
+
+    def mcp_hub():
+        """The MCP client hub, rebuilt when the configured servers change."""
+        from . import mcp as mcp_module
+
+        signature = json.dumps(config.mcp_servers, sort_keys=True)
+        if mcp_holder["for"] != signature:
+            if mcp_holder["hub"] is not None:
+                try:
+                    mcp_holder["hub"].stop()
+                except Exception:
+                    pass
+            mcp_holder["hub"] = mcp_module.MCPHub(config.mcp_servers)
+            mcp_holder["for"] = signature
+        return mcp_holder["hub"]
+
+    app.state.mcp_hub = mcp_hub
+
+    @app.post("/browse/ask.json")
+    async def browse_ask_json(payload: AskRequest, _: None = Depends(paired)) -> dict:
+        began = time.perf_counter()
+        lookup = getattr(app.state, "web_lookup", web.lookup)
+        try:
+            embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
+            # Shell access is the agent's hands on this computer — only when the
+            # user has turned it on in settings.
+            shell = recall.run_shell if config.shell_enabled else None
+            mcp = mcp_hub() if config.mcp_servers else None
+            result = await run_in_threadpool(
+                ask.answer, store, writer.generate, lookup, payload.question, payload.history, embed, shell, mcp
+            )
+        except Exception as error:
+            note("generate", writer.name, time.perf_counter() - began, str(error), failed=True)
+            raise HTTPException(status_code=500, detail=f"Couldn't answer: {error}") from error
+        stats["generated"] += 1
+        note("generate", writer.name, time.perf_counter() - began, f"Ask: {payload.question} → {result['reply']}")
+        return result
+
+    @app.post("/browse/ask.stream")
+    async def browse_ask_stream(payload: AskRequest, _: None = Depends(paired)):
+        """The live view: streams the agent's reasoning, each tool call and its
+        result, and the answer tokens as they're produced, as Server-Sent Events."""
+        from fastapi.responses import StreamingResponse
+
+        lookup = getattr(app.state, "web_lookup", web.lookup)
+        embed = embedder.embed if chosen(embedder) and hasattr(embedder, "embed") else None
+        shell = recall.run_shell if config.shell_enabled else None
+        mcp = mcp_hub() if config.mcp_servers else None
+
+        def events():
+            try:
+                for event in recall.answer_stream(store, writer, payload.question, payload.history,
+                                                   lookup=lookup, embed=embed, shell=shell, mcp=mcp):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as error:
+                yield f"data: {json.dumps({'t': 'error', 'd': str(error)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/browse/live", response_class=HTMLResponse)
+    def browse_live(_: None = Depends(paired)) -> str:
+        return browse.live_page(store, engines_state())
+
+    @app.get("/browse/live.json")
+    def browse_live_json(_: None = Depends(paired)) -> dict:
+        now = time.time()
+        working = [{"what": what, "seconds": round(now - since)} for what, since in list(busy.values())]
+        return {**engines_state(), **stats, "events": list(activity)[-80:], "busy": working}
+
+    @app.get("/browse/today.json")
+    def browse_today_json(day: str = "", _: None = Depends(paired)) -> dict:
+        """The day's transcript and numbers for the phone's Today page, so it
+        shows the server's live view (Bee included) rather than a stale copy."""
+        try:
+            daily.day_bounds(day)
+        except ValueError:
+            day = time.strftime("%Y-%m-%d")
+        return daily.today_feed(store, day)
+
+    # -- the Experiment tab: find a model, try it on the last few hours ------------
+
+    from . import experiment
+
+    trying = experiment.new_state()
+    trying_stop = threading.Event()
+    trying_engine: dict = {}
+
+    def run_trial() -> None:
+        try:
+            trying["note"] = ""
+            if trying["kind"] == "speech":
+                candidate = trying_engine.get("speech")
+                if candidate is None:
+                    candidate = partner_for(trying["model"]) if partner_for is not None else None
+                    if candidate is not None:
+                        candidate.background = True   # its own helper; never in live audio's way
+                    trying_engine["speech"] = candidate
+                if candidate is None:
+                    trying["note"] = "This server can't load a second recognizer."
+                    return
+                try:
+                    experiment.prepare_speech(trying, candidate, trying["model"])
+                except Exception as error:
+                    trying["note"] = f"Couldn't get this model ready: {error}"
+                    return
+                trying["note"] = ""
+                with doing(f"Trying {trying['model']} on the last {trying['hours']:g} hours"):
+                    experiment.run_speech(trying, store, candidate, transcriber.name, level, trying_stop,
+                                          pause=wait_for_live)
+            else:
+                try:
+                    experiment.prepare_writing(trying, trial)
+                except Exception as error:
+                    trying["note"] = f"Couldn't get this model ready: {error}"
+                    return
+                trying["note"] = ""
+                with doing(f"Trying {trying['file']} on the last {trying['hours']:g} hours of conversations"):
+                    experiment.run_writing(trying, store, trial.generate, config.owner_name, trying_stop)
+            if not trying["note"]:
+                trying["note"] = "Finished. Read the results below, then keep it or throw it out."
+        except Exception as error:
+            trying["note"] = f"Couldn't run it: {error}"
+        finally:
+            trying["running"] = False
+
+    def end_trial(kept: str) -> None:
+        """Free the model being tried and note how it went."""
+        if trying["model"] or trying["file"]:
+            experiment.remember({"at": time.time(), "kind": trying["kind"], "model": trying["model"] or
+                                 f'{trying["repo"]}/{trying["file"]}', "hours": trying["hours"],
+                                 "summary": trying["summary"], "outcome": kept})
+        trying_stop.set()
+        candidate = trying_engine.pop("speech", None)
+        if candidate is not None and hasattr(candidate, "_unload_for_room"):
+            candidate._unload_for_room()
+        if trial is not None and hasattr(trial, "force_stop"):
+            trial.force_stop()
+            trial.use("", "")
+        trying.clear()
+        trying.update(experiment.new_state())
+
+    @app.get("/browse/experiment", response_class=HTMLResponse)
+    def browse_experiment(kind: str = "writing", q: str = "", repo: str = "", _: None = Depends(paired)) -> str:
+        found, files, problem = [], [], ""
+        try:
+            if q:
+                found = experiment.search(kind, q)
+            if repo and kind == "writing":
+                files = experiment.gguf_files(repo)
+        except Exception as error:
+            problem = f"Couldn't reach Hugging Face: {error}"
+        current = {"speech": config.stt_model, "llm": config.llm_file, "helper": config.helper_file,
+                   "summary": config.summary_file, "checker": config.checker_file}
+        return browse.experiment_page(store, dict(trying), kind, q, repo, found, files, problem,
+                                      experiment.history(), current, getattr(trial, "status", ""))
+
+    @app.post("/browse/experiment")
+    async def experiment_action(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        action = form.get("action", "")
+        if action == "try" and not trying["running"]:
+            end_trial("replaced") if (trying["model"] or trying["file"]) else None
+            try:
+                hours = min(max(float(form.get("hours", "3")), 0.25), 24 * 7)
+            except ValueError:
+                hours = 3
+            kind = "speech" if form.get("kind") == "speech" else "writing"
+            trying_stop.clear()
+            trying.update(kind=kind, hours=hours, running=True, note="Starting… (the model downloads first)",
+                          started=time.time(), model=form.get("model", ""), repo=form.get("repo", ""),
+                          file=form.get("file", ""))
+            if kind == "writing":
+                if trial is None or not trying["repo"] or not trying["file"].endswith(".gguf"):
+                    trying.update(running=False, note="Pick a .gguf file to try.")
+                    return RedirectResponse("/browse/experiment", status_code=303)
+                await run_in_threadpool(trial.use, trying["repo"], trying["file"])
+            elif not trying["model"]:
+                trying.update(running=False, note="Pick a speech model to try.")
+                return RedirectResponse("/browse/experiment?kind=speech", status_code=303)
+            threading.Thread(target=run_trial, daemon=True).start()
+        elif action == "stop":
+            trying_stop.set()
+        elif action == "drop":
+            await run_in_threadpool(end_trial, "thrown out")
+        elif action == "keep" and not trying["running"] and (trying["model"] or trying["file"]):
+            if trying["kind"] == "speech" and hasattr(transcriber, "use"):
+                model = trying["model"]
+                await run_in_threadpool(end_trial, "kept")
+                await run_in_threadpool(transcriber.use, model)
+                config.stt_model = model
+                if hasattr(transcriber, "warm"):
+                    threading.Thread(target=transcriber.warm, daemon=True).start()
+            elif trying["kind"] == "writing":
+                role = form.get("role", "llm")
+                target = roles.get(role) if role in ("llm", "helper", "summary", "checker") else None
+                if target is not None and hasattr(target, "use"):
+                    repo, file = trying["repo"], trying["file"]
+                    await run_in_threadpool(end_trial, f"kept as {role}")
+                    await run_in_threadpool(target.use, repo, file)
+                    if hasattr(target, "warm"):
+                        threading.Thread(target=target.warm, daemon=True).start()
+            if getattr(app.state, "save_config", True):
+                config.save()
+            return RedirectResponse("/browse/models", status_code=303)
+        return RedirectResponse(f"/browse/experiment?kind={trying.get('kind') or form.get('kind', 'writing')}", status_code=303)
+
+    # -- Bee cloud: pull finished conversations from Bee's developer API ----------
+
+    from . import bee_cloud
+
+    bee_state = {"status": "", "last_sync": 0.0, "new": 0, "account": "", "running": False}
+    bee_pair = {"active": False, "url": "", "svg": "", "status": "", "expires": ""}
+
+    pairing_holder = {"obj": None}
+
+    def start_pairing() -> str:
+        """Begin pairing now (one quick network call) and render the QR. Returns
+        an error message, or "" on success. The polling then runs in the
+        background."""
+        try:
+            pair = bee_cloud.Pairing()
+            url = pair.start()
+        except bee_cloud.BeeError as error:
+            bee_pair.update(active=False, status=str(error))
+            return str(error)
+        except Exception as error:
+            bee_pair.update(active=False, status=f"Couldn't start pairing: {error}")
+            return str(error)
+        if url is None:   # Bee completed immediately
+            _finish_pairing(pair.token)
+            return ""
+        try:
+            svg = bee_cloud.qr_svg(url)
+            note = "Scan this with the Bee app (Developer Mode on), then approve."
+        except Exception:
+            svg = ""   # no QR image, but the link still works
+            note = "Open the link below on your phone (the Bee app, Developer Mode on), then approve."
+        pairing_holder["obj"] = pair
+        bee_pair.update(active=True, url=url, svg=svg, expires=pair.expires_at, status=note)
+        threading.Thread(target=poll_pairing, daemon=True).start()
+        return ""
+
+    def poll_pairing() -> None:
+        import time
+
+        pair = pairing_holder.get("obj")
+        if pair is None:
+            return
+        try:
+            while bee_pair["active"] and not pair.token:
+                time.sleep(2)
+                if pair.poll_once():
+                    _finish_pairing(pair.token)
+                    return
+        except bee_cloud.BeeError as error:
+            bee_pair.update(active=False, status=str(error))
+
+    def _finish_pairing(token: str) -> None:
+        config.bee_token = token
+        config.transcribe_source = "bee"
+        bee_state["account"] = ""
+        bee_pair.update(active=False, status="Connected to Bee. Syncing\u2026")
+        if getattr(app.state, "save_config", True):
+            config.save()
+        free_all_models()
+        threading.Thread(target=run_bee_sync, daemon=True).start()
+
+    def bee_client():
+        return bee_cloud.BeeCloud(config.bee_token)
+
+    def run_bee_sync() -> int:
+        """Pull new Bee conversations, save a local copy, and write each up
+        Myna-style alongside Bee's own summary. In Bee mode the writing/search
+        models are unloaded afterwards so nothing stays resident between syncs."""
+        client = bee_client()
+        if not client.configured or bee_state["running"]:
+            return 0
+        bee_state["running"] = True
+        job = doing("Syncing conversations from Bee")
+        job.__enter__()
+        try:
+            if not bee_state["account"]:
+                try:
+                    bee_state["account"] = client.account_name() or ""
+                except bee_cloud.BeeError:
+                    pass
+            # One-time repair of Bee records saved with millisecond/offset times
+            # (the "year 54000" dates) so the correction syncs to the phone.
+            if store.get_meta("bee_times_repaired") != "2":
+                bee_cloud.repair_bee_times(store)
+                store.set_meta("bee_times_repaired", "2")
+            added = bee_cloud.import_conversations(store, client, owner=config.owner_name)
+            known = [m.get("content", "") for m in store.browse("memory", limit=300) if m.get("content")]
+            for cid in bee_cloud.needs_writeup(store):
+                bee_cloud.myna_writeup(store, cid, writer.generate, config.owner_name, known)
+            # Mirror every Bee conversation to a phone-syncable note so the
+            # phone's Today / Notes always show the latest server-side info.
+            for row in store.browse("conversation", limit=400):
+                if row.get("source") == "bee":
+                    bee_cloud.mirror_note(store, row["id"])
+            app.state.run_indexing()
+            # The receptionist reads what's new and acts on it on its own —
+            # learns lasting facts, writes follow-ups and documents, and sends
+            # the user a message when something genuinely needs their attention.
+            try:
+                did = reception.reflect(store, writer.generate)
+                if did.get("messages") or did.get("followups") or did.get("learned"):
+                    bee_state["attended"] = did
+            except Exception as error:
+                bee_state["status"] = f"Synced {added}; reception skipped: {error}"
+            bee_state.update(status=f"Synced. {added} new.", last_sync=time.time(), new=added)
+            return added
+        except bee_cloud.BeeError as error:
+            bee_state["status"] = str(error)
+            return 0
+        except Exception as error:
+            bee_state["status"] = f"Sync failed: {error}"
+            return 0
+        finally:
+            job.__exit__()
+            bee_state["running"] = False
+            # Bee mode: keep nothing resident between syncs — load the writing
+            # and search models only while actively writing up.
+            if config.transcribe_source == "bee":
+                # Keep the main writing model resident (it answers Ask quickly);
+                # only the extra roles are unloaded.
+                for model in (helper, summarizer, checker, embedder):
+                    if model is not None and hasattr(model, "stop"):
+                        try:
+                            model.stop()
+                        except Exception:
+                            pass
+
+    app.state.run_bee_sync = run_bee_sync
+    def free_all_models() -> None:
+        """Bee mode: unload the recognizer, voice models and the extra writing
+        roles, but keep the main writing model (it answers Ask) warm."""
+        for model in (helper, summarizer, checker, embedder):
+            if model is not None and hasattr(model, "stop"):
+                try:
+                    model.stop()
+                except Exception:
+                    pass
+        for model in (transcriber, voices):
+            if model is not None and hasattr(model, "_unload_for_room"):
+                try:
+                    model._unload_for_room()
+                except Exception:
+                    pass
+        if writer is not None and hasattr(writer, "warm"):
+            threading.Thread(target=writer.warm, daemon=True).start()
+
+    app.state.free_all_models = free_all_models
+
+
+    @app.post("/browse/bee/connect")
+    async def bee_connect(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        if not bee_pair["active"]:
+            await run_in_threadpool(start_pairing)
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/bee/cancel")
+    async def bee_cancel(_: None = Depends(paired)):
+        from fastapi.responses import RedirectResponse
+
+        bee_pair.update(active=False, status="Cancelled.")
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.post("/browse/source")
+    async def set_source(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        if "source" in form:
+            config.transcribe_source = "bee" if form.get("source") == "bee" else "local"
+            if config.transcribe_source == "bee":
+                free_all_models()
+        if "bee_token" in form:
+            config.bee_token = form.get("bee_token", "").strip()
+            bee_state["account"] = ""   # re-check the account with the new token
+        if getattr(app.state, "save_config", True):
+            config.save()
+        if form.get("sync") == "now":
+            threading.Thread(target=run_bee_sync, daemon=True).start()
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.get("/browse/models", response_class=HTMLResponse)
+    def browse_models(_: None = Depends(paired)) -> str:
+        listening = blend.panel(config.stt_model, config.blend_count, config.blend_partner, config.blend_models)
+        readout = {row["model"]: row for row in store.model_readout(time.time() - 7 * 86400)}
+        return browse.models_page(store, config, engines_state(), listening, dict(learning.trust), readout)
+
+    @app.post("/browse/models")
+    async def choose_model(request: Request, _: None = Depends(paired)):
+        from urllib.parse import parse_qs
+
+        from fastapi.responses import RedirectResponse
+
+        form = {key: values[0] for key, values in parse_qs((await request.body()).decode()).items()}
+        speech = form.get("speech", "").strip()
+        repo, file = form.get("repo", "").strip(), form.get("file", "").strip()
+        # Warn before a model that would run slowly (a dense model bigger than
+        # the card) is chosen — with a "Continue anyway" to go ahead.
+        if repo and file.endswith(".gguf") and form.get("confirm") != "1":
+            size = next((gb for r, f, _, gb, _ in catalog.WRITING if r == repo and f == file), 0.0)
+            name = next((nm for r, f, nm, _, _ in catalog.WRITING if r == repo and f == file), file)
+            _badge, _hint, slow = fit_label(file, float(size))
+            if slow:
+                warn_role = form.get("role", "llm") if form.get("role", "llm") in roles else "llm"
+                return HTMLResponse(browse.slow_model_warning(store, warn_role, repo, file, name, _badge))
+        # A chosen model starts downloading and loading straight away, in the
+        # background; the Models and Live pages show how far along it is.
+        llm_device, stt_device = form.get("llm_device", ""), form.get("stt_device", "")
+        if stt_device in {key for key, _, _ in catalog.STT_DEVICES} and stt_device != config.stt_device:
+            config.stt_device = stt_device
+            if hasattr(transcriber, "reload"):
+                await run_in_threadpool(transcriber.reload)
+                threading.Thread(target=transcriber.warm, daemon=True).start()
+        if llm_device in {key for key, _, _ in catalog.LLM_DEVICES} and llm_device != config.llm_device:
+            config.llm_device = llm_device
+            if hasattr(writer, "reload"):
+                await run_in_threadpool(writer.reload)
+                threading.Thread(target=writer.warm, daemon=True).start()
+        role = form.get("role", "llm")
+        if role not in roles:
+            role = "llm"
+        target = roles[role]
+        device_keys = {key for key, _, _ in catalog.LLM_DEVICES}
+        for other in ("helper", "summary", "checker", "embedder"):
+            wanted = form.get(f"{other}_device", "")
+            if wanted in device_keys and wanted != getattr(config, f"{other}_device"):
+                setattr(config, f"{other}_device", wanted)
+                if roles[other] is not None and hasattr(roles[other], "reload"):
+                    await run_in_threadpool(roles[other].reload)
+        if form.get("clear") in ("helper", "summary", "checker", "embedder") and roles[form["clear"]] is not None:
+            await run_in_threadpool(roles[form["clear"]].use, "", "")
+        if repo and file.endswith(".gguf"):
+            # A model too big for the card can't run wholly on it: share it.
+            size = next((gb for r, f, _, gb, _ in catalog.WRITING if r == repo and f == file), 0)
+            if size > catalog.FITS_CARD_GB and getattr(config, f"{role}_device") == "gpu":
+                setattr(config, f"{role}_device", "shared")
+        if speech and hasattr(transcriber, "use"):
+            await run_in_threadpool(transcriber.use, speech)
+            config.stt_model = speech
+            if hasattr(transcriber, "warm"):
+                threading.Thread(target=transcriber.warm, daemon=True).start()
+        if repo and file.endswith(".gguf") and target is not None and hasattr(target, "use"):
+            await run_in_threadpool(target.use, repo, file)
+            setattr(config, f"{role}_repo", repo)
+            setattr(config, f"{role}_file", file)
+            # The main model and the helper load now. The summary model loads
+            # only when a summary is written, so it doesn't hold memory all day.
+            if role not in ("summary",) and hasattr(target, "warm"):
+                threading.Thread(target=target.warm, daemon=True).start()
+        if getattr(app.state, "save_config", True):
+            config.save()
+        return RedirectResponse("/browse/models", status_code=303)
+
+    @app.get("/browse/playlist")
+    def browse_playlist(_: None = Depends(paired)):
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(
+            browse.playlist_text(store), headers={"Content-Disposition": 'attachment; filename="myna-heard-music.txt"'}
+        )
 
     @app.get("/browse/note", response_class=HTMLResponse)
     def browse_note(id: str, _: None = Depends(paired)) -> str:

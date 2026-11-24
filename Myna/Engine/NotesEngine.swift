@@ -185,7 +185,7 @@ final class NotesEngine {
             sourceRef: sourceRef
         )
         note.placeName = context.place
-        note.people = context.people.map(\.summary)
+        note.people = context.people.map(\.fullName)
         note.photoIdentifiers = context.photoIdentifiers
         let reminders = (composed.reminders ?? [])
             .filter { !Self.isPlaceholder($0.text) }

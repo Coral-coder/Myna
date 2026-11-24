@@ -5,6 +5,9 @@ import SwiftUI
 struct HomeServerView: View {
     @ObservedObject private var server = HomeServer.shared
     @ObservedObject private var sync = HomeSync.shared
+    @ObservedObject private var tailnet = TailnetLink.shared
+    @ObservedObject private var lab = TranscriptionLab.shared
+    @AppStorage(TranscriptionLab.serverOnlyKey) private var serverOnly = false
     @State private var link = ""
     @State private var scanning = false
 
@@ -38,6 +41,7 @@ struct HomeServerView: View {
             if !server.lastRoute.isEmpty { row("Last job", server.lastRoute) }
             if let error = server.lastError { row("Last problem", error) }
             row("Home database", databaseText)
+            if server.hasPrivateAddress { awayFromHome }
 
             Toggle(isOn: $server.enabled) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -51,10 +55,47 @@ struct HomeServerView: View {
             }
             .tint(MynaTheme.signal)
 
+            Toggle(isOn: $serverOnly) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Don't use this iPhone for transcription or writing")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(MynaTheme.ink)
+                    Text(lab.heldCount > 0
+                         ? "\(lab.heldCount) recordings waiting for the home server."
+                         : "Saves battery. The live ticker and \"Myna, …\" voice commands are off. While the server can't be reached, audio is only recorded and notes wait; the server does it all when it's back.")
+                        .font(.system(size: 12, weight: .light))
+                        .foregroundStyle(MynaTheme.muted)
+                }
+            }
+            .tint(MynaTheme.signal)
+
             HStack(spacing: 10) {
                 pill("Check now") { Task { await server.check(); await sync.syncNow() } }
+                pill("Re-sync everything") { Task { sync.reset(); await server.check(); await sync.syncNow() } }
                 pill("Unpair") { server.unpair() }
                 Spacer()
+            }
+            Text("Re-sync everything pulls the whole server database again from scratch — use it if Today or Notes are missing things the server has (e.g. after the server was updated or reinstalled).")
+                .font(.system(size: 11, weight: .light))
+                .foregroundStyle(MynaTheme.muted)
+        }
+    }
+
+    /// Reaching the computer away from home, over Tailscale built into Myna.
+    @ViewBuilder private var awayFromHome: some View {
+        switch tailnet.state {
+        case .off:
+            row("Away from home", "Off")
+        case .starting:
+            row("Away from home", "Starting…")
+        case .connected:
+            row("Away from home", "Connected over your private network")
+        case .failed(let message):
+            row("Away from home", "Couldn't start: \(message)")
+        case .needsSignIn:
+            VStack(alignment: .leading, spacing: 8) {
+                row("Away from home", "Needs a one-time Tailscale sign-in — use the same account as on the computer. It opens in your browser; come back here when it's done.")
+                pill("Sign in to Tailscale") { tailnet.signIn() }
             }
         }
     }

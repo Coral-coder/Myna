@@ -16,6 +16,11 @@ final class Utterance {
     var speakerKey: String = ""
     /// The voice print of this utterance, so it can be re-assigned later.
     var embedding: Data?
+    /// What this line was part of: "" until sorted, then "conversation" or a
+    /// kind of media ("audiobook", "music", "tv", "podcast", "media").
+    var context: String = ""
+    /// A short name for the stretch this line belongs to.
+    var segment: String = ""
 
     init(text: String, heardAt: Date, duration: Double, engine: String, speakerKey: String, embedding: Data?) {
         self.text = text

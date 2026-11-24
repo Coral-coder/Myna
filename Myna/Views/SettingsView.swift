@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("myna.alwaysOn") private var alwaysOn = true
     @AppStorage("myna.micEnabled") private var micEnabled = true
     @AppStorage("myna.wakeWord") private var wakeWord = true
+    @AppStorage("myna.chimeIn") private var chimeIn = true
     @AppStorage("myna.speakReplies") private var speakReplies = true
     @AppStorage("myna.autoCapture") private var autoCapture = true
     @AppStorage("myna.mirrorReminders") private var mirrorReminders = true
@@ -133,6 +134,18 @@ struct SettingsView: View {
                  : "Dusk — near-black console, the same quiet light.")
                 .font(.system(size: 12, design: .rounded))
                 .foregroundStyle(MynaTheme.faint)
+            Divider().opacity(0.3)
+            Text("LOOK")
+                .font(MynaTheme.mono(11))
+                .tracking(1.2)
+                .foregroundStyle(MynaTheme.muted)
+            Picker("Look", selection: $themeStore.look) {
+                ForEach(MynaLook.allCases) { look in Text(look.label).tag(look) }
+            }
+            .pickerStyle(.segmented)
+            Text("Amber VFD turns the whole screen into a dot-matrix display. Its colour and display settings are under Settings → Appearance there.")
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(MynaTheme.faint)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -234,6 +247,14 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Answer to a wake word").settingsLabel()
                     Text("Say the wake word, then your request — add to lists, set reminders, schedule things or ask a question.").settingsCaption()
+                }
+            }
+            .tint(MynaTheme.cyan)
+
+            Toggle(isOn: $chimeIn) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Chime in when it can help").settingsLabel()
+                    Text("Without being asked, speak up briefly when someone asks for a fact nobody present knows. At most once every minute and a half.").settingsCaption()
                 }
             }
             .tint(MynaTheme.cyan)

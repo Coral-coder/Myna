@@ -78,7 +78,7 @@ final class ContextHub: ObservableObject {
     func noteContext(transcript: String, startedAt: Date, endedAt: Date, place: String) async -> NoteContext {
         var context = NoteContext(place: place)
         if isEnabled(.contacts) {
-            context.people = await contacts.index().mentions(in: transcript)
+            context.people = await contacts.index().mentions(in: MadeUpSpeech.clean(transcript), limit: 6, shortNameTimes: 2)
         }
         if isEnabled(.photos) {
             let assets = photos.photos(from: startedAt, to: endedAt)
@@ -106,6 +106,34 @@ final class ContextHub: ObservableObject {
         }
         if isEnabled(.health), HealthMath.isHealthQuestion(question), let summary = await health.summary() {
             lines.append(summary)
+        }
+        let lower = question.lowercased()
+        // The weather, from Apple Weather, when that's what is being asked.
+        if WeatherContext.isWeatherQuestion(question) {
+            if isEnabled(.location), let fix = await location.currentLocation(),
+               let weather = await WeatherContext.summary(at: fix, place: place) {
+                lines.append(weather)
+            } else {
+                lines.append("WEATHER: not available here (location is switched off or the forecast couldn't be fetched). Search the web for it instead.")
+            }
+        }
+        // What is on recent screenshots or photos, when the question is about them.
+        if isEnabled(.photos) {
+            let aboutScreenshots = lower.contains("screenshot") || lower.contains("screen shot") || lower.contains("my screen")
+            let aboutPhotos = lower.contains("photo") || lower.contains("picture") || lower.contains("camera roll") || lower.contains("image")
+            if aboutScreenshots || aboutPhotos {
+                let assets = photos.recent(hours: aboutScreenshots ? 72 : 24, screenshotsOnly: aboutScreenshots)
+                let texts = await photos.recognizedText(in: assets, limit: 4)
+                if !texts.isEmpty {
+                    lines.append("TEXT READ FROM THE USER'S MOST RECENT \(aboutScreenshots ? "SCREENSHOTS" : "PHOTOS") (newest first):\n"
+                                 + texts.enumerated().map { "[\($0.offset + 1)] \($0.element)" }.joined(separator: "\n"))
+                }
+            }
+        }
+        // What can be heard around the user besides talk.
+        let sounds = AmbientListener.shared.recent()
+        if !sounds.isEmpty {
+            lines.append("SOUNDS AROUND THE USER IN THE LAST 15 MINUTES: " + sounds.prefix(8).joined(separator: ", "))
         }
         return lines
     }

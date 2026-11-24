@@ -487,6 +487,7 @@ final class TranscriptionLab: ObservableObject {
         let chosen = activeEngine
         if !isReady(chosen), !chosen.isCloud { download(chosen) }
         Task { await VoiceID.shared.prepare() }
+        startDrainLoop()
     }
 
     /// Apple's live recognizer handles the stream itself. Any other engine gets
@@ -507,6 +508,8 @@ final class TranscriptionLab: ObservableObject {
     private var liveSamples: [Float] = []
     private var liveRate: Double = 16_000
     private var liveVoiced = 0
+    /// Running estimate of the room's background level (see `ingestLive`).
+    private var liveNoiseFloor: Float = 0.002
     private var liveSilence = 0
     private var liveQueue: Task<Void, Never>?
     private var livePending = 0
@@ -522,6 +525,11 @@ final class TranscriptionLab: ObservableObject {
     /// said, not only at the pause. Runs only when the engine is free, so it
     /// can't fall behind or delay the final pass.
     private func refreshLivePartial() {
+        // "Don't use this iPhone": no in-progress preview from the phone's engine.
+        guard !UserDefaults.standard.bool(forKey: Self.serverOnlyKey) else { return }
+        // While the home server is answering it does the transcribing; the
+        // phone's engine isn't run just to preview the words.
+        if HomeServer.shared.shouldTry, HomeServer.shared.reachable == true { return }
         let engine = effectiveEngine
         switch engine.kind {
         case .sherpa, .whisperKit: break
@@ -545,8 +553,10 @@ final class TranscriptionLab: ObservableObject {
         }
     }
 
-    /// Collects bracelet audio into an utterance and hands it to the engine when
-    /// the speaker pauses (or after 20 s without a pause).
+    /// Collects bracelet audio and hands all of it to the engine, cut where the
+    /// speaker pauses (or every 8 s without a pause, so the transcript keeps up
+    /// even through a monologue — Parakeet on the server is fast enough). Nothing
+    /// is discarded.
     private func ingestLive(_ buffer: AVAudioPCMBuffer) {
         guard let data = buffer.floatChannelData?[0] else { return }
         let frames = Int(buffer.frameLength)
@@ -554,25 +564,34 @@ final class TranscriptionLab: ObservableObject {
         liveRate = buffer.format.sampleRate
         var sum: Float = 0
         for i in 0..<frames { sum += data[i] * data[i] }
-        let speaking = (sum / Float(frames)).squareRoot() > 0.008
+        let level = (sum / Float(frames)).squareRoot()
+        // "Is someone speaking" is judged against the room's own background
+        // level, not a fixed loudness: a fixed bar threw away quiet speech from
+        // across the room. The background estimate drops quickly to any quieter
+        // moment and creeps up slowly, so talk doesn't raise it.
+        if level < liveNoiseFloor {
+            liveNoiseFloor = liveNoiseFloor * 0.5 + level * 0.5
+        } else {
+            liveNoiseFloor *= 1.0005
+        }
+        liveNoiseFloor = min(max(liveNoiseFloor, 0.0002), 0.02)
+        let speaking = level > max(0.0012, liveNoiseFloor * 2.2)
 
         liveSamples.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
+        MusicSpotter.shared.ingest(data, count: frames, sampleRate: liveRate)
+        // Sounds around the user (not with the battery-saving switch on).
+        if !UserDefaults.standard.bool(forKey: Self.serverOnlyKey) { AmbientListener.shared.ingest(buffer) }
         if speaking {
             liveVoiced += frames
             liveSilence = 0
         } else {
             liveSilence += frames
-            // Before anyone speaks, keep only a short lead-in.
-            let leadIn = Int(liveRate * 0.4)
-            if liveVoiced == 0, liveSamples.count > leadIn {
-                liveSamples.removeFirst(liveSamples.count - leadIn)
-            }
         }
 
         refreshLivePartial()
 
         let paused = liveVoiced > 0 && Double(liveSilence) >= liveRate * 0.8
-        let tooLong = Double(liveSamples.count) >= liveRate * 20
+        let tooLong = Double(liveSamples.count) >= liveRate * 8
         guard paused || tooLong else { return }
 
         let chunk = liveSamples
@@ -582,8 +601,10 @@ final class TranscriptionLab: ObservableObject {
         liveSilence = 0
         liveGeneration += 1
         lastInterimCount = 0
-        guard voicedSeconds >= 0.3 else { livePartial = ""; return }
-        enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: voicedSeconds)
+        // Everything is transcribed, however quiet: the loudness check above
+        // only decides where to cut, never what to keep. Whether a stretch
+        // holds speech is left to the transcriber itself.
+        enqueueLive(chunk, rate: Int(liveRate), voicedSeconds: max(voicedSeconds, 0.1))
     }
 
     /// Utterances are transcribed strictly in order, one at a time; nothing is
@@ -607,15 +628,27 @@ final class TranscriptionLab: ObservableObject {
             var text = ""
             var usedName = ""
             var lastError = ""
+            var bySpeaker: [HomeServer.Segment] = []
             // The home computer first, when it's paired and answering. If it
             // fails, the same audio falls through to the phone's own engines.
             if HomeServer.shared.shouldTry {
                 do {
                     text = try await HomeServer.shared.transcribe(wav: LabWav.data(samples: chunk, sampleRate: rate), audioSeconds: seconds)
+                    bySpeaker = HomeServer.shared.lastSegments
                     usedName = "Home server"
                 } catch {
                     lastError = "Home server: \(error.localizedDescription)"
                 }
+            }
+            // "Home server only": don't transcribe here. Keep the audio and hand
+            // it to the server when it answers again. (If the phone runs out of
+            // room for held audio, it transcribes here rather than lose any.)
+            if usedName.isEmpty, UserDefaults.standard.bool(forKey: Self.serverOnlyKey),
+               let self, self.hold(chunk, rate: rate, heardAt: heardAt, voicedSeconds: voicedSeconds) {
+                self.livePending = max(0, self.livePending - 1)
+                if self.livePending == 0, self.liveVoiced == 0 { self.livePartial = "" }
+                self.liveStatus = "Saved for the home server (\(self.heldCount) waiting)"
+                return
             }
             for (index, engine) in engines.enumerated() where usedName.isEmpty {
                 do {
@@ -627,7 +660,10 @@ final class TranscriptionLab: ObservableObject {
                     lastError = "\(engine.name) failed: \(error.localizedDescription)"
                 }
             }
-            let voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate)
+            // The server already told the speakers apart; otherwise take one
+            // voice print for the whole clip here.
+            var voice: [Float]?
+            if bySpeaker.isEmpty { voice = await VoiceID.shared.embedding(samples: chunk, sampleRate: rate) }
             guard let self else { return }
             self.livePending = max(0, self.livePending - 1)
             // The finished line replaces the in-progress preview of it.
@@ -638,36 +674,180 @@ final class TranscriptionLab: ObservableObject {
             }
             let took = Date().timeIntervalSince(started)
             self.liveStatus = String(format: "%@ · %.1f s of audio in %.1f s", usedName, seconds, took)
-            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = MadeUpSpeech.clean(text)
             guard !cleaned.isEmpty else { return }
-            self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
+            let turns = MadeUpSpeech.clean(bySpeaker)
+            // Every speaker turn was made up: nothing was really said.
+            if !bySpeaker.isEmpty, turns.isEmpty { return }
+            // Whisper-family engines make up stock phrases ("Thank you.") from
+            // near-silence. Leave those out when the clip had almost no sound.
+            if voicedSeconds < 0.5, Self.inventedFromSilence.contains(
+                cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))) {
+                return
+            }
+            if turns.isEmpty {
+                self.record(text: cleaned, heardAt: heardAt, duration: voicedSeconds, engine: usedName, voicePrint: voice)
+            } else {
+                // One transcript line per speaker's turn, each with that
+                // speaker's voice print, at the time it was said.
+                for piece in turns {
+                    self.record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,
+                                engine: usedName, voicePrint: piece.voice.count >= 64 ? piece.voice : nil)
+                }
+            }
             self.liveListener?.deliverExternalText(cleaned)
+            // Let the assistant hear it: its name, or a moment to chime in.
+            NotificationCenter.default.post(name: .mynaHeardLine, object: nil, userInfo: ["text": cleaned])
         }
+    }
+
+    private static let inventedFromSilence: Set<String> = [
+        "thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "bye bye", "okay",
+        "yeah", "yes", "yep", "uh", "um", "mm", "mhm", "hmm", "oh",
+    ]
+
+    // MARK: - Audio held for the home server
+
+    static let serverOnlyKey = "myna.server.only"
+    /// Most audio kept on the phone while the server is away (about 17 hours).
+    private static let heldLimitBytes = 2_000_000_000
+
+    /// Clips waiting for the home server.
+    @Published private(set) var heldCount = 0
+    private var draining = false
+    private var drainLoop: Task<Void, Never>?
+
+    private static var heldFolder: URL {
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("held-audio", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private static func heldFiles() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: heldFolder, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Keep one clip for later. False if it couldn't be kept (no room left).
+    private func hold(_ chunk: [Float], rate: Int, heardAt: Date, voicedSeconds: Double) -> Bool {
+        let files = Self.heldFiles()
+        let used = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        guard used < Self.heldLimitBytes else { return false }
+        // The name carries when it was heard, so order and time survive.
+        let name = String(format: "%015.0f_%d.wav", heardAt.timeIntervalSince1970 * 1000, Int(voicedSeconds * 10))
+        do {
+            try LabWav.data(samples: chunk, sampleRate: rate).write(to: Self.heldFolder.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return false
+        }
+        heldCount = files.count + 1
+        return true
+    }
+
+    /// Watch for the server coming back and hand it everything that was held.
+    private func startDrainLoop() {
+        heldCount = Self.heldFiles().count
+        guard drainLoop == nil else { return }
+        drainLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                await self?.drainHeld()
+            }
+        }
+    }
+
+    private func drainHeld() async {
+        guard !draining, heldCount > 0, HomeServer.shared.shouldTry, HomeServer.shared.reachable == true else { return }
+        draining = true
+        defer { draining = false }
+        for file in Self.heldFiles() {
+            guard let wav = try? Data(contentsOf: file), wav.count > 44 else {
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
+            let parts = file.deletingPathExtension().lastPathComponent.split(separator: "_")
+            let heardAt = Date(timeIntervalSince1970: (Double(parts.first ?? "") ?? Date().timeIntervalSince1970 * 1000) / 1000)
+            let voiced = (Double(parts.last ?? "") ?? 0) / 10
+            // 16-bit mono after a 44-byte header, as LabWav writes it.
+            let rate = Int(wav.subdata(in: 24..<28).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+            let samples: [Float] = wav.subdata(in: 44..<wav.count).withUnsafeBytes { raw in
+                let count = raw.count / 2
+                return (0..<count).map { Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self))) / 32767 }
+            }
+            let seconds = rate > 0 ? Double(samples.count) / Double(rate) : 0
+            guard let text = try? await HomeServer.shared.transcribe(wav: wav, audioSeconds: seconds) else {
+                break  // the server went away again; keep the rest for next time
+            }
+            let bySpeaker = MadeUpSpeech.clean(HomeServer.shared.lastSegments)
+            try? FileManager.default.removeItem(at: file)
+            heldCount = max(0, heldCount - 1)
+            let cleaned = MadeUpSpeech.clean(text)
+            if !bySpeaker.isEmpty {
+                for piece in bySpeaker {
+                    record(text: piece.text, heardAt: heardAt.addingTimeInterval(piece.start), duration: piece.duration,
+                           engine: "Home server", voicePrint: piece.voice.count >= 64 ? piece.voice : nil)
+                }
+            } else if !cleaned.isEmpty {
+                let voice = await VoiceID.shared.embedding(samples: samples, sampleRate: rate)
+                record(text: cleaned, heardAt: heardAt, duration: voiced, engine: "Home server", voicePrint: voice)
+            }
+            liveStatus = heldCount > 0 ? "Catching up on the home server (\(heldCount) left)" : "Caught up with the home server"
+        }
+        heldCount = Self.heldFiles().count
     }
 
     // MARK: - The transcript and the voices in it
 
-    /// How alike two voice prints must be to count as the same person.
-    private static let sameVoice: Float = 0.5
+    /// How alike two voice prints must be to count as the same person. The
+    /// earlier bar (0.5) was loose enough to merge different people, men and
+    /// women included, into one voice.
+    private static let sameVoice: Float = 0.62
+    /// A match has to be this sure before it is allowed to adjust the stored
+    /// voice print, so one wrong match can't drag a voice toward someone else.
+    private static let learnVoice: Float = 0.72
+    /// Below this against everyone known, the voice is someone new.
+    private static let newVoice: Float = 0.40
+    /// Shortest stretch whose voice print is trusted at all.
+    private static let shortestPrint: Double = 1.5
+    /// The best match must beat the next-best by this much, or the line is
+    /// left unassigned: two voices that both fit nearly as well are a coin
+    /// toss (Omi uses the same 0.10 margin).
+    private static let matchMargin: Float = 0.10
+    /// A new person is only started from at least this much speech (Omi
+    /// requires five seconds of evidence before trusting a voice print).
+    private static let newPersonSeconds: Double = 5
 
     /// Saves one utterance, attributing it to a known voice or starting a new
     /// "Speaker N" when the voice isn't one Myna has heard.
     private func record(text: String, heardAt: Date, duration: Double, engine: String, voicePrint: [Float]?) {
         guard let context = container?.mainContext else { return }
         var speakerKey = ""
-        if let voicePrint {
+        // A line is given to a voice only when the match is clear. In between
+        // "clearly them" and "clearly someone new" it is left unassigned,
+        // which is better than a wrong name.
+        if let voicePrint, duration >= Self.shortestPrint {
             let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
             var best: VoicePerson?
             var bestScore: Float = -1
-            for person in people {
+            var runnerUp: Float = -1
+            for person in people where !person.centroid.isEmpty {
                 let score = VoicePrint.similarity(VoicePrint.vector(person.centroid), voicePrint)
-                if score > bestScore { bestScore = score; best = person }
+                if score > bestScore {
+                    runnerUp = bestScore
+                    bestScore = score
+                    best = person
+                } else if score > runnerUp {
+                    runnerUp = score
+                }
             }
-            if let best, bestScore >= Self.sameVoice {
-                best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
-                best.sampleCount += 1
+            if let best, bestScore >= Self.sameVoice, bestScore - runnerUp >= Self.matchMargin {
+                if bestScore >= Self.learnVoice {
+                    best.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(best.centroid), count: best.sampleCount, with: voicePrint))
+                    best.sampleCount += 1
+                }
                 speakerKey = best.key
-            } else {
+            } else if bestScore < Self.newVoice, duration >= Self.newPersonSeconds {
                 let person = VoicePerson(name: "Speaker \(people.count + 1)", centroid: VoicePrint.data(voicePrint))
                 context.insert(person)
                 speakerKey = person.key
@@ -701,14 +881,50 @@ final class TranscriptionLab: ObservableObject {
         try? context.save()
     }
 
+    /// "This line was said by …": set the speaker of ONE line by name. Only
+    /// that line changes. If nobody has that name yet, a new person is made
+    /// from this line's voice.
+    func setSpeaker(of utterance: Utterance, named rawName: String) {
+        guard let context = container?.mainContext else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let people = (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? []
+        if let existing = people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            assign(utterance, to: existing)
+            return
+        }
+        let person = VoicePerson(name: name, centroid: utterance.embedding ?? Data())
+        person.isNamed = true
+        context.insert(person)
+        utterance.speakerKey = person.key
+        try? context.save()
+    }
+
+    /// This line has no known speaker.
+    func clearSpeaker(of utterance: Utterance) {
+        utterance.speakerKey = ""
+        try? container?.mainContext.save()
+    }
+
+    /// Forget every voice and who said what, and start learning again. The
+    /// transcript itself is kept.
+    func forgetVoices() {
+        guard let context = container?.mainContext else { return }
+        for person in (try? context.fetch(FetchDescriptor<VoicePerson>())) ?? [] { context.delete(person) }
+        let lines = (try? context.fetch(FetchDescriptor<Utterance>(predicate: #Predicate<Utterance> { $0.speakerKey != "" }))) ?? []
+        for line in lines { line.speakerKey = "" }
+        try? context.save()
+    }
+
     /// "That wasn't them, it was …": move one utterance to another person and
     /// teach that person's voice print with it.
     func assign(_ utterance: Utterance, to person: VoicePerson) {
         guard let context = container?.mainContext else { return }
         utterance.speakerKey = person.key
         if let data = utterance.embedding {
-            person.centroid = VoicePrint.data(VoicePrint.merged(VoicePrint.vector(person.centroid), count: person.sampleCount,
-                                                               with: VoicePrint.vector(data)))
+            person.centroid = person.centroid.isEmpty ? data
+                : VoicePrint.data(VoicePrint.merged(VoicePrint.vector(person.centroid), count: person.sampleCount,
+                                                    with: VoicePrint.vector(data)))
             person.sampleCount += 1
         }
         try? context.save()

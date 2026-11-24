@@ -45,6 +45,27 @@ final class PhotosContext: ObservableObject {
         return assets
     }
 
+    /// The newest pictures in the camera roll from the last `hours`:
+    /// screenshots only, or any picture.
+    func recent(hours: Double, screenshotsOnly: Bool, limit: Int = 4) -> [PHAsset] {
+        guard isAuthorized else { return [] }
+        let options = PHFetchOptions()
+        let since = Date().addingTimeInterval(-hours * 3600) as NSDate
+        if screenshotsOnly {
+            options.predicate = NSPredicate(
+                format: "creationDate >= %@ AND mediaType == %d AND (mediaSubtype & %d) != 0",
+                since, PHAssetMediaType.image.rawValue, PHAssetMediaSubtype.photoScreenshot.rawValue
+            )
+        } else {
+            options.predicate = NSPredicate(format: "creationDate >= %@ AND mediaType == %d", since, PHAssetMediaType.image.rawValue)
+        }
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.fetchLimit = limit
+        var assets: [PHAsset] = []
+        PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in assets.append(asset) }
+        return assets
+    }
+
     /// Text recognized in up to `limit` of the photos, skipping ones with little to read.
     func recognizedText(in assets: [PHAsset], limit: Int = 3) async -> [String] {
         var texts: [String] = []

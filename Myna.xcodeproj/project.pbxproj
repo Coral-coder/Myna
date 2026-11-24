@@ -13,6 +13,7 @@
 		4D594E410000000000000019 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001B /* WhisperKit */; };
 		4D594E41000000000000001C /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E41000000000000001E /* sherpa-onnx */; };
 		4D594E41000000000000001F /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000021 /* ZIPFoundation */; };
+		4D594E410000000000000031 /* Tailnet in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000032 /* Tailnet */; };
 		4D594E410000000000000024 /* YbridOpus in Frameworks */ = {isa = PBXBuildFile; productRef = 4D594E410000000000000023 /* YbridOpus */; };
 /* End PBXBuildFile section */
 
@@ -44,6 +45,7 @@
 				4D594E410000000000000019 /* WhisperKit in Frameworks */,
 				4D594E41000000000000001C /* sherpa-onnx in Frameworks */,
 				4D594E41000000000000001F /* ZIPFoundation in Frameworks */,
+				4D594E410000000000000031 /* Tailnet in Frameworks */,
 				4D594E410000000000000024 /* YbridOpus in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -94,6 +96,7 @@
 				4D594E41000000000000001B /* WhisperKit */,
 				4D594E41000000000000001E /* sherpa-onnx */,
 				4D594E410000000000000021 /* ZIPFoundation */,
+				4D594E410000000000000032 /* Tailnet */,
 				4D594E410000000000000023 /* YbridOpus */,
 			);
 			productName = Myna;
@@ -130,6 +133,7 @@
 				4D594E41000000000000001A /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
 				4D594E41000000000000001D /* XCRemoteSwiftPackageReference "sherpa-onnx" */,
 				4D594E410000000000000020 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				4D594E410000000000000030 /* XCLocalSwiftPackageReference "Packages/Tailnet" */,
 				4D594E410000000000000022 /* XCRemoteSwiftPackageReference "opus-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -370,6 +374,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		4D594E410000000000000030 /* XCLocalSwiftPackageReference "Packages/Tailnet" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Tailnet;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		4D594E410000000000000011 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -456,6 +467,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4D594E410000000000000022 /* XCRemoteSwiftPackageReference "opus-swift" */;
 			productName = YbridOpus;
+		};
+		4D594E410000000000000032 /* Tailnet */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Tailnet;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

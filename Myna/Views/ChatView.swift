@@ -6,17 +6,15 @@ import SwiftUI
 struct ChatView: View {
     @EnvironmentObject private var brain: MynaBrain
 
-    @State private var messages: [Message] = []
+    @ObservedObject private var log = ChatLog.shared
+    @ObservedObject private var server = HomeServer.shared
+    @AppStorage("myna.verboseThinking") private var verbose = false
+    private var messages: [Message] { log.messages }
     @State private var draft = ""
     @State private var sending = false
     @FocusState private var inputFocused: Bool
 
-    struct Message: Identifiable, Equatable {
-        enum Role { case me, myna }
-        let id = UUID()
-        let role: Role
-        var text: String
-    }
+    typealias Message = ChatLog.Message
 
     private let suggestions = [
         "What did I say I'd do today?",
@@ -53,13 +51,21 @@ struct ChatView: View {
 
     private var header: some View {
         HStack {
-            Text("Ask Myna")
+            Text("Ask Lumi")
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(MynaTheme.ink)
             Spacer()
+            Button {
+                withAnimation { verbose.toggle() }
+            } label: {
+                Image(systemName: verbose ? "eye.fill" : "eye")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(verbose ? MynaTheme.cyan : MynaTheme.ink.opacity(0.4))
+            }
+            .accessibilityLabel("Show thinking")
             if !messages.isEmpty {
                 Button {
-                    withAnimation { messages.removeAll() }
+                    withAnimation { log.clear() }
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 16, weight: .medium))
@@ -104,23 +110,64 @@ struct ChatView: View {
         }
     }
 
-    private func bubble(_ m: Message) -> some View {
-        HStack {
-            if m.role == .me { Spacer(minLength: 40) }
-            Text(m.text)
-                .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(m.role == .me ? MynaTheme.ink : MynaTheme.ink.opacity(0.9))
-                .padding(.horizontal, 15)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(m.role == .me ? MynaTheme.cyan.opacity(0.18) : MynaTheme.ink.opacity(0.06))
-                )
-                .frame(maxWidth: .infinity, alignment: m.role == .me ? .trailing : .leading)
-                .textSelection(.enabled)
-            if m.role == .myna { Spacer(minLength: 40) }
+    @ViewBuilder private func bubble(_ m: Message) -> some View {
+        if m.role == .me {
+            HStack {
+                Spacer(minLength: 40)
+                Text(m.text)
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundStyle(MynaTheme.ink)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(MynaTheme.cyan.opacity(0.18)))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .textSelection(.enabled)
+            }
+            .id(m.id)
+        } else {
+            // Lumi's answers are Markdown — code blocks, tables, lists and the
+            // rest render the way they're written, not as one flat run of text.
+            // When "thinking" is on, the steps it took show above the answer.
+            VStack(alignment: .leading, spacing: 6) {
+                if verbose, !m.think.isEmpty {
+                    // The model's reasoning and tool use, streaming in live.
+                    ScrollView {
+                        Text(m.think + (m.streaming ? " ▋" : ""))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(MynaTheme.ink.opacity(0.5))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 220)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(MynaTheme.cyan.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(MynaTheme.cyan.opacity(0.18)))
+                }
+                if verbose, !m.steps.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(m.steps.indices, id: \.self) { i in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "arrow.turn.down.right")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(MynaTheme.cyan.opacity(0.6))
+                                Text(m.steps[i])
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(MynaTheme.ink.opacity(0.45))
+                            }
+                        }
+                    }
+                    .padding(.leading, 4)
+                }
+                MarkdownText(text: m.text.isEmpty ? "…" : m.text)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(MynaTheme.ink.opacity(0.06)))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 24)
+            .id(m.id)
         }
-        .id(m.id)
     }
 
     private var thinking: some View {
@@ -172,13 +219,50 @@ struct ChatView: View {
         guard !trimmed.isEmpty, !sending else { return }
         inputFocused = false
         draft = ""
-        messages.append(Message(role: .me, text: trimmed))
+        // The turns before this question, for the server to keep context.
+        let before = messages.suffix(12).map { ["role": $0.role == .me ? "me" : "myna", "text": $0.text] }
+        log.add(.me, trimmed)
         sending = true
+        let serverReady = server.isPaired && server.enabled && server.reachable == true
+
+        // Verbose + server reachable over the local network: stream everything
+        // live (reasoning, tool use, answer tokens) into a message in place.
+        if verbose, serverReady, !server.hasPrivateAddress {
+            let id = log.beginAssistant()
+            Task { @MainActor in
+                var steps: [String] = []
+                for await event in server.askStream(question: trimmed, history: before) {
+                    switch event {
+                    case .thinking(let d): log.update(id) { $0.think += d }
+                    case .phase(let d): log.update(id) { $0.think += "\n── \(d) ──\n" }
+                    case .step(let d): steps.append(d); log.update(id) { $0.steps = steps; $0.think += "\n→ \(d)\n" }
+                    case .observation(let d): log.update(id) { $0.think += "    " + d.prefix(400) + "\n" }
+                    case .answer(let d): log.update(id) { $0.text += d }
+                    case .done(let reply, let s, _): log.update(id) { if !reply.isEmpty { $0.text = reply }; if !s.isEmpty { $0.steps = s } }
+                    case .failed(let message): log.update(id) { if $0.text.isEmpty { $0.text = "Couldn't answer: \(message)" } }
+                    }
+                }
+                sending = false
+                log.finish(id)
+            }
+            return
+        }
+
         Task {
+            // The server is the brain: when it's reachable, Lumi answers there,
+            // with all its tools, Markdown and a trace. The phone falls back to
+            // its own on-device answer only when the server can't be reached.
+            if serverReady, let result = try? await server.ask(question: trimmed, history: before) {
+                await MainActor.run {
+                    sending = false
+                    log.add(.myna, result.reply.isEmpty ? "…" : result.reply, steps: result.steps)
+                }
+                return
+            }
             let reply = await brain.handleTyped(trimmed)
             await MainActor.run {
                 sending = false
-                messages.append(Message(role: .myna, text: reply.isEmpty ? "…" : reply))
+                log.add(.myna, reply.isEmpty ? "…" : reply)
             }
         }
     }

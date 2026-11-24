@@ -4,13 +4,10 @@ name: Release Myna Server
 # manifest naming its version and checksum, to the `server-latest` release.
 # Running servers check that manifest and update themselves.
 
+# Only when started by hand: the owner decides when a new server goes out.
+# Pushes run the checks below without publishing anything.
 on:
   workflow_dispatch:
-  push:
-    branches: [main, bee-remember-login]
-    paths:
-      - server/**
-      - .github/workflows/server-release.yml
 
 permissions:
   contents: write
@@ -37,8 +34,9 @@ jobs:
       - name: Test the worker
         working-directory: server
         run: |
-          pip install -q fastapi uvicorn httpx numpy pytest
+          pip install -q fastapi uvicorn httpx numpy pytest pynacl qrcode
           python -m pytest -q tests
+          python tests/check_llama_flags.py
 
       - name: Pack the worker into the launcher
         working-directory: server

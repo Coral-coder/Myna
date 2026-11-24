@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 )
 
 func main() {
-	background, windowOnly := false, false
+	background, windowOnly, afterUpdate := false, false, false
 	for _, arg := range os.Args[1:] {
 		switch arg {
+		case "--after-update":
+			afterUpdate = true
 		case "--background":
 			background = true
 		case "--window":
@@ -31,6 +34,12 @@ func main() {
 	// One server at a time. If the status port is taken, the server is already
 	// running, so this copy just becomes its window.
 	listener, err := net.Listen("tcp", "127.0.0.1:"+uiPort)
+	// Right after an update the previous copy is still letting go of the
+	// port; wait for it rather than mistake it for a running server.
+	for tries := 0; err != nil && afterUpdate && tries < 40; tries++ {
+		time.Sleep(250 * time.Millisecond)
+		listener, err = net.Listen("tcp", "127.0.0.1:"+uiPort)
+	}
 	if err != nil {
 		runWindow()
 		return
@@ -38,6 +47,14 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// This copy is the server. Any other copy still running is a window left
+	// from before an update, running the old exe: close it (it would block the
+	// next update) and open a fresh one in its place.
+	if closeOtherCopies() > 0 {
+		background = false
+	}
+	cleanOldCopies()
 
 	st := &status{Version: version, Setup: "Starting", Tailnet: "Starting"}
 	settings := loadSettings()

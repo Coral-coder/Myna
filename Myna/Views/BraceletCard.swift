@@ -17,6 +17,7 @@ struct BraceletCard: View {
     @State private var fetchSecret = ""
     @State private var fetchToken = ""
     @State private var showAccountFetch = false
+    @State private var showOwnKeyTest = false
     @State private var acctSessionToken = ""
     @State private var acctPassphrase = ""
     @State private var acctProof = ""
@@ -54,6 +55,7 @@ struct BraceletCard: View {
                 capturedKeySection
                 accountFetchSection
                 serverFetchSection
+                ownKeyTestSection
                 if bee.isReadyForControl, bee.deviceState == .mute {
                     VStack(alignment: .leading, spacing: 8) {
                         detailRow(icon: "mic.slash.fill", text: "The bracelet is muted, so it isn't sending audio.", tint: MynaTheme.gold)
@@ -131,6 +133,51 @@ struct BraceletCard: View {
             .padding(.top, 6)
         } label: {
             Text("Advanced: paste captured key").braceletLabel()
+        }
+        .tint(MynaTheme.ink.opacity(0.6))
+    }
+
+    /// The experiment that settles whether a Bee-free key generator is possible:
+    /// install our OWN randomly generated key (wrapped in a real captured
+    /// envelope) on a factory-reset bracelet and see whether the firmware takes
+    /// it. Accepted → the key isn't signature-bound, so Myna can mint its own.
+    @ViewBuilder
+    private var ownKeyTestSection: some View {
+        DisclosureGroup(isExpanded: $showOwnKeyTest) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Settles whether Myna can generate its own bracelet key instead of ever asking Bee. It puts a key Myna made itself onto the bracelet, wrapped in a real captured envelope, and checks whether the firmware accepts it.")
+                    .braceletCaption()
+                Text("No Bee key needed. Myna builds a whole key token itself from your device id and installs it. Tap Arm, then factory-reset the bracelet on the device (press its button 5× until blue+green). Myna stops its normal setup so the reset bracelet stays unsealed, and runs the test the moment it reconnects — no race. Accepted → the bracelet runs your own key and you never need Bee again. Refused → see the result for what it means.")
+                    .braceletCaption()
+                if bee.hasCapturedEnvelope {
+                    Toggle(isOn: Binding(get: { bee.ownKeyUseCaptured }, set: { bee.ownKeyUseCaptured = $0 })) {
+                        Text("Use my captured key's envelope (only the key is changed)")
+                            .braceletCaption()
+                    }
+                    .tint(MynaTheme.cyan)
+                }
+                if let result = bee.ownKeyTestResult {
+                    Text(result)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button {
+                    bee.armOwnKeyTest()
+                } label: {
+                    HStack(spacing: 8) {
+                        if bee.ownKeyTestRunning { ProgressView().controlSize(.small).tint(MynaTheme.cyan) }
+                        Text(bee.ownKeyTestRunning ? "Testing…"
+                             : (bee.ownKeyTestArmed ? "Armed — waiting for reset (tap to cancel)" : "Arm the test"))
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    }
+                }
+                .tint(bee.ownKeyTestArmed ? MynaTheme.magenta : MynaTheme.cyan)
+                .disabled(bee.ownKeyTestRunning)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced: test my own key (experimental)").braceletLabel()
         }
         .tint(MynaTheme.ink.opacity(0.6))
     }
@@ -309,6 +356,19 @@ struct BraceletCard: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(MynaTheme.cyan)
             }
+
+            Toggle(isOn: Binding(get: { bee.transcribesBracelet },
+                                 set: { bee.setTranscribesBracelet($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Transcribe on this phone").braceletCaption()
+                    Text(bee.transcribesBracelet
+                         ? "Myna decodes and transcribes the bracelet's audio here."
+                         : "Off — Bee's cloud transcribes; the server syncs it. Controls still work.")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(MynaTheme.ink.opacity(0.4))
+                }
+            }
+            .tint(MynaTheme.cyan)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {

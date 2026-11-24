@@ -107,6 +107,14 @@ final class MynaBrain: ObservableObject {
         voice.onStart = { [weak listener] in listener?.pauseRecognition() }
         voice.onFinish = { [weak listener] in listener?.resumeRecognition() }
 
+        // Every finished line of transcript, whichever engine (or the home
+        // server) produced it. This is how the assistant hears its name when
+        // Apple's live recognizer isn't the one listening.
+        NotificationCenter.default.addObserver(forName: .mynaHeardLine, object: nil, queue: .main) { [weak self] note in
+            guard let text = note.userInfo?["text"] as? String else { return }
+            Task { @MainActor in self?.heardLine(text) }
+        }
+
         spotterTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.listener.isListening, let command = self.spotter.tick(at: .now) else { return }
@@ -117,6 +125,87 @@ final class MynaBrain: ObservableObject {
 
     func attach(modelContext: ModelContext) {
         self.modelContext = modelContext
+    }
+
+    // MARK: - Listening like a secretary
+
+    /// Whether Myna may speak up, unasked, when it can supply a fact the people
+    /// talking are missing.
+    var chimesIn: Bool {
+        UserDefaults.standard.object(forKey: "myna.chimeIn") as? Bool ?? true
+    }
+
+    private var lastChimeCheck: Date = .distantPast
+
+    /// A line was just heard. If it holds Myna's name, do what follows it;
+    /// otherwise consider whether there is something worth chiming in with.
+    private func heardLine(_ text: String) {
+        guard !voice.isSpeaking else { return }
+        if isWakeWordEnabled {
+            let commands = CommandParser.commandsFollowingWakeWord(in: text).filter { !$0.isEmpty }
+            if !commands.isEmpty {
+                for command in commands { run(command, origin: .voice) }
+                return
+            }
+        }
+        guard chimesIn, voice.isEnabled, Self.soundsLikeAnOpenQuestion(text),
+              Date().timeIntervalSince(lastChimeCheck) > 90 else { return }
+        lastChimeCheck = Date()
+        Task { await considerChimingIn() }
+    }
+
+    /// A cheap first test, so the model is only consulted when someone seems
+    /// to be asking something that has an answer.
+    static func soundsLikeAnOpenQuestion(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard lower.split(separator: " ").count >= 4 else { return false }
+        let cues = ["i wonder", "does anyone know", "do you know", "anybody know", "what's the", "what is the", "what was the",
+                    "who was", "who is", "who's the", "when is", "when was", "when did", "where is", "where's the",
+                    "how many", "how much", "how far", "how long", "how old", "what year", "what time", "which one",
+                    "i can't remember", "i don't remember", "what's it called", "what was it called"]
+        return cues.contains { lower.contains($0) }
+    }
+
+    /// The last stretch of what was said around the user, oldest first.
+    private func recentlyHeard(seconds: Double) -> String {
+        guard let modelContext else { return "" }
+        let cutoff = Date().addingTimeInterval(-seconds)
+        let descriptor = FetchDescriptor<Utterance>(predicate: #Predicate<Utterance> { $0.heardAt >= cutoff },
+                                                    sortBy: [SortDescriptor(\Utterance.heardAt)])
+        let lines = (try? modelContext.fetch(descriptor)) ?? []
+        return lines.suffix(30).map(\.text).joined(separator: "\n")
+    }
+
+    /// Someone asked something out loud. If Myna can supply the answer and
+    /// nobody else did, it says so, briefly; otherwise it stays quiet.
+    private func considerChimingIn() async {
+        let heard = recentlyHeard(seconds: 90)
+        guard !heard.isEmpty else { return }
+        let instructions = """
+        You are \(assistantName), the user's secretary, sitting in on a conversation and listening. You speak only \
+        when you can supply a fact that someone asked for and nobody present knew, or correct a plainly wrong fact \
+        that matters. Stay silent for opinions, personal matters, rhetorical questions, or anything already answered. \
+        When unsure, stay silent. Reply with one JSON object and nothing else: \
+        {"chime": true or false, "say": "one short spoken sentence", "search": "a web search query if you need to look it up, else empty"}
+        """
+        var webBlock = ""
+        for round in 0..<2 {
+            let prompt = "THE CONVERSATION JUST NOW:\n\(heard)\n\(webBlock)\nJSON:"
+            guard let raw = try? await modelManager.respond(instructions: instructions, prompt: prompt, maxTokens: 200, background: true),
+                  let json = NotesEngine.extractJSON(from: raw), let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let search = (object["search"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            if round == 0, !search.isEmpty, WebLookup.isEnabled {
+                let found = await WebLookup().summary(for: search) ?? "Nothing useful was found."
+                webBlock = "WEB RESULTS for \"\(search)\":\n\(found)\n"
+                continue
+            }
+            let say = (object["say"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard object["chime"] as? Bool == true, !say.isEmpty, !voice.isSpeaking else { return }
+            voice.say(say)
+            ChatLog.shared.add(.myna, say)
+            return
+        }
     }
 
     // MARK: - Entry points
@@ -511,11 +600,12 @@ final class MynaBrain: ObservableObject {
         defer { isThinking = false }
 
         let persona = customPersona.isEmpty ? """
-        You are \(assistantName), a warm, loyal, quick personal assistant living on the user's \
-        iPhone — the trusty computer in their pocket that always has their back. You are their \
-        memory and their second pair of ears: you remember their conversations, keep their lists, \
-        calendar and reminders, and quietly take care of things for them like a trusted human \
-        assistant would. When something genuinely matters, you speak up.
+        You are \(assistantName), the user's personal secretary: discreet, sharp, warm and a little dry. \
+        You sit in on their day and listen. You speak when you are addressed by name, and otherwise only \
+        when you have something they need. You are their memory and their second pair of ears: you \
+        remember their conversations, keep their lists, calendar and reminders, look things up, and \
+        quietly take care of things the way a first-rate human secretary would. You are brief, you \
+        never pad, and you never pretend to know what you don't.
         """ : """
         Your name is \(assistantName). \(customPersona)
         """
@@ -533,12 +623,22 @@ final class MynaBrain: ObservableObject {
 
         // The agent runs at most twice: once to answer or request a search, and —
         // if it searched — again with the web results in hand to answer from them.
+        // What was said earlier in the Ask chat, so follow-ups are understood.
+        let earlier = origin == .typed ? ChatLog.shared.recentContext(excluding: question) : ""
+        var earlierBlock = earlier.isEmpty ? "" : "\nEARLIER IN THIS CHAT (for context; answer only the new message):\n\(earlier)\n"
+        // Spoken to by name mid-conversation: know what was just being said.
+        if origin == .voice {
+            let justSaid = recentlyHeard(seconds: 120)
+            if !justSaid.isEmpty {
+                earlierBlock += "\nWHAT WAS JUST SAID AROUND THE USER (so you can follow the conversation):\n\(justSaid)\n"
+            }
+        }
         var webResults: String?
         for round in 0..<2 {
             let webBlock = webResults.map { "\nWEB RESULTS (use these to answer; cite nothing, just answer naturally):\n\($0)\n" } ?? ""
             let prompt = """
             \(context(extra: deviceContext))
-            \(webBlock)
+            \(webBlock)\(earlierBlock)
             THE USER SAYS: "\(question)"
 
             Respond with JSON:
@@ -552,7 +652,10 @@ final class MynaBrain: ObservableObject {
                {"type": "complete", "text": "the item to check off"},\(searchTool)
              ]}
             Use an empty actions array when nothing needs doing. Never invent facts about the \
-            user's life — if the context doesn't say, say you don't know.
+            user's life — if the context doesn't say, say you don't know. Answer the question that \
+            was asked: never recite unrelated context (for example the calendar when asked about \
+            the weather). For anything about the world that the context above doesn't cover — \
+            news, facts, people, places, prices, scores, how-to — use a search action rather than guessing.
 
             JSON:
             """
@@ -704,4 +807,9 @@ final class MynaBrain: ObservableObject {
         let budget = modelManager.promptCharacterBudget
         return text.count > budget ? String(text.prefix(budget)) : text
     }
+}
+
+extension Notification.Name {
+    /// Posted with `userInfo["text"]` for every finished line of transcript.
+    static let mynaHeardLine = Notification.Name("myna.heardLine")
 }

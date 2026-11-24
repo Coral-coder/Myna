@@ -46,6 +46,13 @@ final class ModelManager: ObservableObject {
         // Keep MLX's GPU buffer cache small; an LLM on a phone wants every megabyte.
         MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
 
+        // By default an error inside MLX ends the whole app (build 98 crashed
+        // this way). Record it instead; `runMLX` turns it into an ordinary
+        // failure the caller can handle.
+        setErrorHandler({ message, _ in
+            CrashReporter.log("MLX error: " + (message.map { String(cString: $0) } ?? "unknown"))
+        })
+
         refreshInstalledStates()
     }
 
@@ -202,13 +209,24 @@ final class ModelManager: ObservableObject {
     ///   - if Myna leaves the screen mid-answer, the GPU run is stopped before
     ///     iOS can fail it (which aborts the app) and the request is run again
     ///     on the CPU, so nothing is dropped.
-    func respond(instructions: String, prompt: String, maxTokens: Int = 2048) async throws -> String {
+    ///
+    /// `background` marks work nobody is waiting on (sorting the transcript,
+    /// deciding whether to chime in). That work is never given to the phone's
+    /// own MLX model, which is the heaviest and least stable thing Myna runs:
+    /// it uses the home server or Apple Intelligence, or waits.
+    func respond(instructions: String, prompt: String, maxTokens: Int = 2048, background: Bool = false) async throws -> String {
         // The home computer first, when it's paired and answering. Any failure
         // falls through to this iPhone's own models, so nothing is lost.
         if HomeServer.shared.shouldTry {
             if let answer = try? await HomeServer.shared.generate(instructions: instructions, prompt: prompt, maxTokens: maxTokens) {
                 return answer
             }
+        }
+        // "Don't use this iPhone": leave writing for the home server. The
+        // caller keeps the work queued and it is done when the server is back.
+        if UserDefaults.standard.bool(forKey: TranscriptionLab.serverOnlyKey),
+           HomeServer.shared.isPaired, HomeServer.shared.enabled {
+            throw MynaModelError.waitingForServer
         }
         HomeServer.shared.noteLocal("writing")
         let onScreen = UIApplication.shared.applicationState == .active
@@ -227,6 +245,7 @@ final class ModelManager: ObservableObject {
         guard hasMLXModelInstalled else {
             throw AppleIntelligenceEngine.isAvailable ? MynaModelError.appleIntelligenceUnavailable : MynaModelError.noModelInstalled
         }
+        if background { throw MynaModelError.waitingForServer }
 
         // Ask iOS for time to finish if Myna gets backgrounded part-way.
         let grace = UIApplication.shared.beginBackgroundTask(withName: "myna.generate")
@@ -238,13 +257,10 @@ final class ModelManager: ObservableObject {
         generating += 1
         defer { generating -= 1 }
 
-        if UIApplication.shared.applicationState == .active {
-            if let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: false) {
-                return answer
-            }
-            // Stopped because Myna left the screen — fall through to the CPU.
-            CrashReporter.log("generation moved to CPU (left the screen)")
-        }
+        // Always on the CPU. A graphics-chip run can't be stopped part-way
+        // through a step, and if Myna leaves the screen during one (build 88:
+        // switching to the browser to sign in) iOS fails it and MLX aborts the
+        // whole app. The CPU is slower but is allowed everywhere.
         guard let answer = try await runMLX(instructions: instructions, prompt: prompt, maxTokens: maxTokens, onCPU: true) else {
             throw MynaModelError.needsForeground
         }
@@ -259,13 +275,21 @@ final class ModelManager: ObservableObject {
         let finalPrompt = activeModel?.wantsThinkingDisabled == true ? prompt + "\n/no_think" : prompt
 
         if onCPU {
+            // One generation at a time. Notes, the transcript sorter, chiming
+            // in and Ask can all want the model at once, and MLX can't run two
+            // generations on one model together.
+            await acquireMLX()
+            defer { releaseMLX() }
             // Every MLX operation created inside this scope (including the
             // model load and the generation task it spawns) runs on the CPU,
-            // which iOS allows off screen.
-            return try await Device.withDefaultDevice(.cpu) {
-                let container = try await self.ensureContainer()
-                let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
-                return try await session.respond(to: finalPrompt)
+            // which iOS allows off screen. An MLX error inside it is thrown
+            // as an ordinary error rather than ending the app.
+            return try await withError {
+                try await Device.withDefaultDevice(.cpu) {
+                    let container = try await self.ensureContainer()
+                    let session = ChatSession(container, instructions: instructions, generateParameters: parameters)
+                    return try await session.respond(to: finalPrompt)
+                }
             }
         }
 
@@ -285,6 +309,27 @@ final class ModelManager: ObservableObject {
         } catch {
             if stoppedForBackground { return nil }
             throw error
+        }
+    }
+
+    private var mlxBusy = false
+    private var mlxWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Wait for the model to be free, then take it.
+    private func acquireMLX() async {
+        if !mlxBusy {
+            mlxBusy = true
+            return
+        }
+        await withCheckedContinuation { mlxWaiters.append($0) }
+    }
+
+    /// Hand the model to the next waiter, or mark it free.
+    private func releaseMLX() {
+        if mlxWaiters.isEmpty {
+            mlxBusy = false
+        } else {
+            mlxWaiters.removeFirst().resume()
         }
     }
 
@@ -320,12 +365,15 @@ final class ModelManager: ObservableObject {
 enum MynaModelError: LocalizedError {
     case noModelInstalled
     case needsForeground
+    case waitingForServer
     case appleIntelligenceUnavailable
 
     var errorDescription: String? {
         switch self {
         case .noModelInstalled:
             return "No AI model is installed yet. Visit the Neural Core to download one."
+        case .waitingForServer:
+            return "Waiting for the home server (this iPhone is set not to do the work itself)."
         case .needsForeground:
             return "The on-device model needs Myna on screen to run."
         case .appleIntelligenceUnavailable:
