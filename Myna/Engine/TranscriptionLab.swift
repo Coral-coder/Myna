@@ -554,7 +554,9 @@ final class TranscriptionLab: ObservableObject {
     }
 
     /// Collects bracelet audio and hands all of it to the engine, cut where the
-    /// speaker pauses (or every 20 s without a pause). Nothing is discarded.
+    /// speaker pauses (or every 8 s without a pause, so the transcript keeps up
+    /// even through a monologue — Parakeet on the server is fast enough). Nothing
+    /// is discarded.
     private func ingestLive(_ buffer: AVAudioPCMBuffer) {
         guard let data = buffer.floatChannelData?[0] else { return }
         let frames = Int(buffer.frameLength)
@@ -589,7 +591,7 @@ final class TranscriptionLab: ObservableObject {
         refreshLivePartial()
 
         let paused = liveVoiced > 0 && Double(liveSilence) >= liveRate * 0.8
-        let tooLong = Double(liveSamples.count) >= liveRate * 20
+        let tooLong = Double(liveSamples.count) >= liveRate * 8
         guard paused || tooLong else { return }
 
         let chunk = liveSamples
