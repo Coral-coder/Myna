@@ -26,8 +26,10 @@ class Config:
     # The phone must present this on every request. Made once, on first run.
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     port: int = 8787
-    # Speech-to-text model for faster-whisper.
-    stt_model: str = "turbo"
+    # Speech-to-text model. Default is Parakeet (NVIDIA, via sherpa-onnx) on the
+    # processor — "Omi mode": fast, accurate, and it leaves the graphics card
+    # free for the writing model. A "sherpa:" prefix means a sherpa model.
+    stt_model: str = "sherpa:parakeet-v3"
     # Language model: a Hugging Face GGUF repo and file for llama.cpp. Gemma 4
     # 12B (about 7 GB) leaves room on a 12 GB card for Whisper beside it.
     llm_repo: str = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
@@ -44,7 +46,8 @@ class Config:
     llm_device: str = "auto"
     # Threads for model work on the processor. 0 = the fast cores (8 on an i9-14900K).
     cpu_threads: int = 0
-    stt_device: str = "auto"
+    # Parakeet runs on the processor, leaving the card for the writer (Omi mode).
+    stt_device: str = "cpu"
     # A second, smaller model that reads a lot of material and picks out what
     # matters, so the main model gets the relevant part. Empty = not used.
     helper_repo: str = ""
@@ -166,6 +169,16 @@ class Config:
             if config.llm_file == "gemma-4-12b-it-qat-q4_0.gguf":
                 config.llm_repo, config.llm_file = cls.llm_repo, cls.llm_file
             config.upgraded_to = "big-and-speakers"
+        if config.upgraded_to == "big-and-speakers":
+            # Default to "Omi mode": transcribe here with Parakeet on the
+            # processor, lean, the card left for the writer. Bee is no longer the
+            # default — it becomes an optional switch that pulls the Bee
+            # transcript instead. Flips everyone (including Bee-mode installs).
+            config.transcribe_source = "local"
+            config.simple_mode = True
+            config.stt_model = "sherpa:parakeet-v3"
+            config.stt_device = "cpu"
+            config.upgraded_to = "omi-default"
         config.save(path)
         return config
 

@@ -628,7 +628,8 @@ def test_live_transcription_uses_both_recognizers_and_learns_words(stt):
             return ""
 
     main = Deaf("main")
-    app = create_app(Config(token="secret-token", simple_mode=False, blend=True), main, FakeWriter(), partner_for=lambda model: Partner())
+    app = create_app(Config(token="secret-token", stt_model="turbo", stt_device="auto", simple_mode=False, blend=True),
+                     main, FakeWriter(), partner_for=lambda model: Partner())
     client = TestClient(app)
     client.post("/v1/sync", headers=AUTH, json={"since": 0, "changes": [
         change("person", "p1", {"name": "Saoirse", "createdAt": 1}, 1),
@@ -739,7 +740,8 @@ def test_tick_any_number_of_recognizers_and_extra_whisper_models_go_to_the_proce
         made.append((model, device))
         return NamedStt(model)
 
-    config = Config(token="secret-token", stt_model="turbo", simple_mode=False, blend=True)
+    # A Whisper main recognizer on the card (so extra Whispers share the card).
+    config = Config(token="secret-token", stt_model="turbo", stt_device="auto", simple_mode=False, blend=True)
     app = create_app(config, NamedStt("whisper-turbo"), FakeWriter(), partner_for=partner_for)
     app.state.save_config = False
     client = TestClient(app)
@@ -1050,7 +1052,7 @@ def test_existing_setups_get_the_larger_context_once(tmp_path):
     path.write_text(js.dumps({"token": "x" * 20, "upgraded_to": "qwen3.6-mtp", "llm_context": 8192,
                               "llm_file": "phi-4-Q4_K_M.gguf"}))
     config = Config.load(path)
-    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "big-and-speakers"
+    assert config.llm_context == 16384 and config.llm_file == "phi-4-Q4_K_M.gguf" and config.upgraded_to == "omi-default"
     assert config.simple_mode is True and config.blend is False and config.speakers is True
 
 
@@ -1113,8 +1115,8 @@ def test_clips_with_no_speech_are_not_transcribed(stt):
             Counting.calls += 1
             return "words"
 
-    app = create_app(Config(token="secret-token", simple_mode=False, blend=True), Counting("whisper-turbo"), FakeWriter(),
-                     partner_for=lambda model: Counting(model))
+    app = create_app(Config(token="secret-token", stt_model="turbo", stt_device="auto", simple_mode=False, blend=True),
+                     Counting("whisper-turbo"), FakeWriter(), partner_for=lambda model: Counting(model))
     found = {"seconds": 0.0}
     app.state.speech_seconds = lambda samples: found["seconds"]
     client = TestClient(app)
